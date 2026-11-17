@@ -323,8 +323,8 @@ async function openJob(id) {
         <div class="hint">Drag right if the words light up too early.</div></div>
       <div class="ctl"><div class="hint">${r.romaji === "automatic" ? '<span class="tag warn">automatic romaji</span> check readings in the editor below<br>' : r.romaji === "kara.moe" ? '<span class="tag good">hand-timed romaji (kara.moe)</span><br>' : ""}${r.lines ?? "?"} lines · video ${esc(r.video || "")} · made in ${r.seconds ?? "?"} s${r.gpu ? " on " + esc(r.gpu) : ""}${r.skipped && r.skipped.length ? `<br>Not sung in this video: ${r.skipped.map(s => "“" + esc(s) + "”").join(", ")}` : ""}</div></div>
     </div>
-    ${j.ai_romaji && j.ai_romaji.length ? `<details class="ctl aidone"><summary><b>AI fixed ${j.ai_romaji.length} romaji reading${j.ai_romaji.length === 1 ? "" : "s"}</b> <span class="hint">(it read the Japanese and listened to the singing; <i>Undo all edits</i> in the editor restores the plain automatic romaji)</span></summary>
-      ${j.ai_romaji.map(g => `<div class="aisug"><span class="hint">${esc(g.japanese)}</span><br><s>${esc(g.old)}</s> → <b>${esc(g.new)}</b></div>`).join("")}</details>` : ""}
+    ${j.ai_romaji && j.ai_romaji.length ? `<details class="ctl aidone"><summary><b>AI fixed ${j.ai_romaji.length} romaji reading${j.ai_romaji.length === 1 ? "" : "s"}</b> <span class="hint">(it read the Japanese, and checked special readings against the singing; <i>Undo all edits</i> in the editor restores the plain automatic romaji)</span></summary>
+      ${j.ai_romaji.map(g => `<div class="aisug"><span class="hint">${esc(g.japanese)}${g.how && g.how.includes("heard") ? " · confirmed by the singing" : ""}</span><br><s>${esc(g.old)}</s> → <b>${esc(g.new)}</b></div>`).join("")}</details>` : ""}
     <div class="ctl editor" id="editor"><span class="spinner"></span></div>
     <div class="ctl pub" id="pub"><span class="spinner"></span></div>`;
   const v = $("#pv");
@@ -496,7 +496,7 @@ function renderEditor() {
       <div class="row" style="margin-top:8px"><button class="primary" id="pastego">Compare</button><button class="ghost" id="pastecancel">Cancel</button></div></div>` : ""}
     ${ed.ai ? `<div class="aibox"><div class="row" style="justify-content:space-between"><b>${ed.ai.model === "pasted romaji" ? "Changes from the pasted romaji" : "AI romaji suggestions"}</b><span class="hint">${ed.ai.model === "pasted romaji" ? "untick any you don't want" : esc(ed.ai.model) + " checked " + ed.ai.checked + " lines"}</span></div>
       ${ed.ai.suggestions.length ? ed.ai.suggestions.map((g, k) => `<label class="chk aisug"><input type="checkbox" class="aipick" value="${k}" checked>
-        <span><span class="hint">${esc(g.japanese)}</span><br><s>${esc(g.old)}</s> → <b>${esc(g.new)}</b></span></label>`).join("") : '<div class="hint">No changes suggested: the romaji looks right.</div>'}
+        <span><span class="hint">${esc(g.japanese)}${g.how && g.how.includes("heard") ? " · confirmed by the singing" : ""}</span><br><s>${esc(g.old)}</s> → <b>${esc(g.new)}</b></span></label>`).join("") : '<div class="hint">No changes suggested: the romaji looks right.</div>'}
       <div class="row" style="margin-top:8px">${ed.ai.suggestions.length ? '<button class="primary" id="aiapply">Apply selected</button>' : ""}<button class="ghost" id="aidismiss">Close</button></div></div>` : ""}
     <div class="wavebox"><div class="wavebar"><span class="hint">Vocals: drag a line's block to move it, drag its edge to stretch it, click to jump, right-click to change its singer · Space plays/pauses</span>
       <span class="row"><span class="legend"><span><i style="background:var(--gold)"></i>Singer 1</span><span><i style="background:#3cb4ff"></i>Singer 2</span><span><i style="background:#78e678"></i>Both</span></span>

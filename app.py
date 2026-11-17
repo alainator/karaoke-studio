@@ -502,11 +502,39 @@ def ai_romaji_suggest(lines):
     return len(items), out
 
 
+def romaji_fixes(jid, lines):
+    """Text check (LLM reads the Japanese + what was heard), then the listening check (readings.py: the aligner scores
+    special readings against the vocals). Returns combined suggestions against the saved lines."""
+    import copy
+    work = copy.deepcopy(lines)
+    how = {}
+    checked, sugg = ai_romaji_suggest(work)
+    for g in sugg:
+        work[g["i"]]["words"] = g["words"]
+        how[g["i"]] = "read"
+    try:
+        r = subprocess.run([sys.executable, "-I", f"{HERE}/readings.py", job_path(jid)], input=json.dumps(work),
+                           capture_output=True, text=True, timeout=600, env=C.tool_env())
+        heard = json.loads(r.stdout.strip().splitlines()[-1]).get("changes", [])
+    except Exception:
+        heard = []
+    for c in heard:
+        work[c["i"]]["words"] = remap_words(work[c["i"]]["words"], c["new"])
+        how[c["i"]] = "heard" if c["i"] not in how else "read+heard"
+    out = []
+    for i in sorted(how):
+        old, new = " ".join(w[2] for w in lines[i]["words"]), " ".join(w[2] for w in work[i]["words"])
+        if old != new:
+            out.append({"i": i, "japanese": lines[i].get("orig") or "", "old": old, "new": new, "how": how[i],
+                        "words": remap_words(lines[i]["words"], new)})
+    return checked, out
+
+
 def auto_romaji(jid):
     """After a song with automatic romaji is made: apply the AI's fixes (the plain version stays in words.orig.json)."""
     try:
         lines = load_lines(job_path(jid, "words.json"))
-        checked, sugg = ai_romaji_suggest(lines)
+        checked, sugg = romaji_fixes(jid, lines)
     except Exception as e:
         set_job(jid, log=load(jid).get("log", []) + [f"AI romaji check skipped ({str(e)[:80]})"])
         return
@@ -519,7 +547,7 @@ def auto_romaji(jid):
                 lines[g["i"]]["words"] = g["words"]
             save_lines(job_path(jid, "words.json"), lines)
             open(job_path(jid, "lyrics.ass"), "w").write(make_ass(lines, job.get("offset", 0.0), video_size=vsize(job)))
-        job["ai_romaji"] = [{k: g[k] for k in ("japanese", "old", "new")} for g in sugg]
+        job["ai_romaji"] = [{k: g[k] for k in ("japanese", "old", "new", "how")} for g in sugg]
         job.setdefault("log", []).append(f"AI romaji check: {len(sugg)} of {checked} lines fixed" if sugg else
                                          f"AI romaji check: all {checked} lines look right")
         save(jid, job)
@@ -621,7 +649,7 @@ async def romaji_check(jid: str, req: Request):
         raise HTTPException(400, "finish making it first")
     lines = load_lines(job_path(jid, "words.json"))
     try:
-        checked, out = await asyncio.to_thread(ai_romaji_suggest, lines)
+        checked, out = await asyncio.to_thread(romaji_fixes, jid, lines)
     except Exception as e:
         raise HTTPException(502, f"the AI check failed ({str(e)[:100]})")
     if not checked:
