@@ -549,6 +549,67 @@ def remap_words(old, text):
     return out or [list(w) for w in old]
 
 
+def paste_suggest(lines, text):
+    """Line up pasted romaji (any site's layout: lines split or joined differently, section headers) with the song's
+    lines by their letters, and suggest each line's text from it. Returns suggestions like the AI check."""
+    import difflib
+    letters = lambda w: re.sub(r"[^a-z]", "", unicodedata.normalize("NFKD", w).lower())
+    # the song: one letter string, remembering which line each letter belongs to
+    S, sl = [], []
+    for i, l in enumerate(lines):
+        for w in l["words"]:
+            for ch in letters(w[2]):
+                S.append(ch); sl.append(i)
+    # the pasted text: tokens (headers like [Chorus] and lone symbols dropped), each with its letter range
+    toks = [t for ln in text.splitlines() if not re.match(r"^\s*[\[(].*[\])]\s*$", ln) for t in ln.split()]
+    toks = [t for t in toks if letters(t)]
+    P, pt = [], []
+    for k, t in enumerate(toks):
+        for ch in letters(t):
+            P.append(ch); pt.append(k)
+    if len(P) < 20 or len(S) < 20:
+        return []
+    owner = [None] * len(P)   # pasted letter -> song line
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, "".join(S), "".join(P), autojunk=False).get_opcodes():
+        if tag in ("equal", "replace"):
+            for j in range(j1, j2):
+                i = i1 + (j - j1) * max(1, i2 - i1) // max(1, j2 - j1)
+                owner[j] = sl[min(i, i2 - 1)] if i2 > i1 else None
+    # each pasted token goes to the line that owns most of its letters
+    from collections import Counter
+    by_line = {}
+    for k in range(len(toks)):
+        votes = Counter(owner[j] for j in range(len(P)) if pt[j] == k and owner[j] is not None)
+        if votes:
+            by_line.setdefault(votes.most_common(1)[0][0], []).append(toks[k])
+    out = []
+    for i, l in enumerate(lines):
+        new = " ".join(by_line.get(i, []))
+        old = " ".join(w[2] for w in l["words"])
+        if not new or letters(new) == letters(old):
+            continue
+        # skip pairs that share almost nothing (alignment slipped)
+        if difflib.SequenceMatcher(None, letters(new), letters(old)).ratio() < 0.5:
+            continue
+        if old[:1].isupper() and new[:1].islower():
+            new = new[0].upper() + new[1:]
+        out.append({"i": i, "japanese": l.get("orig") or "", "old": old, "new": new, "words": remap_words(l["words"], new)})
+    return out
+
+
+@app.post("/api/jobs/{jid}/romaji-paste")
+async def romaji_paste(jid: str, req: Request):
+    """Use romaji pasted from a lyrics site; returns suggestions (nothing saved)."""
+    check_origin(req)
+    b = await req.json()
+    text = str(b.get("text", ""))[:30000]
+    job = load(jid)
+    if job["status"] != "done":
+        raise HTTPException(400, "finish making it first")
+    sugg = paste_suggest(load_lines(job_path(jid, "words.json")), text)
+    return {"model": "pasted romaji", "checked": len(load_lines(job_path(jid, "words.json"))), "suggestions": sugg}
+
+
 @app.post("/api/jobs/{jid}/romaji-check")
 async def romaji_check(jid: str, req: Request):
     """Ask the local LLM to fix wrong readings in automatic romaji. Returns suggestions; nothing is saved."""

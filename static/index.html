@@ -486,11 +486,15 @@ function renderEditor() {
     <div class="row" style="justify-content:space-between">
       <div><h3>Lyrics editor</h3><div class="hint">Fix a word, or move a line: ⏱ starts it at the current playback time, −/+ nudge it 0.1 s. Save to update the preview.</div></div>
       <div class="row">${ed.dirty ? '<span class="dirty">unsaved changes</span>' : ""}
+        ${ed.lines.some(l => l.orig) ? '<button class="ghost" id="pastebtn" title="Paste romanized lyrics from a lyrics site (e.g. Genius) to fix readings; you review every change">Paste romaji</button>' : ""}
         ${STATUS.romaji_ai && ed.lines.some(l => l.orig) ? '<button class="ghost" id="aicheck" title="A local AI (Ollama) reads the Japanese and suggests fixes for wrong romaji readings">Check romaji with AI</button>' : ""}
         ${ed.canReset ? '<button class="ghost" id="edreset">Undo all edits</button>' : ""}
         <button class="primary" id="edsave" ${ed.dirty ? "" : "disabled"}>Save</button></div>
     </div>
-    ${ed.ai ? `<div class="aibox"><div class="row" style="justify-content:space-between"><b>AI romaji suggestions</b><span class="hint">${esc(ed.ai.model)} checked ${ed.ai.checked} lines</span></div>
+    ${ed.paste ? `<div class="aibox"><b>Paste romaji</b><div class="hint">Copy the romanized lyrics from a lyrics site (e.g. Genius "Romanized") and paste them here, all of it. Line breaks and section headers don't matter: they're lined up with this song by sound, and you review each change.</div>
+      <textarea id="pastetext" rows="8" style="width:100%;margin-top:8px;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:8px;font:inherit"></textarea>
+      <div class="row" style="margin-top:8px"><button class="primary" id="pastego">Compare</button><button class="ghost" id="pastecancel">Cancel</button></div></div>` : ""}
+    ${ed.ai ? `<div class="aibox"><div class="row" style="justify-content:space-between"><b>${ed.ai.model === "pasted romaji" ? "Changes from the pasted romaji" : "AI romaji suggestions"}</b><span class="hint">${ed.ai.model === "pasted romaji" ? "untick any you don't want" : esc(ed.ai.model) + " checked " + ed.ai.checked + " lines"}</span></div>
       ${ed.ai.suggestions.length ? ed.ai.suggestions.map((g, k) => `<label class="chk aisug"><input type="checkbox" class="aipick" value="${k}" checked>
         <span><span class="hint">${esc(g.japanese)}</span><br><s>${esc(g.old)}</s> → <b>${esc(g.new)}</b></span></label>`).join("") : '<div class="hint">No changes suggested: the romaji looks right.</div>'}
       <div class="row" style="margin-top:8px">${ed.ai.suggestions.length ? '<button class="primary" id="aiapply">Apply selected</button>' : ""}<button class="ghost" id="aidismiss">Close</button></div></div>` : ""}
@@ -550,6 +554,14 @@ function renderEditor() {
     $("#aicheck").disabled = true; $("#aicheck").textContent = "Checking… (about 30 s)";
     try { const r = await api(`/api/jobs/${ed.id}/romaji-check`, {method: "POST"}); ed.ai = r; renderEditor(); }
     catch (e) { toast(e.message); renderEditor(); }
+  };
+  if ($("#pastebtn")) $("#pastebtn").onclick = () => { if (ed.dirty) return toast("Save your edits first"); ed.paste = true; ed.ai = null; renderEditor(); setTimeout(() => $("#pastetext") && $("#pastetext").focus(), 50); };
+  if ($("#pastecancel")) $("#pastecancel").onclick = () => { ed.paste = false; renderEditor(); };
+  if ($("#pastego")) $("#pastego").onclick = async () => {
+    const text = $("#pastetext").value; if (text.trim().length < 20) return toast("Paste the whole romanized lyrics first");
+    $("#pastego").disabled = true;
+    try { const r = await api(`/api/jobs/${ed.id}/romaji-paste`, {method: "POST", body: JSON.stringify({text})}); ed.paste = false; ed.ai = r; renderEditor(); if (!r.suggestions.length) toast("The pasted romaji matches what's here already"); }
+    catch (e) { toast(e.message); $("#pastego").disabled = false; }
   };
   if ($("#aidismiss")) $("#aidismiss").onclick = () => { ed.ai = null; renderEditor(); };
   if ($("#aiapply")) $("#aiapply").onclick = () => {
