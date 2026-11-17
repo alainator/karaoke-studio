@@ -200,13 +200,17 @@ function bestLyrics(d, video) {
   const ok = d.lyrics.filter(usable);
   if (!ok.length) return null;
   const dur = video ? video.duration : null, near = l => dur && l.duration && Math.abs(l.duration - dur) <= 12;
-  // hand-timed romaji (kara.moe) first when its length fits the video, then human romaji/English, then automatic romaji
-  const rank = l => (l.source === "karamoe" && near(l) ? 0 : l.source === "karamoe" ? 3 : l.japanese ? 2 : 1);
+  // a Japanese song: Japanese lyrics first (Japanese line on screen + checked romaji); romaji-only sources are fallbacks
+  const jpSong = ok.some(l => l.japanese && l.name_match);
+  const rank = l => jpSong ? (l.japanese ? 0 : l.source === "karamoe" && near(l) ? 1 : 2)
+                           : (l.source === "karamoe" && near(l) ? 0 : l.source === "karamoe" ? 3 : l.japanese ? 2 : 1);
   // a Japanese-titled video wants Japanese/romaji lyrics, not an English-language release of the song
   const jpVideo = video && /[\u3040-\u30ff\u4e00-\u9fff]/.test(video.title), eng = l => (jpVideo && l.english ? 1 : 0);
   return ok.slice().sort((a, b) => (eng(a) - eng(b)) || (b.name_match - a.name_match) || (near(b) - near(a)) || (rank(a) - rank(b)) ||
     (dur ? Math.abs(a.duration - dur) - Math.abs(b.duration - dur) : b.lines - a.lines))[0];
 }
+// in a Japanese song, sources that have only romaji (kara.moe, romaji typed on LRCLIB) can't show the Japanese line
+const romajiOnly = l => pick.data && pick.data.lyrics.some(x => x.japanese && x.name_match) && !l.japanese && !l.english && (l.source === "karamoe" || l.latin);
 function renderResults() {
   const d = pick.data;
   if (!pick.video) {
@@ -230,7 +234,7 @@ function renderResults() {
     <div class="card lyr ${pick.lyr && lkey(pick.lyr) === lkey(l) ? "sel" : ""}" data-l="${esc(lkey(l))}">
       <div><div class="t">${esc(l.artist)} – ${esc(l.title)}</div>
       <div class="m">${esc(l.album || "")} · ${fmt(l.duration)}${dur && l.duration ? ` (${l.duration - dur > 0 ? "+" : ""}${Math.round(l.duration - dur)}s vs video)` : ""}</div>
-      <div>${l.source === "karamoe" ? '<span class="tag good">hand-timed romaji · kara.moe</span>' : l.timed ? `<span class="tag good">timed · ${l.lines} lines</span>` : '<span class="tag warn">not timed</span>'}${l.mismatch ? '<span class="tag warn">doesn\'t match the Japanese lyrics</span>' : ""}${l.artist_match === false ? '<span class="tag warn">other artist</span>' : ""}${l.japanese ? '<span class="tag">Japanese → automatic romaji</span>' : l.english ? '<span class="tag">English</span>' : l.latin ? "" : '<span class="tag warn">script not supported</span>'}</div>
+      <div>${romajiOnly(l) ? '<span class="tag">romaji only · no Japanese line</span>' : ""}${l.source === "karamoe" ? '<span class="tag good">hand-timed romaji · kara.moe</span>' : l.timed ? `<span class="tag good">timed · ${l.lines} lines</span>` : '<span class="tag warn">not timed</span>'}${l.mismatch ? '<span class="tag warn">doesn\'t match the Japanese lyrics</span>' : ""}${l.artist_match === false ? '<span class="tag warn">other artist</span>' : ""}${l.japanese ? '<span class="tag">Japanese → automatic romaji</span>' : l.english ? '<span class="tag">English</span>' : l.latin ? "" : '<span class="tag warn">script not supported</span>'}</div>
       ${l.first ? `<div class="m">“${esc(l.first)}…”</div>` : ""}</div>
     </div>`).join("") || `<div class="empty">No lyrics found on LRCLIB</div>`;
   const canMake = pick.video && pick.lyr && usable(pick.lyr);

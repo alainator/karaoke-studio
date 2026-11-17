@@ -165,7 +165,8 @@ def lrc_search(artist, title, extra_titles=()):
         letters = [c for c in text if c.isalpha()]
         japanese = bool(KANA.search(text))
         toks = re.findall(r"[a-z']+", text.lower())
-        english = bool(toks) and sum(t in ENGLISH_HINTS for t in toks) / len(toks) > 0.12
+        # (only for lyrics without Japanese: a Japanese song with a few English words isn't "English lyrics")
+        english = not japanese and bool(toks) and sum(t in ENGLISH_HINTS for t in toks) / len(toks) > 0.12
         latin = not japanese and (not letters or sum(c.isascii() for c in letters) / len(letters) >= 0.85)
         artist_ok = not artist or (lambda a, b: bool(a) and bool(b) and (a in b or b in a))(loose(artist), loose(h.get("artistName") or ""))
         sample = " ".join(re.sub(r"^\[[^\]]*\]\s*", "", l) for l in synced.splitlines()[:14])
