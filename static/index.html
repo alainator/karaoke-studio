@@ -89,6 +89,8 @@ td.n { text-align: right; font-variant-numeric: tabular-nums; }
 .ib:hover { border-color: var(--gold); }
 .ib.danger { color: var(--bad); }
 .nowrap { white-space: nowrap; }
+input.rn { background: var(--bg); border: 1px solid var(--line); color: var(--text); border-radius: 8px; padding: 6px 9px; font: inherit; font-size: 13px; width: 170px; }
+.swapbox select { background: var(--bg); border: 1px solid var(--line); color: var(--text); border-radius: 6px; padding: 4px; font: inherit; font-size: 13px; }
 .aibox { margin-top: 10px; border: 1px solid var(--gold); border-radius: 10px; padding: 10px 12px; background: rgba(255,201,77,.05); }
 .aisug { align-items: flex-start !important; justify-content: flex-start !important; gap: 10px !important; padding: 6px 0; border-bottom: 1px solid var(--line); color: var(--text) !important; }
 .aisug s { color: var(--dim); }
@@ -318,7 +320,9 @@ async function openJob(id) {
   if (document.getElementById("pv") && document.getElementById("pv").dataset.id === id) return renderPublish(id, j);
   const r = j.result || {};
   $("#jobdetail").innerHTML = `${backLink()}
-    <h2>${esc(j.artist)} – ${esc(j.title)}</h2>
+    <div class="row" style="justify-content:space-between;margin:6px 0 10px"><h2 style="margin:0">${esc(j.artist)} – ${esc(j.title)}</h2>
+      <span class="row"><input id="rn-artist" class="rn" value="${esc(j.artist)}" placeholder="Artist" title="Artist (sets the song's name in PiKaraoke)">
+      <input id="rn-title" class="rn" value="${esc(j.title)}" placeholder="Title"><button class="ghost" id="rnbtn" style="padding:6px 10px;font-size:13px">Rename</button></span></div>
     <div class="player"><video id="pv" data-id="${esc(id)}" controls playsinline preload="auto" src="/api/jobs/${esc(id)}/file/video.mp4"></video></div>
     <div class="controls">
       <div class="ctl"><label><span>Guide vocals</span><span id="voxv">off</span></label><input type="range" id="voxr" min="0" max="100" value="0"></div>
@@ -352,6 +356,12 @@ async function openJob(id) {
   };
   renderPublish(id, j);
   initEditor(id, j);
+  $("#rnbtn").onclick = async () => {
+    try {
+      const r = await api(`/api/jobs/${id}/rename`, {method: "POST", body: JSON.stringify({artist: $("#rn-artist").value, title: $("#rn-title").value})});
+      toast(r.message === "renamed" ? `Renamed to “${r.name}”` : `Renamed to “${r.name}” in PiKaraoke too`); location.reload();
+    } catch (e) { toast(e.message); }
+  };
 }
 function reloadLyrics() {
   if (octopus && currentJob) octopus.setTrackByUrl(`/api/jobs/${currentJob}/file/lyrics.ass?t=${Date.now()}`);
@@ -510,8 +520,11 @@ function renderEditor() {
     <div class="wavebox"><div class="wavebar"><span class="hint">Vocals: drag a line's block to move it, drag its edge to stretch it, click to jump, right-click to change its singer · Space plays/pauses</span>
       <span class="row"><span class="legend">${ed.cast.length ? ed.cast.map((n, k) => `<span><i style="background:${MEMBER_RGB[k]}"></i>${esc(n)}</span>`).join("") + '<span><i style="background:var(--gold)"></i>Together</span>' : '<span><i style="background:var(--gold)"></i>Singer 1</span><span><i style="background:#3cb4ff"></i>Singer 2</span><span><i style="background:#78e678"></i>Both</span>'}</span>
       <button class="ghost" id="castbtn" style="padding:5px 10px;font-size:13px" title="Name the singers (up to 8) to colour lines by member">${ed.cast.length ? "Edit singers" : "Name singers"}</button>
-      <button class="ghost" id="detect" style="padding:5px 10px;font-size:13px" title="Find the two voices in the vocals and colour each line (review, then Save)">Detect 2 singers</button>
-      <button class="ghost" id="swap" style="padding:5px 10px;font-size:13px" title="Swap Singer 1 and Singer 2">Swap 1↔2</button>
+      <span class="swapbox row" title="Every line of one singer becomes the other's, and the other way round">
+        <select id="swapa">${singerChoices().map(([v, t], k) => `<option value="${v}" ${k === 0 ? "selected" : ""}>${esc(t)}</option>`).join("")}</select>
+        ⇄ <select id="swapb">${singerChoices().map(([v, t], k) => `<option value="${v}" ${k === 1 ? "selected" : ""}>${esc(t)}</option>`).join("")}</select>
+        <button class="ghost" id="swap" style="padding:5px 10px;font-size:13px">Swap</button></span>
+      ${ed.cast.length ? "" : '<button class="ghost" id="detect" style="padding:5px 10px;font-size:12px;opacity:.75" title="Experimental: guesses two voices from the vocals; often needs fixing">Detect 2 singers (experimental)</button>'}
       <button class="ib" id="zout" title="Zoom out">−</button><button class="ib" id="zin" title="Zoom in">+</button></span></div>
       <canvas id="wave"></canvas></div>
     <div class="edbar"><input id="newline" placeholder="Missing line? Type it, play to where it's sung, then Add"><button class="ghost" id="addline">Add at playback time</button>
@@ -584,7 +597,7 @@ function renderEditor() {
     }
     ed.ai = null; toast(`Applied ${picked.length} fix${picked.length === 1 ? "" : "es"}; Save to keep them`); changed();
   };
-  $("#detect").onclick = async () => {
+  if ($("#detect")) $("#detect").onclick = async () => {
     if (ed.dirty && !confirm("Detect singers on the saved lyrics? Unsaved edits are kept, singer colours get replaced.")) return;
     $("#detect").disabled = true; $("#detect").textContent = "Listening…";
     try {
@@ -604,7 +617,17 @@ function renderEditor() {
     else ed.lines.forEach(l => { if (l.members) l.members = l.members.filter(k => k < names.length); });
     ed.cast = names; changed();
   };
-  $("#swap").onclick = () => { ed.lines.forEach(l => { if (l.singer === 1) l.singer = 2; else if (l.singer === 2) l.singer = 1; }); changed(); };
+  $("#swap").onclick = () => {
+    const a = $("#swapa").value, b = $("#swapb").value;
+    if (a === b) return toast("Pick two different singers");
+    if (ed.cast.length) {
+      const A = +a, B = +b;
+      ed.lines.forEach(l => { if (l.members && l.members.length === 1) l.members = [l.members[0] === A ? B : l.members[0] === B ? A : l.members[0]]; });
+    } else {
+      ed.lines.forEach(l => { if (String(l.singer) === a) l.singer = +b; else if (String(l.singer) === b) l.singer = +a; });
+    }
+    changed();
+  };
   // click a block's singer quickly: right-click (or long-press) a waveform block cycles 1 → 2 → Both
   $("#wave").oncontextmenu = e => {
     e.preventDefault();
@@ -633,6 +656,9 @@ function renderEditor() {
     try { await api(`/api/jobs/${ed.id}/lines/reset`, {method: "POST"}); reloadLyrics(); await initEditor(ed.id, ed.j); if (ed.j.published) renderPublish(ed.id, {...ed.j, unpublished_changes: true}); }
     catch (e) { toast(e.message); }
   };
+}
+function singerChoices() {
+  return ed.cast.length ? ed.cast.map((n, k) => [String(k), n]) : [["1", "Singer 1"], ["2", "Singer 2"], ["3", "Both"]];
 }
 function memberSelect(l) {
   const v = l.members && l.members.length === 1 ? String(l.members[0]) : l.members && l.members.length > 1 ? "all" : "";

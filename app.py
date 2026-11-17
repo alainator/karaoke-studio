@@ -728,6 +728,33 @@ async def reset_lines(jid: str, req: Request):
     return {"ok": True}
 
 
+@app.post("/api/jobs/{jid}/rename")
+async def rename(jid: str, req: Request):
+    """Change a song's artist/title. If it's published, its files in PiKaraoke are renamed too."""
+    check_origin(req)
+    b = await req.json()
+    artist, title = str(b.get("artist", "")).strip()[:120], str(b.get("title", "")).strip()[:160]
+    if not artist or not title:
+        raise HTTPException(400, "give both artist and title")
+    with lock:
+        job = load(jid)
+        old = job.get("published_as")
+        job.update(artist=artist, title=title)
+        new = final_base(job)
+        moved = False
+        if old and old != new and os.path.exists(f"{MV_DIR}/{old}.mp4"):
+            if os.path.exists(f"{MV_DIR}/{new}.mp4"):
+                raise HTTPException(400, "a song with that name is already in PiKaraoke")
+            for ext in (".mp4", ".ass"):
+                if os.path.exists(f"{MV_DIR}/{old}{ext}"):
+                    os.replace(f"{MV_DIR}/{old}{ext}", f"{MV_DIR}/{new}{ext}")
+            job["published_as"] = new
+            moved = True
+        save(jid, job)
+    msg = pk_rescan() if moved else "renamed"
+    return {"artist": artist, "title": title, "name": new, "message": msg}
+
+
 @app.post("/api/jobs/{jid}/retry")
 async def retry(jid: str, req: Request):
     check_origin(req)
