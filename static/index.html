@@ -194,7 +194,7 @@ $("#sform").onsubmit = async e => {
   catch (err) { $("#results").innerHTML = `<div class="empty">${esc(err.message)}</div>`; }
   $("#sbtn").disabled = false;
 };
-const usable = l => l.timed && (l.latin || l.japanese);
+const usable = l => l.timed && (l.latin || l.japanese) && !l.mismatch;
 const lkey = l => `${l.source}:${l.id}`;
 function bestLyrics(d, video) {
   const ok = d.lyrics.filter(usable);
@@ -230,7 +230,7 @@ function renderResults() {
     <div class="card lyr ${pick.lyr && lkey(pick.lyr) === lkey(l) ? "sel" : ""}" data-l="${esc(lkey(l))}">
       <div><div class="t">${esc(l.artist)} – ${esc(l.title)}</div>
       <div class="m">${esc(l.album || "")} · ${fmt(l.duration)}${dur && l.duration ? ` (${l.duration - dur > 0 ? "+" : ""}${Math.round(l.duration - dur)}s vs video)` : ""}</div>
-      <div>${l.source === "karamoe" ? '<span class="tag good">hand-timed romaji · kara.moe</span>' : l.timed ? `<span class="tag good">timed · ${l.lines} lines</span>` : '<span class="tag warn">not timed</span>'}${l.japanese ? '<span class="tag">Japanese → automatic romaji</span>' : l.english ? '<span class="tag">English</span>' : l.latin ? "" : '<span class="tag warn">script not supported</span>'}</div>
+      <div>${l.source === "karamoe" ? '<span class="tag good">hand-timed romaji · kara.moe</span>' : l.timed ? `<span class="tag good">timed · ${l.lines} lines</span>` : '<span class="tag warn">not timed</span>'}${l.mismatch ? '<span class="tag warn">doesn\'t match the Japanese lyrics</span>' : ""}${l.artist_match === false ? '<span class="tag warn">other artist</span>' : ""}${l.japanese ? '<span class="tag">Japanese → automatic romaji</span>' : l.english ? '<span class="tag">English</span>' : l.latin ? "" : '<span class="tag warn">script not supported</span>'}</div>
       ${l.first ? `<div class="m">“${esc(l.first)}…”</div>` : ""}</div>
     </div>`).join("") || `<div class="empty">No lyrics found on LRCLIB</div>`;
   const canMake = pick.video && pick.lyr && usable(pick.lyr);

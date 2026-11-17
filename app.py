@@ -167,12 +167,37 @@ def lrc_search(artist, title, extra_titles=()):
         toks = re.findall(r"[a-z']+", text.lower())
         english = bool(toks) and sum(t in ENGLISH_HINTS for t in toks) / len(toks) > 0.12
         latin = not japanese and (not letters or sum(c.isascii() for c in letters) / len(letters) >= 0.85)
-        out.append({"source": "lrclib", "id": h["id"], "artist": h.get("artistName"), "title": h.get("trackName"),
+        artist_ok = not artist or (lambda a, b: bool(a) and bool(b) and (a in b or b in a))(loose(artist), loose(h.get("artistName") or ""))
+        sample = " ".join(re.sub(r"^\[[^\]]*\]\s*", "", l) for l in synced.splitlines()[:14])
+        out.append({"source": "lrclib", "id": h["id"], "artist": h.get("artistName"), "title": h.get("trackName"), "_sample": sample,
                     "album": h.get("albumName"), "duration": h.get("duration"), "timed": bool(synced.strip()),
                     "latin": latin, "japanese": japanese, "english": english, "romaji": "automatic" if japanese else None,
                     "lines": sum(1 for l in synced.splitlines() if l.strip()), "first": first[:80],
-                    "name_match": by_title or (bool(norm(title)) and norm(title) in norm(h.get("trackName") or ""))})
+                    "artist_match": artist_ok,
+                    "name_match": artist_ok and (by_title or (bool(norm(title)) and norm(title) in norm(h.get("trackName") or "")))})
     return out[:20]
+
+
+def check_romaji_entries(lyrics):
+    """Romaji uploads are sometimes the wrong song (a 'Brave Shine' upload with Gurenge's lyrics). When Japanese lyrics
+    of the song exist, romanise them and mark romaji entries that clearly don't match."""
+    import difflib
+    jp = next((l for l in lyrics if l["source"] == "lrclib" and l.get("japanese") and l["timed"] and l.get("name_match")), None) \
+        or next((l for l in lyrics if l["source"] == "lrclib" and l.get("japanese") and l["timed"]), None)
+    if not jp:
+        return
+    try:
+        import cutlet
+        kat = cutlet.Cutlet(); kat.use_foreign_spelling = False
+        ref = loose(kat.romaji(jp["_sample"]))
+    except Exception:
+        return
+    for l in lyrics:
+        if l["source"] == "lrclib" and l["latin"] and not l.get("english") and l["timed"] and l.get("_sample"):
+            sim = difflib.SequenceMatcher(None, loose(l["_sample"])[:400], ref[:400], autojunk=False).ratio()
+            l["romaji_check"] = round(sim, 2)
+            if sim < 0.45:
+                l["mismatch"] = True
 
 
 def loose(x):
@@ -226,6 +251,15 @@ def search(q: str):
     km, jp_titles = km_search(title.strip(), artist.strip())
     try:
         lyrics = km + lrc_search(artist, title, jp_titles)
+        if not any(l.get("japanese") for l in lyrics) and artist:  # look for the Japanese original to check romaji against
+            try:
+                extra = [l for l in lrc_search(artist, title, [f"{artist} {title}"]) if l.get("japanese")]
+                lyrics += [l for l in extra if l["id"] not in {x["id"] for x in lyrics}][:3]
+            except Exception:
+                pass
+        check_romaji_entries(lyrics)
+        for l in lyrics:
+            l.pop("_sample", None)
     except Exception as e:
         lyrics = km
         notes.append(f"LRCLIB didn't answer ({str(e)[:60]}); search again in a moment")
