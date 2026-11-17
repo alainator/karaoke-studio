@@ -85,6 +85,14 @@ def gpu_free_mib():
         return 0
 
 
+def vsize(job):
+    r = job.get("result") or {}
+    if r.get("width"):
+        return (r["width"], r["height"])
+    m = re.match(r"[^,]*,(\d+),(\d+)", r.get("video") or "")
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
 def final_base(job):
     return f"{safe_name(job['artist'])} - {safe_name(job['title'])} (Music Video)"
 
@@ -232,7 +240,7 @@ async def set_offset(jid: str, req: Request):
         raise HTTPException(400, "offset must be within ±5 s")
     with lock:
         job = load(jid)
-        open(job_path(jid, "lyrics.ass"), "w").write(make_ass(load_lines(job_path(jid, "words.json")), off))
+        open(job_path(jid, "lyrics.ass"), "w").write(make_ass(load_lines(job_path(jid, "words.json")), off, video_size=vsize(job)))
         if round(off, 2) != job.get("offset") and job.get("published"):
             job["unpublished_changes"] = True
         job["offset"] = round(off, 2)
@@ -294,7 +302,7 @@ async def put_lines(jid: str, req: Request):
         if not os.path.exists(job_path(jid, "words.orig.json")):
             shutil.copyfile(job_path(jid, "words.json"), job_path(jid, "words.orig.json"))
         save_lines(job_path(jid, "words.json"), lines)
-        open(job_path(jid, "lyrics.ass"), "w").write(make_ass(lines, job.get("offset", 0.0)))
+        open(job_path(jid, "lyrics.ass"), "w").write(make_ass(lines, job.get("offset", 0.0), video_size=vsize(job)))
         job["edited"] = time.time()
         if job.get("published"):
             job["unpublished_changes"] = True
@@ -311,7 +319,7 @@ async def reset_lines(jid: str, req: Request):
         if not os.path.exists(orig):
             raise HTTPException(400, "nothing to reset")
         shutil.copyfile(orig, job_path(jid, "words.json"))
-        open(job_path(jid, "lyrics.ass"), "w").write(make_ass(load_lines(orig), job.get("offset", 0.0)))
+        open(job_path(jid, "lyrics.ass"), "w").write(make_ass(load_lines(orig), job.get("offset", 0.0), video_size=vsize(job)))
         job["edited"] = None
         if job.get("published"):
             job["unpublished_changes"] = True

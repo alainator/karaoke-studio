@@ -10,11 +10,11 @@ Progress goes to stdout as "@step <name>" / "@info <text>"; failures end with "@
 Line starts come from LRCLIB's human timing shifted by this video's offset (found with Whisper); words inside
 a line come from torchaudio MMS_FA forced alignment on the separated vocal stem.
 """
-import json, os, re, shutil, subprocess, sys, time, urllib.request
+import json, os, re, shutil, subprocess, sys, time, urllib.parse, urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config as C  # noqa: E402
-from assgen import make_ass  # noqa: E402
+from assgen import make_ass, save_lines  # noqa: E402
 
 WORK, MODELS, SEP_MODEL = C.WORK, C.MODELS, C.SEP_MODEL
 UA = {"User-Agent": C.USER_AGENT}
@@ -40,7 +40,8 @@ def run(*c):
 
 job_dir = os.path.abspath(sys.argv[1])
 job = json.load(open(f"{job_dir}/job.json"))
-yt, lrc_id, lang = job["yt"], int(job["lrc_id"]), job.get("lang") or "en"
+yt, lrc_id, lang = job["yt"], job["lrc_id"], job.get("lang") or "en"
+source = job.get("lyrics_source") or "lrclib"
 if not re.fullmatch(r"[A-Za-z0-9_-]{11}", yt):
     fail("bad YouTube id")
 os.makedirs(WORK, exist_ok=True); os.makedirs(MODELS, exist_ok=True)
@@ -49,18 +50,73 @@ t0 = time.time()
 
 # 1. lyrics first: cheap, and the job is pointless without synced lines
 say("step", "lyrics")
-req = urllib.request.Request(f"https://lrclib.net/api/get/{lrc_id}", headers=UA)
-lyr = json.load(urllib.request.urlopen(req, timeout=30))
-synced = []
-for l in (lyr.get("syncedLyrics") or "").splitlines():
-    m = re.match(r"\[(\d+):(\d+(?:\.\d+)?)\]\s*(.*)", l)
-    if m and m.group(3).strip():
-        synced.append((int(m.group(1)) * 60 + float(m.group(2)), m.group(3).strip()))
+KANA = re.compile(r"[\u3040-\u30ff]")
+
+
+def karamoe_lines(kid):
+    """Hand-timed romaji from the Karaoke Mugen database: (sung start, text) per line."""
+    if not re.fullmatch(r"[0-9a-f-]{36}", str(kid)):
+        fail("bad kara.moe id")
+    k = json.load(urllib.request.urlopen(urllib.request.Request(f"https://kara.moe/api/karas/{kid}", headers=UA), timeout=30))
+    info = next((l for l in k.get("lyrics_infos") or [] if l.get("default")), (k.get("lyrics_infos") or [None])[0])
+    if not info:
+        fail("this kara.moe entry has no lyrics")
+    url = "https://kara.moe/downloads/lyrics/" + urllib.parse.quote(info["filename"])
+    text = urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=30).read().decode("utf-8-sig")
+    out = []
+    for l in text.splitlines():
+        if not l.startswith("Dialogue:"):
+            continue
+        f = l.split(",", 9)
+        h, m_, sec = f[1].split(":")
+        start = int(h) * 3600 + int(m_) * 60 + float(sec)
+        body = f[9]
+        # leading \k before the first syllable is lead-in time, not singing
+        lead, pending = 0.0, None
+        for tag, txt in re.findall(r"(\{[^}]*\})|([^{]+)", body):
+            if tag:
+                ks = re.findall(r"\\[kK][fo]?(\d+)", tag)
+                if ks:
+                    if pending is not None:
+                        lead += pending
+                    pending = sum(int(x) for x in ks) / 100
+            elif txt.strip():
+                break
+        words = re.sub(r"\{[^}]*\}", "", body).replace("\\N", " ").strip()
+        if words:
+            out.append((start + lead, re.sub(r"\s+", " ", words)))
+    return sorted(out)
+
+
+if source == "karamoe":
+    synced = karamoe_lines(lrc_id)
+else:
+    req = urllib.request.Request(f"https://lrclib.net/api/get/{int(lrc_id)}", headers=UA)
+    lyr = json.load(urllib.request.urlopen(req, timeout=30))
+    synced = []
+    for l in (lyr.get("syncedLyrics") or "").splitlines():
+        m = re.match(r"\[(\d+):(\d+(?:\.\d+)?)\]\s*(.*)", l)
+        if m and m.group(3).strip():
+            synced.append((int(m.group(1)) * 60 + float(m.group(2)), m.group(3).strip()))
 if len(synced) < 4:
     fail("these lyrics have no line timings; pick a lyrics entry marked 'timed'")
+align_text = [t for _, t in synced]   # what Whisper reads (original script)
+origs = [None] * len(synced)          # original line shown above the romaji
+if any(KANA.search(t) for _, t in synced):
+    # Japanese: automatic romaji (cutlet + MeCab), the Japanese line stays on screen above it
+    import cutlet  # noqa: E402
+    kat = cutlet.Cutlet()
+    kat.use_foreign_spelling = False  # the sung reading ("aidoru"), which is also what the aligner hears
+    origs = [t for _, t in synced]
+    synced = [(t, re.sub(r"\s+", " ", kat.romaji(x)).strip() or x) for t, x in synced]
+    lang = "ja"
+    say("info", "Japanese lyrics: automatic romaji, Japanese shown above")
+elif source == "karamoe":
+    lang = "ja"
+    align_text = [t for _, t in synced]
 letters = [c for _, t in synced for c in t if c.isalpha()]
 if letters and sum(c.isascii() for c in letters) / len(letters) < 0.85:
-    fail("these lyrics aren't in Latin letters (Japanese etc. isn't supported yet)")
+    fail("these lyrics are in a script the studio can't romanise yet (Japanese and Latin-alphabet songs work)")
 say("info", f"{len(synced)} timed lines")
 
 # 2. video (H.264 so PiKaraoke can pass it through untouched)
@@ -93,8 +149,7 @@ say("step", "align")
 import numpy as np, stable_whisper  # noqa: E402
 model = stable_whisper.load_model(C.WHISPER_MODEL, device="cuda")
 audio = stable_whisper.audio.load_audio(vocals)  # 16 kHz mono
-lines = [t for _, t in synced]
-res = model.align(audio, "\n".join(lines), language=lang, original_split=True)
+res = model.align(audio, "\n".join(align_text), language=lang, original_split=True)
 wsegs = [[(x.start, x.end) for x in s.words if x.word.strip()] for s in res.segments if s.words]
 del model; gc.collect(); torch.cuda.empty_cache()
 # Where does the video's singing sit relative to LRCLIB's (album) timing? Candidates:
@@ -206,10 +261,11 @@ for i, (t, text) in enumerate(synced):
         if len(loud):
             end = words[-1][0] + (loud[-1] + 1) * fr / SR
             words[-1][1] = max(words[-1][1], min(end, words[-1][1] + 5.0))
-    out_lines.append([[round(x, 3), round(y, 3), z] for x, y, z in words])
+    out_lines.append({"words": [[round(x, 3), round(y, 3), z] for x, y, z in words], "orig": origs[i]})
 del fa_model; gc.collect(); torch.cuda.empty_cache()
-json.dump(out_lines, open(f"{job_dir}/words.json", "w"))
-open(f"{job_dir}/lyrics.ass", "w").write(make_ass(out_lines))
+save_lines(f"{job_dir}/words.json", out_lines)
+vw, vh = (int(x) for x in vinfo.split(",")[1:3])
+open(f"{job_dir}/lyrics.ass", "w").write(make_ass(out_lines, video_size=(vw, vh)))
 say("info", f"{len(out_lines)} lines aligned" + (f", {len(skipped)} not sung in this video" if skipped else ""))
 
 # 5. render: video copied + instrumental; vocals separately for the preview toggle
@@ -219,6 +275,7 @@ run("ffmpeg", "-v", "error", "-y", "-i", f"{w}.mp4", "-i", inst, "-map", "0:v:0"
 os.replace(f"{job_dir}/out.tmp.mp4", f"{job_dir}/out.mp4")
 run("ffmpeg", "-v", "error", "-y", "-i", vocals, "-c:a", "aac", "-b:a", "128k", f"{job_dir}/vocals.tmp.m4a")
 os.replace(f"{job_dir}/vocals.tmp.m4a", f"{job_dir}/vocals.m4a")
-json.dump({"offset": round(off, 2), "lines": len(out_lines), "skipped": skipped, "video": vinfo,
+json.dump({"offset": round(off, 2), "lines": len(out_lines), "skipped": skipped, "video": vinfo, "width": vw, "height": vh,
+           "lang": lang, "romaji": "automatic" if any(origs) else ("kara.moe" if source == "karamoe" else None),
            "duration": round(duration, 1), "seconds": round(time.time() - t0)}, open(f"{job_dir}/result.json", "w"))
 say("step", "done")

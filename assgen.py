@@ -72,10 +72,28 @@ def clean(text):
     return text.replace("{", "(").replace("}", ")").replace("\\", "/")
 
 
-def make_ass(lines, offset=0.0, show_orig=True):
-    """lines: words.json content (v1 or v2). offset shifts everything (+ = later)."""
+def scaled(styles, k):
+    """Shrink font sizes, outlines and vertical margins by k (for videos narrower than 16:9)."""
+    if k >= 0.999:
+        return styles
+    out = []
+    for line in styles.splitlines():
+        f = line.split(",")
+        f[2] = str(round(int(f[2]) * k))                                   # Fontsize
+        f[16], f[17] = (str(round(float(x) * k, 1)) for x in (f[16], f[17]))  # Outline, Shadow
+        f[21] = str(round(int(f[21]) * k))                                 # MarginV
+        out.append(",".join(f))
+    return "\n".join(out)
+
+
+def make_ass(lines, offset=0.0, show_orig=True, video_size=None):
+    """lines: words.json content (v1 or v2). offset shifts everything (+ = later).
+    video_size (w, h): on videos narrower than 16:9 the text is scaled down so lines don't wrap as much."""
     lines = normalize(lines)
     dual = show_orig and any(l["orig"] for l in lines)
+    k = 1.0
+    if video_size and video_size[0] and video_size[1]:
+        k = max(0.7, min(1.0, (video_size[0] / video_size[1]) / (16 / 9)) ** 0.5)
     segs = [[(a + offset, b + offset, w) for a, b, w in l["words"]] for l in lines]
     events, hide = [], []
     for i, words in enumerate(segs):
@@ -96,4 +114,4 @@ def make_ass(lines, offset=0.0, show_orig=True):
         events.append(f"Dialogue: 0,{ts(show)},{ts(h)},Row{row},,0,0,0,,{''.join(parts)}")
         if dual and lines[i]["orig"]:
             events.append(f"Dialogue: 0,{ts(show)},{ts(h)},Orig{row},,0,0,0,,{clean(lines[i]['orig'])}")
-    return header(DUAL_STYLES if dual else LATIN_STYLES) + "\n".join(events) + "\n"
+    return header(scaled(DUAL_STYLES if dual else LATIN_STYLES, k)) + "\n".join(events) + "\n"
