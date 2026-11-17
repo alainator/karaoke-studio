@@ -269,7 +269,7 @@ function stepBar(j) {
   return `<div class="steps">${order.map((s, i) => `<i class="${i < k ? "d" : i === k && j.status === "running" ? "a" : ""}"></i>`).join("")}</div>`;
 }
 function jobLine(j) {
-  const st = j.status === "running" ? STEP_NAMES[j.step] || j.step : j.status === "queued" ? (j.waiting || "Waiting") : j.status === "failed" ? "Failed" : j.published ? "Published" : "Ready to preview";
+  const st = j.status === "running" ? (STEP_NAMES[j.step] || j.step) + (j.gpu ? ` · ${j.gpu}` : "") : j.status === "queued" ? (j.waiting || "Waiting") : j.status === "failed" ? "Failed" : j.published ? "Published" : "Ready to preview";
   return `<div class="card" data-j="${esc(j.id)}">
     <img src="https://i.ytimg.com/vi/${esc(j.yt)}/mqdefault.jpg" alt="">
     <div style="flex:1"><div class="t">${esc(j.artist)} – ${esc(j.title)}</div>
@@ -319,7 +319,7 @@ async function openJob(id) {
       <div class="ctl"><label><span>Lyrics timing</span><span id="offv">${j.offset >= 0 ? "+" : ""}${(j.offset || 0).toFixed(2)} s</span></label>
         <input type="range" id="offr" min="-2" max="2" step="0.05" value="${j.offset || 0}">
         <div class="hint">Drag right if the words light up too early.</div></div>
-      <div class="ctl"><div class="hint">${r.romaji === "automatic" ? '<span class="tag warn">automatic romaji</span> check readings in the editor below<br>' : r.romaji === "kara.moe" ? '<span class="tag good">hand-timed romaji (kara.moe)</span><br>' : ""}${r.lines ?? "?"} lines · video ${esc(r.video || "")} · made in ${r.seconds ?? "?"} s${r.skipped && r.skipped.length ? `<br>Not sung in this video: ${r.skipped.map(s => "“" + esc(s) + "”").join(", ")}` : ""}</div></div>
+      <div class="ctl"><div class="hint">${r.romaji === "automatic" ? '<span class="tag warn">automatic romaji</span> check readings in the editor below<br>' : r.romaji === "kara.moe" ? '<span class="tag good">hand-timed romaji (kara.moe)</span><br>' : ""}${r.lines ?? "?"} lines · video ${esc(r.video || "")} · made in ${r.seconds ?? "?"} s${r.gpu ? " on " + esc(r.gpu) : ""}${r.skipped && r.skipped.length ? `<br>Not sung in this video: ${r.skipped.map(s => "“" + esc(s) + "”").join(", ")}` : ""}</div></div>
     </div>
     <div class="ctl editor" id="editor"><span class="spinner"></span></div>
     <div class="ctl pub" id="pub"><span class="spinner"></span></div>`;

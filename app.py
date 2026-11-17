@@ -256,7 +256,7 @@ async def create_job(req: Request):
 
 def summary(job):
     keys = ("id", "artist", "title", "yt", "status", "step", "created", "finished", "error", "offset",
-            "published", "published_as", "video_title", "result", "waiting", "edited", "unpublished_changes", "lang")
+            "published", "published_as", "video_title", "result", "waiting", "edited", "unpublished_changes", "lang", "gpu")
     return {k: job.get(k) for k in keys}
 
 
@@ -530,52 +530,121 @@ def delete_job(jid: str, req: Request):
 
 
 # ---------------- worker ----------------
+# Two slots: this machine's GPU, and optionally a GPU helper on another PC (helper.py, GPU_HELPER_URL). The oldest
+# queued job goes to the local GPU if it has room, else to the helper if it's online with room, else it waits.
 wake = threading.Event()
+slots = {"local": None, "remote": None}
+helper_seen = {"at": 0.0, "health": None}
 
 
-current = {"jid": None}
+def local_gpu_name():
+    try:
+        r = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"], capture_output=True, text=True, timeout=10)
+        return r.stdout.strip().splitlines()[0].replace("NVIDIA GeForce ", "")
+    except Exception:
+        return "this server's GPU"
+
+
+LOCAL_GPU = local_gpu_name()
+
+
+def helper_call(path, method="GET", body=None, timeout=10, raw=False):
+    req = urllib.request.Request(C.GPU_HELPER_URL + path, method=method, headers={
+        "X-Helper-Token": C.HELPER_TOKEN, "Content-Type": "application/json"},
+        data=json.dumps(body).encode() if body is not None else None)
+    r = urllib.request.urlopen(req, timeout=timeout)
+    return r if raw else json.load(r)
+
+
+def helper_health():
+    if not C.GPU_HELPER_URL:
+        return None
+    try:
+        h = helper_call("/health", timeout=3)
+    except Exception:
+        h = None
+    helper_seen.update(at=time.time(), health=h)
+    return h
+
+
+def set_job(jid, **kw):
+    with lock:
+        job = load(jid)
+        job.update(kw)
+        save(jid, job)
+        return job
+
+
+def claim(jid, where, gpu_name):
+    with lock:
+        job = load(jid)
+        if job["status"] != "queued":
+            return False
+        job.update(status="running", step="lyrics", waiting=None, started=time.time(), gpu=gpu_name, log=[])
+        save(jid, job)
+    slots[where] = jid
+    return True
 
 
 def worker():
     while True:
         try:
-            work_once()
-        except Exception as e:  # keep the queue alive and mark the job that broke as failed
-            print(f"worker error: {e!r}", flush=True)
-            jid = current.get("jid")
-            try:
-                if jid:
-                    with lock:
-                        job = load(jid)
-                        if job.get("status") in ("running", "queued"):
-                            job.update(status="failed", error=f"studio error: {str(e)[:150]}"); save(jid, job)
-            except Exception:
-                pass  # e.g. the job was deleted meanwhile
-            time.sleep(5)
-        finally:
-            current["jid"] = None
+            schedule_once()
+        except Exception as e:
+            print(f"scheduler error: {e!r}", flush=True)
+        wake.wait(10); wake.clear()
 
 
-def work_once():
-    if True:
-        queued = sorted((j for j in list_jobs() if j["status"] == "queued"), key=lambda j: j["created"])
-        if not queued:
-            wake.wait(30); wake.clear(); return
-        jid = queued[0]["id"]
-        current["jid"] = jid
+def schedule_once():
+    queued = sorted((j for j in list_jobs() if j["status"] == "queued"), key=lambda j: j["created"])
+    for j in queued:
+        jid = j["id"]
         free = gpu_free_mib()
-        if free < NEED_GPU_MIB:
-            with lock:
-                job = load(jid); job["waiting"] = f"waiting for the graphics card ({free // 1024} GB free, needs {NEED_GPU_MIB // 1024})"; save(jid, job)
-            wake.wait(30); wake.clear(); return
-        with lock:
-            job = load(jid); job.update(status="running", step="lyrics", waiting=None, started=time.time()); save(jid, job)
-        env = dict(C.tool_env(), PYTHONUNBUFFERED="1")
-        p = subprocess.Popen([sys.executable, "-I", f"{HERE}/pipeline.py", f"{JOBS}/{jid}"],
-                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
-        err = None
+        if C.USE_LOCAL_GPU and slots["local"] is None and free >= NEED_GPU_MIB:
+            if claim(jid, "local", LOCAL_GPU):
+                threading.Thread(target=run_local, args=(jid,), daemon=True).start()
+            continue
+        if slots["remote"] is None:
+            h = helper_health()
+            if h and not h.get("busy") and h.get("free_mib", 0) >= NEED_GPU_MIB:
+                if claim(jid, "remote", h.get("gpu", "helper").replace("NVIDIA GeForce ", "") + " (" + C.GPU_HELPER_NAME + ")"):
+                    threading.Thread(target=run_remote, args=(jid,), daemon=True).start()
+                continue
+        why = (f"waiting for the graphics card ({free // 1024} GB free, needs {NEED_GPU_MIB // 1024})"
+               if slots["local"] is None else "waiting: the graphics card is making another song")
+        if C.GPU_HELPER_URL and slots["remote"] is None:
+            why += f"; {C.GPU_HELPER_NAME} is " + ("busy" if helper_seen["health"] else "off or unreachable")
+        if j.get("waiting") != why:
+            set_job(jid, waiting=why)
+        break  # first come, first served
+
+
+def finish(jid, rc, err, oom, where):
+    with lock:
+        job = load(jid)
+        job["finished"] = time.time()
+        if rc == 0 and os.path.exists(job_path(jid, "out.mp4")) and os.path.exists(job_path(jid, "result.json")):
+            job.update(status="done", step="done")
+            job["result"] = json.load(open(job_path(jid, "result.json")))
+            job["result"]["gpu"] = job.get("gpu")
+        elif oom and job.get("oom_retries", 0) < 2:
+            # something else grabbed the GPU mid-job (an LLM loading, another tool): wait and try again
+            job.update(status="queued", step="queued", oom_retries=job.get("oom_retries", 0) + 1,
+                       waiting="the graphics card ran out of memory; trying again when one is free")
+            job.setdefault("log", []).append(f"ran out of GPU memory on {job.get('gpu')}; will retry")
+        else:
+            job.update(status="failed", error=err or ("the graphics card ran out of memory" if oom else f"pipeline exited with code {rc}"))
+        save(jid, job)
+
+
+def run_local(jid):
+    rc, err, oom = 1, None, False
+    try:
+        p = subprocess.Popen([sys.executable, "-I", f"{HERE}/pipeline.py", f"{JOBS}/{jid}"], stdout=subprocess.PIPE,
+                             stderr=subprocess.STDOUT, text=True, env=dict(C.tool_env(), PYTHONUNBUFFERED="1"))
         for line in p.stdout:
             line = line.rstrip()
+            oom = oom or "out of memory" in line.lower()
             if not line.startswith("@"):
                 continue
             kind, _, text = line[1:].partition(" ")
@@ -589,15 +658,63 @@ def work_once():
                     err = text
                 save(jid, job)
         rc = p.wait()
-        with lock:
-            job = load(jid)
-            job["finished"] = time.time()
-            if rc == 0 and os.path.exists(job_path(jid, "out.mp4")) and os.path.exists(job_path(jid, "result.json")):
-                job.update(status="done", step="done")
-                job["result"] = json.load(open(job_path(jid, "result.json")))
+        if oom:
+            time.sleep(20)
+        finish(jid, rc, err, oom, "local")
+    except Exception as e:
+        try:
+            set_job(jid, status="failed", error=f"studio error: {str(e)[:150]}")
+        except Exception:
+            pass
+    finally:
+        slots["local"] = None
+        wake.set()
+
+
+def run_remote(jid):
+    """Run the job on the GPU helper, mirror its progress, then copy the finished files here."""
+    try:
+        job = load(jid)
+        helper_call("/jobs", "POST", {"id": jid, **{k: job.get(k) for k in ("yt", "lrc_id", "lyrics_source", "artist", "title", "lang")}})
+        misses = 0
+        while True:
+            time.sleep(2)
+            try:
+                st = helper_call(f"/jobs/{jid}")
+                misses = 0
+            except Exception:
+                misses += 1
+                if misses >= 15:  # ~30 s without an answer: the PC was shut down or went to sleep
+                    set_job(jid, status="queued", step="queued", waiting="the helper PC went away; waiting for a graphics card")
+                    return
+                continue
+            if not os.path.isdir(job_path(jid)):
+                return  # deleted meanwhile
+            set_job(jid, step=st.get("step") or "lyrics", log=st.get("log", []))
+            if st["status"] == "running":
+                continue
+            if st["status"] == "done":
+                for name in ("out.mp4", "vocals.m4a", "words.json", "lyrics.ass", "result.json"):
+                    dst = job_path(jid, name)
+                    with helper_call(f"/jobs/{jid}/files/{name}", timeout=120, raw=True) as r, open(dst + ".part", "wb") as f:
+                        shutil.copyfileobj(r, f, 1 << 20)
+                    os.replace(dst + ".part", dst)
+                finish(jid, 0, None, False, "remote")
             else:
-                job.update(status="failed", error=err or f"pipeline exited with code {rc}")
-            save(jid, job)
+                finish(jid, 1, st.get("error"), bool(st.get("oom")), "remote")
+            try:
+                helper_call(f"/jobs/{jid}", "DELETE")
+            except Exception:
+                pass
+            return
+    except Exception as e:
+        try:
+            set_job(jid, status="queued", step="queued", waiting=f"the helper PC had a problem ({str(e)[:60]}); waiting for a graphics card")
+        except Exception:
+            pass
+    finally:
+        slots["remote"] = None
+        wake.set()
 
 
 # ---------------- PiKaraoke ----------------
@@ -739,6 +856,10 @@ def library():
 def status():
     return {"gpu_free_gb": round(gpu_free_mib() / 1024, 1), "need_gb": NEED_GPU_MIB // 1024,
             "pikaraoke_password": bool(C.PIKARAOKE_PASSWORD), "romaji_ai": bool(C.OLLAMA_URL),
+            "gpus": {"local": LOCAL_GPU, "local_busy": slots["local"] is not None,
+                     "helper": C.GPU_HELPER_NAME if C.GPU_HELPER_URL else None,
+                     "helper_online": bool(helper_seen["health"]) if C.GPU_HELPER_URL else None,
+                     "helper_busy": slots["remote"] is not None},
             "renderer": os.path.exists(f"{HERE}/static/octopus/subtitles-octopus.js"),
             "fonts": sorted(f"/static/octopus/{f}" for f in os.listdir(f"{HERE}/static/octopus")
                             if f.lower().endswith((".ttf", ".otf")))

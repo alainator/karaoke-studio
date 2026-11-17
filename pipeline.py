@@ -100,6 +100,49 @@ else:
             synced.append((int(m.group(1)) * 60 + float(m.group(2)), m.group(3).strip()))
 if len(synced) < 4:
     fail("these lyrics have no line timings; pick a lyrics entry marked 'timed'")
+# Some uploads give every line two or three times at (almost) the same moment: Japanese, romaji, and/or an English
+# translation, often marked with arrows (↓ original, → romaji, ↑ translation). Group lines that start within
+# 0.15 s, keep the Japanese, use a human romaji if there is one, drop translations.
+DECOR = re.compile(r"[\u2190-\u21ff\u2669-\u266f\u2605\u2606]")
+CJK = re.compile(r"[\u3040-\u30ff\u4e00-\u9fff]")
+EN_HINT = set("the you i and my me is your it's i'm don't can't of in it love all that this what with be are we they "
+              "was for on so just know never can will if as at to".split())
+_english = lambda x: (lambda t: bool(t) and sum(w in EN_HINT for w in t) / len(t) > 0.12)(re.findall(r"[a-z']+", x.lower()))
+_clean = lambda x: re.sub(r"\s+", " ", DECOR.sub(" ", x)).strip()
+hand_romaji = {}
+if any(CJK.search(x) for _, x in synced):
+    groups, cur = [], []
+    for t, x in synced:
+        if cur and t - cur[0][0] >= 0.15:
+            groups.append(cur); cur = []
+        cur.append((t, x))
+    if cur:
+        groups.append(cur)
+    merged = []
+    for g in groups:
+        kinds = []
+        for t, x in g:
+            mark = "jp" if "\u2193" in x else "ro" if "\u2192" in x else "tr" if "\u2191" in x else None
+            if mark is None:
+                mark = "jp" if CJK.search(x) else "tr" if _english(x) else "ro"
+            kinds.append((mark, t, _clean(x)))
+        jp = next(((t, x) for m, t, x in kinds if m == "jp" and x), None)
+        if jp is None:  # no Japanese in this group: keep its lines as they are (minus translations)
+            merged += [(t, x) for m, t, x in kinds if m != "tr" and x]
+            continue
+        jpos = next(k for k, (m, t, x) in enumerate(kinds) if m == "jp")
+        ro = [x for k, (m, t, x) in enumerate(kinds) if m == "ro" and x and not CJK.search(x)]
+        after = [x for k, (m, t, x) in enumerate(kinds) if k > jpos and m == "ro" and x and not CJK.search(x)]
+        merged.append(jp)
+        if after or ro:
+            hand_romaji[len(merged) - 1] = (after or ro)[0]
+    if len(merged) < len(synced):
+        say("info", f"lyrics came with extra copies of each line: merged {len(synced)} into {len(merged)} lines"
+                    + (f", using {len(hand_romaji)} hand-made romaji lines" if hand_romaji else ""))
+    synced = merged
+else:
+    synced = [(t, _clean(x)) for t, x in synced]
+synced = [(t, x) for t, x in synced if x]
 align_text = [t for _, t in synced]   # what Whisper reads (original script)
 origs = [None] * len(synced)          # original line shown above the romaji
 if any(KANA.search(t) for _, t in synced):
@@ -107,10 +150,15 @@ if any(KANA.search(t) for _, t in synced):
     import cutlet  # noqa: E402
     kat = cutlet.Cutlet()
     kat.use_foreign_spelling = False  # the sung reading ("aidoru"), which is also what the aligner hears
-    origs = [t for _, t in synced]
-    synced = [(t, re.sub(r"\s+", " ", kat.romaji(x)).strip() or x) for t, x in synced]
+    # lines without Japanese (English parts, already-romaji lines) stay as they are and get no line above
+    origs = [t if CJK.search(t) else None for _, t in synced]
+    synced = [(t, hand_romaji[k] if k in hand_romaji else
+               (re.sub(r"\s+", " ", kat.romaji(x)).strip() or x) if CJK.search(x) else x)
+              for k, (t, x) in enumerate(synced)]
     lang = "ja"
-    say("info", "Japanese lyrics: automatic romaji, Japanese shown above")
+    auto_n = sum(1 for k in range(len(synced)) if k not in hand_romaji and CJK.search(origs[k] or ""))
+    say("info", "Japanese lyrics: " + ("hand-made romaji from the lyrics" if not auto_n else
+             f"automatic romaji for {auto_n} lines" + (f", hand-made for {len(hand_romaji)}" if hand_romaji else "")) + ", Japanese shown above")
 elif source == "karamoe":
     lang = "ja"
     align_text = [t for _, t in synced]
@@ -241,6 +289,7 @@ def align_at(off):
             skipped.append(text); continue
         orig = text.split()
         b_al = min(b, a + 0.3 + max(3.0, 0.9 * len(orig) + 2.5))
+        b_al = max(b_al, a + 0.3 + len(re.sub(r"[^a-z]", "", text.lower())) / 22)  # fast rap: ~22 letters a second max
         clip = audio[int(a * SR):int(b_al * SR)]
         if len(clip) == 0 or float(np.sqrt(np.mean(clip ** 2))) < 0.08 * VOCAL_RMS:
             skipped.append(text); continue
@@ -310,6 +359,7 @@ os.replace(f"{job_dir}/out.tmp.mp4", f"{job_dir}/out.mp4")
 run("ffmpeg", "-v", "error", "-y", "-i", vocals, "-c:a", "aac", "-b:a", "128k", f"{job_dir}/vocals.tmp.m4a")
 os.replace(f"{job_dir}/vocals.tmp.m4a", f"{job_dir}/vocals.m4a")
 json.dump({"offset": round(off, 2), "lines": len(out_lines), "skipped": skipped, "video": vinfo, "width": vw, "height": vh,
-           "lang": lang, "romaji": "automatic" if any(origs) else ("kara.moe" if source == "karamoe" else None),
+           "lang": lang, "romaji": ("hand" if len(hand_romaji) >= 0.8 * sum(1 for o in origs if o) else "automatic") if any(origs)
+           else ("kara.moe" if source == "karamoe" else None),
            "duration": round(duration, 1), "seconds": round(time.time() - t0)}, open(f"{job_dir}/result.json", "w"))
 say("step", "done")

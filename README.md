@@ -46,6 +46,21 @@ The first job downloads the separation model (about 610 MB) into `KARAOKE_MODELS
 
 `deploy/karaoke-studio.service.example` is a systemd unit.
 
+## GPU helper (a second PC)
+
+If another Linux PC on your network has an NVIDIA card, it can make songs while the main GPU is busy, for example with a big LLM loaded. The studio sends a queued job to the helper only when its own GPU lacks room and the helper is online with room. Both can run at once. If the PC shuts down or sleeps mid-song, the job goes back in the queue. Each song page shows which GPU made it.
+
+On the PC (Arch/CachyOS; it asks for your password for pacman and the firewall):
+```sh
+curl -fsSLO https://raw.githubusercontent.com/alainator/karaoke-studio/main/deploy/install-helper.sh
+bash install-helper.sh <studio server IP>
+```
+This installs about 10 GB (PyTorch, models). It prints a shared secret once and runs the helper as a user service on port 5580, which only the studio server may reach, and only with the secret. Then, on the studio server:
+```sh
+venv/bin/python -I deploy/set-helper.py <PC IP> "gaming PC"   # hidden prompt for the secret, checks the connection
+sudo systemctl restart karaoke-studio
+```
+
 ## Security
 
 **The studio has no login of its own.** It can download, publish and delete files in your karaoke library. Keep it on `127.0.0.1`, or put it behind a reverse proxy that authenticates users (Authentik, Authelia, oauth2-proxy and the like), and set `STUDIO_ORIGINS` to the address you use. Requests that change something must come from those origins.

@@ -39,6 +39,11 @@ MIN_GPU_FREE_MIB = int(env("MIN_GPU_FREE_MIB", "9000"))
 # optional: a local Ollama server to proofread automatic romaji ("Check romaji with AI"); leave empty to hide it
 OLLAMA_URL = env("OLLAMA_URL", "").rstrip("/")
 OLLAMA_MODEL = env("OLLAMA_MODEL", "gemma4:26b")
+# optional: a GPU helper on another PC (helper.py) that takes jobs when this GPU is busy
+GPU_HELPER_URL = env("GPU_HELPER_URL", "").rstrip("/")
+GPU_HELPER_NAME = env("GPU_HELPER_NAME", "helper PC")
+HELPER_TOKEN = env("HELPER_TOKEN", "")      # shared secret, the same value on both machines
+USE_LOCAL_GPU = env("USE_LOCAL_GPU", "1") != "0"   # 0 = send every job to the helper (testing)
 USER_AGENT = env("STUDIO_USER_AGENT", "karaoke-studio/0.1 (+https://github.com/alainator/karaoke-studio)")
 
 
