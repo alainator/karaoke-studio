@@ -91,6 +91,13 @@ td.n { text-align: right; font-variant-numeric: tabular-nums; }
 .edbar input { flex: 1 1 220px; background: var(--bg); border: 1px solid var(--line); color: var(--text); border-radius: 8px; padding: 8px 10px; font: inherit; }
 .chip { background: var(--panel2); border: 1px dashed var(--line); color: var(--dim); border-radius: 99px; padding: 3px 10px; font-size: 13px; cursor: pointer; }
 .dirty { color: var(--gold); font-weight: 600; font-size: 13px; }
+.wavebox { margin-top: 10px; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 8px; }
+.wavebox canvas { width: 100%; height: 150px; display: block; touch-action: none; cursor: crosshair; }
+.wavebar { display: flex; gap: 6px; align-items: center; justify-content: space-between; margin-bottom: 6px; flex-wrap: wrap; }
+.legend span { display: inline-flex; align-items: center; gap: 4px; margin-right: 10px; font-size: 12px; color: var(--dim); }
+.legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+select.sg { background: var(--bg); border: 1px solid var(--line); color: var(--text); border-radius: 6px; padding: 5px 4px; font: inherit; font-size: 13px; }
+
 
 </style>
 </head>
@@ -349,11 +356,98 @@ function shiftLine(l, delta) { l.words = l.words.map(([a, b, w]) => [+Math.max(0
 async function initEditor(id, j) {
   let d; try { d = await api(`/api/jobs/${id}/lines`); } catch (e) { $("#editor").textContent = e.message; return; }
   if (currentJob !== id) return;
-  ed = {id, j, lines: d.lines, dirty: false, canReset: d.can_reset, skipped: d.skipped || []};
+  ed = {id, j, lines: d.lines, dirty: false, canReset: d.can_reset, skipped: d.skipped || [], view: {span: 12, start: 0}, peaks: null};
+  api(`/api/jobs/${id}/peaks`).then(p => { if (ed && ed.id === id) { ed.peaks = p; drawWave(); } }).catch(() => {});
   renderEditor();
   const v = $("#pv");
   v.addEventListener("timeupdate", markCurrent);
 }
+// ---------- waveform ----------
+const SING = {1: "#ffc94d", 2: "#3cb4ff", 3: "#78e678"};
+let waveDrag = null, waveRaf = null;
+function waveTime(x, c) { return ed.view.start + x / c.clientWidth * ed.view.span; }
+function lineSpan(l) { return [l.words[0][0] + curOff(), l.words[l.words.length - 1][1] + curOff()]; }
+function scaleLine(l, a1, b1) {
+  const [a0, b0] = [l.words[0][0], l.words[l.words.length - 1][1]], k = (b1 - a1) / Math.max(0.05, b0 - a0);
+  l.words = l.words.map(([a, b, w]) => [+(a1 + (a - a0) * k).toFixed(3), +(a1 + (b - a0) * k).toFixed(3), w]);
+}
+function initWave() {
+  const c = $("#wave"); if (!c) return;
+  const v = $("#pv");
+  $("#zin").onclick = () => { ed.view.span = Math.max(3, ed.view.span / 1.6); drawWave(); };
+  $("#zout").onclick = () => { ed.view.span = Math.min(120, ed.view.span * 1.6); drawWave(); };
+  c.onpointerdown = e => {
+    const r = c.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top, t = waveTime(x, c);
+    const hit = (ed._blocks || []).find(b => x >= b.x0 - 6 && x <= b.x1 + 6 && y >= b.y0 && y <= b.y1);
+    if (hit) {
+      const mode = x <= hit.x0 + 6 ? "left" : x >= hit.x1 - 6 ? "right" : "move";
+      waveDrag = {i: hit.i, mode, x0: x, orig: JSON.parse(JSON.stringify(ed.lines[hit.i].words))};
+      c.setPointerCapture(e.pointerId);
+    } else { v.currentTime = Math.max(0, t); drawWave(); }
+  };
+  c.onpointermove = e => {
+    const r = c.getBoundingClientRect(), x = e.clientX - r.left;
+    if (!waveDrag) {
+      const b = (ed._blocks || []).find(b => x >= b.x0 - 6 && x <= b.x1 + 6 && e.clientY - r.top >= b.y0 && e.clientY - r.top <= b.y1);
+      c.style.cursor = !b ? "crosshair" : (x <= b.x0 + 6 || x >= b.x1 - 6) ? "ew-resize" : "grab"; return;
+    }
+    const l = ed.lines[waveDrag.i], dt = (x - waveDrag.x0) / c.clientWidth * ed.view.span;
+    l.words = JSON.parse(JSON.stringify(waveDrag.orig));
+    const [a, b] = [l.words[0][0], l.words[l.words.length - 1][1]];
+    if (waveDrag.mode === "move") shiftLine(l, dt);
+    else if (waveDrag.mode === "left") scaleLine(l, Math.min(a + dt, b - 0.2), b);
+    else scaleLine(l, a, Math.max(b + dt, a + 0.2));
+    drawWave();
+  };
+  c.onpointerup = () => { if (waveDrag) { waveDrag = null; ed.dirty = true; renderEditor(); markCurrent(); } };
+  c.onwheel = e => { e.preventDefault(); if (e.ctrlKey || e.metaKey) ed.view.span = Math.min(120, Math.max(3, ed.view.span * (e.deltaY > 0 ? 1.2 : 0.83))); else ed.view.start = Math.max(0, ed.view.start + (e.deltaY + e.deltaX) / c.clientWidth * ed.view.span); ed.view.pinned = Date.now(); drawWave(); };
+  const loop = () => { if (!ed || !$("#wave")) { waveRaf = null; return; } if (!v.paused) drawWave(); waveRaf = requestAnimationFrame(loop); };
+  if (!waveRaf) waveRaf = requestAnimationFrame(loop);
+  drawWave();
+}
+function drawWave() {
+  const c = $("#wave"); if (!c || !ed) return;
+  const v = $("#pv"), dpr = window.devicePixelRatio || 1, W = c.clientWidth, H = c.clientHeight;
+  if (c.width !== W * dpr) { c.width = W * dpr; c.height = H * dpr; }
+  const g = c.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);
+  const now = v.currentTime, view = ed.view;
+  // follow the playhead unless the user scrolled in the last few seconds or is dragging
+  if (!waveDrag && !(view.pinned && Date.now() - view.pinned < 4000) && (now < view.start + view.span * 0.1 || now > view.start + view.span * 0.75)) view.start = Math.max(0, now - view.span * 0.25);
+  const X = t => (t - view.start) / view.span * W, WH = 78;
+  // waveform of the vocal stem
+  if (ed.peaks) {
+    const pk = ed.peaks.peaks, rate = ed.peaks.rate;
+    g.fillStyle = "rgba(163,157,175,.55)";
+    for (let x = 0; x < W; x++) {
+      const i0 = Math.floor((view.start + x / W * view.span) * rate), i1 = Math.max(i0 + 1, Math.floor((view.start + (x + 1) / W * view.span) * rate));
+      let m = 0; for (let i = i0; i < i1 && i < pk.length; i++) if (pk[i] > m) m = pk[i];
+      const h = m / 255 * (WH - 6); g.fillRect(x, WH / 2 - h / 2, 1, Math.max(1, h));
+    }
+  } else { g.fillStyle = "#a39daf"; g.font = "12px system-ui"; g.fillText("loading vocals…", 8, 20); }
+  // second ticks
+  g.fillStyle = "rgba(255,255,255,.35)"; g.font = "10px system-ui";
+  const step = view.span > 40 ? 10 : view.span > 15 ? 5 : 1;
+  for (let s = Math.ceil(view.start / step) * step; s < view.start + view.span; s += step) { g.fillRect(X(s), WH, 1, 4); g.fillText(fmtT(s).replace(/\.\d+$/, ""), X(s) + 2, WH + 12); }
+  // one block per lyric line, on two lanes so neighbours never hide each other
+  ed._blocks = [];
+  const t0 = now - curOff();
+  ed.lines.forEach((l, i) => {
+    const [a, b] = lineSpan(l); if (b < view.start || a > view.start + view.span) return;
+    const x0 = X(a), x1 = Math.max(X(b), x0 + 4), y0 = WH + 18 + (i % 2) * 26, y1 = y0 + 22;
+    const cur = l.words[0][0] <= t0 && t0 <= l.words[l.words.length - 1][1];
+    g.fillStyle = (SING[l.singer] || "#ffc94d") + (cur ? "" : "88"); g.fillRect(x0, y0, x1 - x0, y1 - y0);
+    g.fillStyle = "rgba(0,0,0,.45)"; l.words.slice(1).forEach(w => g.fillRect(X(w[0] + curOff()), y0 + 3, 1, y1 - y0 - 6));
+    g.save(); g.beginPath(); g.rect(x0 + 3, y0, x1 - x0 - 6, y1 - y0); g.clip();
+    g.fillStyle = "#17121c"; g.font = "600 12px system-ui"; g.fillText(lineText(l), x0 + 5, y0 + 15); g.restore();
+    ed._blocks.push({i, x0, x1, y0, y1});
+  });
+  g.fillStyle = "#ff7a85"; g.fillRect(X(now), 0, 2, H);
+}
+document.addEventListener("keydown", e => {
+  if (e.code !== "Space" || !$("#wave") || /INPUT|SELECT|TEXTAREA|BUTTON/.test(document.activeElement.tagName)) return;
+  e.preventDefault(); const v = $("#pv"); v.paused ? v.play() : v.pause();
+});
+
 function markCurrent() {
   if (!ed || !$("#pv")) return;
   const t = $("#pv").currentTime - curOff();
@@ -369,6 +463,7 @@ function renderEditor() {
   if (!ed) return;
   const off = curOff();
   ed.lines.sort((a, b) => a.words[0][0] - b.words[0][0]);
+  if (!ed.view.start && $("#pv")) ed.view.start = Math.max(0, $("#pv").currentTime - 3);
   $("#editor").innerHTML = `
     <div class="row" style="justify-content:space-between">
       <div><h3>Lyrics editor</h3><div class="hint">Fix a word, or move a line: ⏱ starts it at the current playback time, −/+ nudge it 0.1 s. Save to update the preview.</div></div>
@@ -376,6 +471,10 @@ function renderEditor() {
         ${ed.canReset ? '<button class="ghost" id="edreset">Undo all edits</button>' : ""}
         <button class="primary" id="edsave" ${ed.dirty ? "" : "disabled"}>Save</button></div>
     </div>
+    <div class="wavebox"><div class="wavebar"><span class="hint">Vocals: drag a line's block to move it, drag its edge to stretch it, click to jump · Space plays/pauses</span>
+      <span class="row"><span class="legend"><span><i style="background:var(--gold)"></i>Singer 1</span><span><i style="background:#3cb4ff"></i>Singer 2</span><span><i style="background:#78e678"></i>Both</span></span>
+      <button class="ib" id="zout" title="Zoom out">−</button><button class="ib" id="zin" title="Zoom in">+</button></span></div>
+      <canvas id="wave"></canvas></div>
     <div class="edbar"><input id="newline" placeholder="Missing line? Type it, play to where it's sung, then Add"><button class="ghost" id="addline">Add at playback time</button>
       ${ed.skipped.map((s, i) => `<button class="chip" data-sk="${i}" title="Not sung in this video according to the aligner">+ ${esc(s)}</button>`).join("")}</div>
     <div class="edwrap"><table class="edtab"><tbody>${ed.lines.map((l, i) => `
@@ -383,10 +482,12 @@ function renderEditor() {
         <td><button class="ib" data-act="play" title="Play from just before this line">▶</button></td>
         <td><input class="tm" data-act="time" value="${fmtT(l.words[0][0] + off)}" title="Line start (m:ss.cc)"></td>
         <td class="nowrap"><button class="ib" data-act="m" title="0.1 s earlier">−</button><button class="ib" data-act="p" title="0.1 s later">+</button><button class="ib" data-act="now" title="Start this line at the current playback time">⏱</button></td>
+        <td><select class="sg" data-act="singer" title="Who sings this line">${[["", "–"], [1, "1"], [2, "2"], [3, "Both"]].map(([v, t]) => `<option value="${v}" ${(l.singer || "") == v ? "selected" : ""}>${t}</option>`).join("")}</select></td>
         <td class="txc"><input class="tx" data-act="text" value="${esc(lineText(l))}">${l.orig ? `<div class="hint">${esc(l.orig)}</div>` : ""}</td>
         <td><button class="ib danger" data-act="del" title="Delete this line">✕</button></td>
       </tr>`).join("")}</tbody></table></div>`;
   const changed = () => { ed.dirty = true; renderEditor(); markCurrent(); };
+  initWave();
   $(".edtab").onclick = e => {
     const b = e.target.closest("button"); if (!b) return;
     const i = +b.closest("tr").dataset.i, l = ed.lines[i], v = $("#pv");
@@ -399,6 +500,7 @@ function renderEditor() {
   };
   $(".edtab").onchange = e => {
     const inp = e.target, i = +inp.closest("tr").dataset.i, l = ed.lines[i];
+    if (inp.dataset.act === "singer") { l.singer = inp.value ? +inp.value : null; return changed(); }
     if (inp.dataset.act === "time") {
       const t = parseT(inp.value); if (t == null) { toast("Use m:ss.cc, e.g. 1:23.40"); return renderEditor(); }
       shiftLine(l, (t - curOff()) - l.words[0][0]);

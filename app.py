@@ -348,7 +348,9 @@ def _valid_lines(raw, duration):
             continue
         clean.sort(key=lambda w: w[0])
         orig = l.get("orig")
-        out.append({"words": clean, "orig": orig.strip()[:300] if isinstance(orig, str) and orig.strip() else None})
+        sg = l.get("singer")
+        out.append({"words": clean, "orig": orig.strip()[:300] if isinstance(orig, str) and orig.strip() else None,
+                    "singer": sg if sg in (1, 2, 3) else None})
     if not out:
         raise HTTPException(400, "no lines left")
     out.sort(key=lambda l: l["words"][0][0])
@@ -373,6 +375,28 @@ async def put_lines(jid: str, req: Request):
             job["unpublished_changes"] = True
         save(jid, job)
     return {"lines": len(lines)}
+
+
+@app.get("/api/jobs/{jid}/peaks")
+def peaks(jid: str):
+    """Loudness of the vocal stem, 100 values per second (0-255), for the editor's waveform."""
+    cache = job_path(jid, "peaks.json")
+    if not os.path.exists(cache):
+        src = job_path(jid, "vocals.m4a")
+        if not os.path.exists(src):
+            raise HTTPException(404, "no vocals")
+        r = subprocess.run(["ffmpeg", "-v", "error", "-i", src, "-ac", "1", "-ar", "8000", "-f", "s16le", "-"],
+                           capture_output=True, timeout=120)
+        import numpy as np
+        a = np.abs(np.frombuffer(r.stdout, dtype=np.int16).astype(np.float32))
+        n = len(a) // 80
+        pk = a[: n * 80].reshape(n, 80).max(axis=1) if n else np.zeros(0)
+        top = float(np.percentile(pk, 99.5)) if n else 1.0
+        vals = np.clip(np.sqrt(pk / max(top, 1.0)) * 255, 0, 255).astype(int).tolist()
+        with open(cache + ".tmp", "w") as f:
+            json.dump({"rate": 100, "peaks": vals}, f, separators=(",", ":"))
+        os.replace(cache + ".tmp", cache)
+    return FileResponse(cache, media_type="application/json")
 
 
 @app.post("/api/jobs/{jid}/lines/reset")

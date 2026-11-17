@@ -1,9 +1,10 @@
 """Karaoke .ass from word timings, and the words.json format (shared by the pipeline, the timing slider and
 the lyric editor).
 
-words.json, version 2: {"version": 2, "lines": [{"words": [[start, end, "word"], ...], "orig": "原文"}, ...]}
+words.json, version 2: {"version": 2, "lines": [{"words": [[start, end, "word"], ...], "orig": "原文", "singer": 2}, ...]}
   times in seconds on the video's clock *before* the job's timing offset; "orig" is optional (the original
-  Japanese line shown above the romaji). Version 1 (older jobs) was just the list of word lists.
+  Japanese line shown above the romaji); "singer" is optional: 1, 2 or 3 (both), each sung in its own colour.
+  Version 1 (older jobs) was just the list of word lists.
 """
 import json, os
 
@@ -18,6 +19,10 @@ DUAL_STYLES = """Style: RowA,Arial,66,&H0000D7FF,&H00FFFFFF,&H00000000,&H8000000
 Style: RowB,Arial,66,&H0000D7FF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,2,2,60,60,58,1
 Style: OrigA,Droid Sans Fallback,52,&H00F0F0F0,&H00F0F0F0,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,2,2,60,60,312,1
 Style: OrigB,Droid Sans Fallback,52,&H00F0F0F0,&H00F0F0F0,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,2,2,60,60,138,1"""
+
+
+# fill colour per singer (ASS &HBBGGRR): 1 = gold (the default), 2 = sky blue, 3 = both = green
+SINGER_FILL = {1: "&H00D7FF&", 2: "&HFFB43C&", 3: "&H78E678&"}
 
 
 def header(styles):
@@ -43,9 +48,11 @@ def normalize(data):
     out = []
     for l in lines:
         if isinstance(l, dict):
-            out.append({"words": [list(w) for w in l.get("words", [])], "orig": l.get("orig") or None})
+            sg = l.get("singer")
+            out.append({"words": [list(w) for w in l.get("words", [])], "orig": l.get("orig") or None,
+                        "singer": sg if sg in (1, 2, 3) else None})
         else:
-            out.append({"words": [list(w) for w in l], "orig": None})
+            out.append({"words": [list(w) for w in l], "orig": None, "singer": None})
     return [l for l in out if l["words"]]
 
 
@@ -56,7 +63,8 @@ def load_lines(path):
 def save_lines(path, lines):
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
-        json.dump({"version": 2, "lines": [{"words": l["words"], **({"orig": l["orig"]} if l.get("orig") else {})}
+        json.dump({"version": 2, "lines": [{"words": l["words"], **({"orig": l["orig"]} if l.get("orig") else {}),
+                                            **({"singer": l["singer"]} if l.get("singer") in (1, 2, 3) else {})}
                                            for l in lines]}, f, ensure_ascii=False)
     os.replace(tmp, path)
 
@@ -106,7 +114,8 @@ def make_ass(lines, offset=0.0, show_orig=True, video_size=None):
         show = max(0.0, min(show, start))
         h = end + 0.4
         hide.append(h)
-        parts = [f"{{\\k{round((start - show) * 100)}}}"]
+        sung = SINGER_FILL.get(lines[i].get("singer"))
+        parts = [f"{{\\k{round((start - show) * 100)}{'' if sung is None else chr(92) + '1c' + sung}}}"]
         for j, (a, b, w) in enumerate(words):
             nxt = words[j + 1][0] if j + 1 < len(words) else b
             parts.append(f"{{\\kf{max(1, round((nxt - a) * 100))}}}{clean(w)}{' ' if j + 1 < len(words) else ''}")

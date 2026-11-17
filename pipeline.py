@@ -114,6 +114,22 @@ if any(KANA.search(t) for _, t in synced):
 elif source == "karamoe":
     lang = "ja"
     align_text = [t for _, t in synced]
+# romaji lyrics sometimes carry an English translation in brackets ("Yoru no nioi ni (I'll spend all thirty
+# nights)"): drop those, but only in songs whose own lyrics aren't English (in English songs, brackets are
+# usually backing vocals)
+EN = set("the you i and my me is your it's i'm don't can't of in it love all that this what with be are we they "
+         "was for on so just know never can will".split())
+_en = lambda x: (lambda t: sum(w in EN for w in t) / len(t) if t else 0.0)(re.findall(r"[a-z']+", x.lower()))
+if _en(" ".join(re.sub(r"\([^)]*\)", " ", t) for _, t in synced)) < 0.05:
+    def _strip(t):
+        out = re.sub(r"\s*\(([^)]*)\)", lambda m: "" if len(m.group(1).split()) >= 3 and _en(m.group(1)) >= 0.2 else m.group(0), t)
+        return out.strip() or t
+    stripped = [(x, _strip(t)) for x, t in synced]
+    if sum(a != b for (_, a), (_, b) in zip(synced, stripped)):
+        say("info", f"removed English translations in brackets from {sum(a != b for (_, a), (_, b) in zip(synced, stripped))} lines")
+        synced = stripped
+        if not any(origs):
+            align_text = [t for _, t in synced]
 letters = [c for _, t in synced for c in t if c.isalpha()]
 if letters and sum(c.isascii() for c in letters) / len(letters) < 0.85:
     fail("these lyrics are in a script the studio can't romanise yet (Japanese and Latin-alphabet songs work)")
