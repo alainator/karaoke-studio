@@ -9,7 +9,7 @@ library (optionally deleting the older YouTube lyric version) and ask PiKaraoke 
 There is no login of its own: put it behind an authenticating reverse proxy, or keep it on 127.0.0.1.
 """
 import argparse, http.cookiejar, json, math, os, re, shutil, sqlite3, subprocess, sys, threading, time
-import unicodedata, urllib.parse, urllib.request
+import unicodedata, urllib.error, urllib.parse, urllib.request
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -44,9 +44,15 @@ def safe_name(s):
     return re.sub(r"\s+", " ", s)[:100] or "untitled"
 
 
-def http_json(url, timeout=20):
-    with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=timeout) as r:
-        return json.load(r)
+def http_json(url, timeout=20, tries=3):
+    for i in range(tries):
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=timeout) as r:
+                return json.load(r)
+        except (urllib.error.URLError, ConnectionError, TimeoutError) as e:
+            if i == tries - 1 or (isinstance(e, urllib.error.HTTPError) and e.code < 500):
+                raise
+            time.sleep(1.0 + i)
 
 
 def job_path(jid, *parts):
@@ -135,13 +141,21 @@ def yt_search(artist, title):
     return out
 
 
-def lrc_search(artist, title):
+KANA = re.compile(r"[\u3040-\u30ff]")
+# common English words that romanised Japanese practically never contains (to tell English lyrics from romaji)
+ENGLISH_HINTS = set("the you i and my me is your it's i'm don't can't of in it love all that this what with be are "
+                    "we they was for on so just know never can will".split())
+
+
+def lrc_search(artist, title, extra_titles=()):
     q = urllib.parse.urlencode({"track_name": title, "artist_name": artist})
-    hits = http_json(f"https://lrclib.net/api/search?{q}")
+    hits = [(h, False) for h in http_json(f"https://lrclib.net/api/search?{q}")]
     if len(hits) < 3:  # loose search as a fallback
-        hits += http_json("https://lrclib.net/api/search?" + urllib.parse.urlencode({"q": f"{artist} {title}"}))
+        hits += [(h, False) for h in http_json("https://lrclib.net/api/search?" + urllib.parse.urlencode({"q": f"{artist} {title}"}))]
+    for t in extra_titles:  # e.g. the Japanese title kara.moe knows for a romaji search
+        hits += [(h, True) for h in http_json("https://lrclib.net/api/search?" + urllib.parse.urlencode({"q": t}))]
     seen, out = set(), []
-    for h in hits:
+    for h, by_title in hits:
         if h["id"] in seen or h.get("instrumental"):
             continue
         seen.add(h["id"])
@@ -149,12 +163,54 @@ def lrc_search(artist, title):
         first = next((re.sub(r"^\[[^\]]*\]\s*", "", l) for l in synced.splitlines() if re.sub(r"^\[[^\]]*\]\s*", "", l).strip()), "")
         text = re.sub(r"\[[^\]]*\]", "", synced) or (h.get("plainLyrics") or "")
         letters = [c for c in text if c.isalpha()]
-        latin = not letters or sum(c.isascii() for c in letters) / len(letters) >= 0.85
-        out.append({"id": h["id"], "artist": h.get("artistName"), "title": h.get("trackName"), "album": h.get("albumName"),
-                    "duration": h.get("duration"), "timed": bool(synced.strip()), "latin": latin,
+        japanese = bool(KANA.search(text))
+        toks = re.findall(r"[a-z']+", text.lower())
+        english = bool(toks) and sum(t in ENGLISH_HINTS for t in toks) / len(toks) > 0.12
+        latin = not japanese and (not letters or sum(c.isascii() for c in letters) / len(letters) >= 0.85)
+        out.append({"source": "lrclib", "id": h["id"], "artist": h.get("artistName"), "title": h.get("trackName"),
+                    "album": h.get("albumName"), "duration": h.get("duration"), "timed": bool(synced.strip()),
+                    "latin": latin, "japanese": japanese, "english": english, "romaji": "automatic" if japanese else None,
                     "lines": sum(1 for l in synced.splitlines() if l.strip()), "first": first[:80],
-                    "name_match": norm(title) in norm(h.get("trackName") or "")})
-    return out[:15]
+                    "name_match": by_title or (bool(norm(title)) and norm(title) in norm(h.get("trackName") or ""))})
+    return out[:20]
+
+
+def loose(x):
+    """Romaji compare that ignores long-vowel spelling (ô / ou / oo) and spaces."""
+    x = norm(x).replace(" ", "")
+    for a, b in (("ou", "o"), ("oo", "o"), ("uu", "u"), ("aa", "a"), ("ei", "e")):
+        x = x.replace(a, b)
+    return x
+
+
+def km_search(title, artist=""):
+    """kara.moe (Karaoke Mugen): hand-timed romaji for anime/J-pop. Only full-length entries can match a music
+    video; also returns the Japanese titles it knows, to search LRCLIB with."""
+    try:
+        d = http_json("https://kara.moe/api/karas/search?" + urllib.parse.urlencode({"filter": title, "size": 12}))
+    except Exception:
+        return [], []
+    out, jp = [], []
+    for k in d.get("content") or []:
+        t = k.get("titles") or {}
+        want = loose(title)
+        if not any(want and v and (want in loose(v) or loose(v) in want) for v in t.values()) and title not in t.values():
+            continue  # kara.moe's search is fuzzy; keep only real title matches
+        if t.get("jpn") and t["jpn"] not in jp:
+            jp.append(t["jpn"])
+        names = lambda key: ", ".join(x.get("name", "") for x in k.get(key) or [])
+        versions = names("versions")
+        if not k.get("lyrics_infos") or not ("Full" in versions or (k.get("duration") or 0) >= 150):
+            continue
+        who = names("singergroups") or names("singers")
+        people = " ".join((who, names("songwriters"), names("series"), names("franchises")))
+        artist_ok = not artist or loose(artist) in loose(people) or any(loose(x) in loose(artist) for x in who.split(", ") if x)
+        out.append({"source": "karamoe", "id": k["kid"], "artist": who or names("series") or names("franchises"),
+                    "title": t.get("qro") or t.get("eng") or t.get("jpn"), "album": "kara.moe · " + ", ".join(
+                        x for x in (names("series") or names("franchises"), names("songtypes"), versions) if x),
+                    "duration": k.get("duration"), "timed": True, "latin": True, "japanese": False,
+                    "romaji": "hand", "lines": None, "first": "", "name_match": artist_ok})
+    return out, jp[:2]
 
 
 @app.get("/api/search")
@@ -166,8 +222,14 @@ def search(q: str):
     if not title:
         artist, title = "", q
     videos = yt_search(artist, title)
-    lyrics = lrc_search(artist, title) if artist else lrc_search("", title)
-    return {"artist": artist.strip(), "title": title.strip(), "videos": videos, "lyrics": lyrics}
+    notes = []
+    km, jp_titles = km_search(title.strip(), artist.strip())
+    try:
+        lyrics = km + lrc_search(artist, title, jp_titles)
+    except Exception as e:
+        lyrics = km
+        notes.append(f"LRCLIB didn't answer ({str(e)[:60]}); search again in a moment")
+    return {"artist": artist.strip(), "title": title.strip(), "videos": videos, "lyrics": lyrics, "notes": notes}
 
 
 # ---------------- jobs ----------------
@@ -176,13 +238,16 @@ async def create_job(req: Request):
     check_origin(req)
     b = await req.json()
     yt, lrc_id = str(b.get("yt", "")), b.get("lrc_id")
+    source = b.get("lyrics_source") or "lrclib"
     artist, title = str(b.get("artist", "")).strip(), str(b.get("title", "")).strip()
-    if not re.fullmatch(r"[A-Za-z0-9_-]{11}", yt) or not isinstance(lrc_id, int) or not artist or not title:
+    ok_lyrics = (source == "lrclib" and isinstance(lrc_id, int)) or \
+                (source == "karamoe" and isinstance(lrc_id, str) and re.fullmatch(r"[0-9a-f-]{36}", lrc_id))
+    if not re.fullmatch(r"[A-Za-z0-9_-]{11}", yt) or not ok_lyrics or not artist or not title:
         raise HTTPException(400, "pick a video and timed lyrics, and give artist and title")
     slug = re.sub(r"[^a-z0-9]+", "-", norm(f"{artist} {title}"))[:60].strip("-") or "song"
     jid = time.strftime("%Y%m%d-%H%M%S") + "-" + slug
     os.makedirs(f"{JOBS}/{jid}")
-    save(jid, {"id": jid, "yt": yt, "lrc_id": lrc_id, "artist": artist, "title": title, "lang": "en",
+    save(jid, {"id": jid, "yt": yt, "lrc_id": lrc_id, "lyrics_source": source, "artist": artist, "title": title,
                "video_title": str(b.get("video_title", ""))[:200], "status": "queued", "step": "queued",
                "created": time.time(), "offset": 0.0, "log": []})
     wake.set()

@@ -110,7 +110,7 @@ td.n { text-align: right; font-variant-numeric: tabular-nums; }
       <input type="text" id="q" placeholder="Artist - Title   (e.g. Linkin Park - Numb)" autocomplete="off">
       <button class="primary" id="sbtn">Search</button>
     </form>
-    <p class="hint">Finds the official music video and timed lyrics. Pick one of each, then Make. English (Latin-letter) songs for now.</p>
+    <p class="hint">Finds the official music video and timed lyrics. Pick one of each, then Make. Latin-alphabet and Japanese songs (romaji, hand-timed from kara.moe when available).</p>
     <div id="results"></div>
   </section>
 
@@ -179,15 +179,28 @@ $("#sform").onsubmit = async e => {
   catch (err) { $("#results").innerHTML = `<div class="empty">${esc(err.message)}</div>`; }
   $("#sbtn").disabled = false;
 };
+const usable = l => l.timed && (l.latin || l.japanese);
+const lkey = l => `${l.source}:${l.id}`;
 function bestLyrics(d, video) {
-  const ok = d.lyrics.filter(l => l.timed && l.latin);
+  const ok = d.lyrics.filter(usable);
   if (!ok.length) return null;
-  const dur = video ? video.duration : null;
-  return ok.slice().sort((a, b) => (b.name_match - a.name_match) || (dur ? Math.abs(a.duration - dur) - Math.abs(b.duration - dur) : b.lines - a.lines))[0];
+  const dur = video ? video.duration : null, near = l => dur && l.duration && Math.abs(l.duration - dur) <= 12;
+  // hand-timed romaji (kara.moe) first when its length fits the video, then human romaji/English, then automatic romaji
+  const rank = l => (l.source === "karamoe" && near(l) ? 0 : l.source === "karamoe" ? 3 : l.japanese ? 2 : 1);
+  // a Japanese-titled video wants Japanese/romaji lyrics, not an English-language release of the song
+  const jpVideo = video && /[\u3040-\u30ff\u4e00-\u9fff]/.test(video.title), eng = l => (jpVideo && l.english ? 1 : 0);
+  return ok.slice().sort((a, b) => (eng(a) - eng(b)) || (b.name_match - a.name_match) || (near(b) - near(a)) || (rank(a) - rank(b)) ||
+    (dur ? Math.abs(a.duration - dur) - Math.abs(b.duration - dur) : b.lines - a.lines))[0];
 }
 function renderResults() {
   const d = pick.data;
-  if (!pick.video) pick.video = d.videos.find(v => !v.flags.length) || d.videos[0] || null;
+  if (!pick.video) {
+    // prefer an unflagged video whose length matches some timed lyrics (skips short/TV versions)
+    const fits = v => d.lyrics.some(l => usable(l) && l.duration && Math.abs(l.duration - v.duration) <= 6);
+    const clean = d.videos.filter(v => !v.flags.length);
+    pick.video = clean.find(v => v.official_channel && fits(v)) || clean.find(v => v.official_channel) ||
+                 clean.find(fits) || clean[0] || d.videos[0] || null;
+  }
   if (!pick.lyr) pick.lyr = bestLyrics(d, pick.video);
   const vids = d.videos.map(v => `
     <div class="card ${pick.video && pick.video.id === v.id ? "sel" : ""}" data-vid="${esc(v.id)}">
@@ -199,14 +212,15 @@ function renderResults() {
     </div>`).join("") || `<div class="empty">No videos found</div>`;
   const dur = pick.video ? pick.video.duration : null;
   const lyrs = d.lyrics.map(l => `
-    <div class="card lyr ${pick.lyr && pick.lyr.id === l.id ? "sel" : ""}" data-l="${l.id}">
+    <div class="card lyr ${pick.lyr && lkey(pick.lyr) === lkey(l) ? "sel" : ""}" data-l="${esc(lkey(l))}">
       <div><div class="t">${esc(l.artist)} – ${esc(l.title)}</div>
       <div class="m">${esc(l.album || "")} · ${fmt(l.duration)}${dur && l.duration ? ` (${l.duration - dur > 0 ? "+" : ""}${Math.round(l.duration - dur)}s vs video)` : ""}</div>
-      <div>${l.timed ? `<span class="tag good">timed · ${l.lines} lines</span>` : '<span class="tag warn">not timed</span>'}${l.latin ? "" : '<span class="tag warn">non-Latin</span>'}</div>
+      <div>${l.source === "karamoe" ? '<span class="tag good">hand-timed romaji · kara.moe</span>' : l.timed ? `<span class="tag good">timed · ${l.lines} lines</span>` : '<span class="tag warn">not timed</span>'}${l.japanese ? '<span class="tag">Japanese → automatic romaji</span>' : l.english ? '<span class="tag">English</span>' : l.latin ? "" : '<span class="tag warn">script not supported</span>'}</div>
       ${l.first ? `<div class="m">“${esc(l.first)}…”</div>` : ""}</div>
     </div>`).join("") || `<div class="empty">No lyrics found on LRCLIB</div>`;
-  const canMake = pick.video && pick.lyr && pick.lyr.timed && pick.lyr.latin;
-  $("#results").innerHTML = `
+  const canMake = pick.video && pick.lyr && usable(pick.lyr);
+  const notes = (d.notes || []).map(n => `<div class="empty" style="padding:10px;margin-top:10px">${esc(n)}</div>`).join("");
+  $("#results").innerHTML = `${notes}
     <div class="cols">
       <div><h2>Music video</h2><div class="list">${vids}</div></div>
       <div><h2>Lyrics</h2><div class="list">${lyrs}</div></div>
@@ -218,7 +232,7 @@ function renderResults() {
       <span class="hint">${canMake ? "about 1–2 minutes" : "pick a video and timed lyrics"}</span>
     </div>`;
   document.querySelectorAll("[data-vid]").forEach(c => c.onclick = () => { pick.video = d.videos.find(v => v.id === c.dataset.vid); pick.lyr = null; renderResults(); });
-  document.querySelectorAll("[data-l]").forEach(c => c.onclick = () => { pick.lyr = d.lyrics.find(l => l.id == c.dataset.l); renderResults(); });
+  document.querySelectorAll("[data-l]").forEach(c => c.onclick = () => { pick.lyr = d.lyrics.find(l => lkey(l) === c.dataset.l); renderResults(); });
   $("#make").onclick = makeJob;
 }
 async function makeJob() {
@@ -226,7 +240,7 @@ async function makeJob() {
   if (!artist || !title) return toast("Fill in artist and title");
   $("#make").disabled = true;
   try {
-    const r = await api("/api/jobs", {method: "POST", body: JSON.stringify({yt: pick.video.id, lrc_id: pick.lyr.id, artist, title, video_title: pick.video.title})});
+    const r = await api("/api/jobs", {method: "POST", body: JSON.stringify({yt: pick.video.id, lrc_id: pick.lyr.id, lyrics_source: pick.lyr.source, artist, title, video_title: pick.video.title})});
     location.hash = "jobs/" + r.id;
   } catch (e) { toast(e.message); $("#make").disabled = false; }
 }
@@ -290,7 +304,7 @@ async function openJob(id) {
       <div class="ctl"><label><span>Lyrics timing</span><span id="offv">${j.offset >= 0 ? "+" : ""}${(j.offset || 0).toFixed(2)} s</span></label>
         <input type="range" id="offr" min="-2" max="2" step="0.05" value="${j.offset || 0}">
         <div class="hint">Drag right if the words light up too early.</div></div>
-      <div class="ctl"><div class="hint">${r.lines ?? "?"} lines · video ${esc(r.video || "")} · made in ${r.seconds ?? "?"} s${r.skipped && r.skipped.length ? `<br>Not sung in this video: ${r.skipped.map(s => "“" + esc(s) + "”").join(", ")}` : ""}</div></div>
+      <div class="ctl"><div class="hint">${r.romaji === "automatic" ? '<span class="tag warn">automatic romaji</span> check readings in the editor below<br>' : r.romaji === "kara.moe" ? '<span class="tag good">hand-timed romaji (kara.moe)</span><br>' : ""}${r.lines ?? "?"} lines · video ${esc(r.video || "")} · made in ${r.seconds ?? "?"} s${r.skipped && r.skipped.length ? `<br>Not sung in this video: ${r.skipped.map(s => "“" + esc(s) + "”").join(", ")}` : ""}</div></div>
     </div>
     <div class="ctl editor" id="editor"><span class="spinner"></span></div>
     <div class="ctl pub" id="pub"><span class="spinner"></span></div>`;
