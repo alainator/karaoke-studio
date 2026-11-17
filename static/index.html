@@ -372,7 +372,7 @@ function shiftLine(l, delta) { l.words = l.words.map(([a, b, w]) => [+Math.max(0
 async function initEditor(id, j) {
   let d; try { d = await api(`/api/jobs/${id}/lines`); } catch (e) { $("#editor").textContent = e.message; return; }
   if (currentJob !== id) return;
-  ed = {id, j, lines: d.lines, dirty: false, canReset: d.can_reset, skipped: d.skipped || [], view: {span: 12, start: 0}, peaks: null};
+  ed = {id, j, lines: d.lines, cast: d.cast || [], dirty: false, canReset: d.can_reset, skipped: d.skipped || [], view: {span: 12, start: 0}, peaks: null};
   api(`/api/jobs/${id}/peaks`).then(p => { if (ed && ed.id === id) { ed.peaks = p; drawWave(); } }).catch(() => {});
   renderEditor();
   const v = $("#pv");
@@ -380,6 +380,8 @@ async function initEditor(id, j) {
 }
 // ---------- waveform ----------
 const SING = {1: "#ffc94d", 2: "#3cb4ff", 3: "#78e678"};
+const MEMBER_RGB = ["#3cb4ff", "#ff6b6b", "#78e678", "#b98cff", "#ff9a3c", "#ff7ac8", "#3cdcc8", "#c8f050"];
+const lineColour = l => l.members && l.members.length ? (l.members.length === 1 ? MEMBER_RGB[l.members[0]] : "#ffc94d") : (SING[l.singer] || "#ffc94d");
 let waveDrag = null, waveRaf = null;
 function waveTime(x, c) { return ed.view.start + x / c.clientWidth * ed.view.span; }
 function lineSpan(l) { return [l.words[0][0] + curOff(), l.words[l.words.length - 1][1] + curOff()]; }
@@ -452,7 +454,7 @@ function drawWave() {
     const [a, b] = lineSpan(l); if (b < view.start || a > view.start + view.span) return;
     const x0 = X(a), x1 = Math.max(X(b), x0 + 4), y0 = WH + 18 + (i % 2) * 26, y1 = y0 + 22;
     const cur = l.words[0][0] <= t0 && t0 <= l.words[l.words.length - 1][1];
-    g.fillStyle = (SING[l.singer] || "#ffc94d") + (cur ? "" : "88"); g.fillRect(x0, y0, x1 - x0, y1 - y0);
+    g.fillStyle = lineColour(l) + (cur ? "" : "88"); g.fillRect(x0, y0, x1 - x0, y1 - y0);
     if (l.unsure) { g.save(); g.setLineDash([4, 3]); g.strokeStyle = "#ff7a85"; g.lineWidth = 2; g.strokeRect(x0 + 1, y0 + 1, x1 - x0 - 2, y1 - y0 - 2); g.restore(); }
     g.fillStyle = "rgba(0,0,0,.45)"; l.words.slice(1).forEach(w => g.fillRect(X(w[0] + curOff()), y0 + 3, 1, y1 - y0 - 6));
     g.save(); g.beginPath(); g.rect(x0 + 3, y0, x1 - x0 - 6, y1 - y0); g.clip();
@@ -490,20 +492,24 @@ function renderEditor() {
     <div class="row" style="justify-content:space-between">
       <div><h3>Lyrics editor</h3><div class="hint">Fix a word, or move a line: ⏱ starts it at the current playback time, −/+ nudge it 0.1 s. Save to update the preview.</div></div>
       <div class="row">${ed.dirty ? '<span class="dirty">unsaved changes</span>' : ""}
-        ${ed.lines.some(l => l.orig) ? '<button class="ghost" id="pastebtn" title="Paste romanized lyrics from a lyrics site (e.g. Genius) to fix readings; you review every change">Paste romaji</button>' : ""}
+        <button class="ghost" id="pastebtn" title="Paste the lyrics from a lyrics site (e.g. Genius): fixes words/readings and, from section headers like [Chorus: Name], colours lines by singer; you review every change">${ed.lines.some(l => l.orig) ? "Paste romaji" : "Paste lyrics"}</button>
         ${STATUS.romaji_ai && ed.lines.some(l => l.orig) ? '<button class="ghost" id="aicheck" title="A local AI (Ollama) reads the Japanese and suggests fixes for wrong romaji readings">Check romaji with AI</button>' : ""}
         ${ed.canReset ? '<button class="ghost" id="edreset">Undo all edits</button>' : ""}
         <button class="primary" id="edsave" ${ed.dirty ? "" : "disabled"}>Save</button></div>
     </div>
-    ${ed.paste ? `<div class="aibox"><b>Paste romaji</b><div class="hint">Copy the romanized lyrics from a lyrics site (e.g. Genius "Romanized") and paste them here, all of it. Line breaks and section headers don't matter: they're lined up with this song by sound, and you review each change.</div>
+    ${ed.paste ? `<div class="aibox"><b>Paste lyrics</b><div class="hint">Copy the whole lyrics from a lyrics site and paste them here (for Japanese/Korean/Chinese songs, the "Romanized" version, e.g. Genius Romanizations). Line breaks don't matter: they're lined up with this song by sound. Section headers like <i>[Chorus: Bang Chan, Han]</i> colour the lines by singer. You review every change.</div>
       <textarea id="pastetext" rows="8" style="width:100%;margin-top:8px;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:8px;font:inherit"></textarea>
       <div class="row" style="margin-top:8px"><button class="primary" id="pastego">Compare</button><button class="ghost" id="pastecancel">Cancel</button></div></div>` : ""}
-    ${ed.ai ? `<div class="aibox"><div class="row" style="justify-content:space-between"><b>${ed.ai.model === "pasted romaji" ? "Changes from the pasted romaji" : "AI romaji suggestions"}</b><span class="hint">${ed.ai.model === "pasted romaji" ? "untick any you don't want" : esc(ed.ai.model) + " checked " + ed.ai.checked + " lines"}</span></div>
+    ${ed.ai ? `<div class="aibox"><div class="row" style="justify-content:space-between"><b>${ed.ai.model === "pasted romaji" ? "Changes from the pasted lyrics" : "AI romaji suggestions"}</b><span class="hint">${ed.ai.model === "pasted romaji" ? "untick any you don't want" : esc(ed.ai.model) + " checked " + ed.ai.checked + " lines"}</span></div>
+      ${ed.ai.cast && ed.ai.cast.length ? `<label class="chk aisug"><input type="checkbox" id="aimembers" checked>
+        <span><b>Use singer colours</b> from the section headers (${ed.ai.members.filter(Boolean).length} lines):
+        ${ed.ai.cast.map((n, k) => `<span class="tag" style="color:${MEMBER_RGB[k]}">${esc(n)}</span>`).join("")}</span></label>` : ""}
       ${ed.ai.suggestions.length ? ed.ai.suggestions.map((g, k) => `<label class="chk aisug"><input type="checkbox" class="aipick" value="${k}" checked>
         <span><span class="hint">${esc(g.japanese)}${g.how && g.how.includes("heard") ? " · confirmed by the singing" : ""}</span><br><s>${esc(g.old)}</s> → <b>${esc(g.new)}</b></span></label>`).join("") : '<div class="hint">No changes suggested: the romaji looks right.</div>'}
-      <div class="row" style="margin-top:8px">${ed.ai.suggestions.length ? '<button class="primary" id="aiapply">Apply selected</button>' : ""}<button class="ghost" id="aidismiss">Close</button></div></div>` : ""}
+      <div class="row" style="margin-top:8px">${ed.ai.suggestions.length || (ed.ai.cast && ed.ai.cast.length) ? '<button class="primary" id="aiapply">Apply selected</button>' : ""}<button class="ghost" id="aidismiss">Close</button></div></div>` : ""}
     <div class="wavebox"><div class="wavebar"><span class="hint">Vocals: drag a line's block to move it, drag its edge to stretch it, click to jump, right-click to change its singer · Space plays/pauses</span>
-      <span class="row"><span class="legend"><span><i style="background:var(--gold)"></i>Singer 1</span><span><i style="background:#3cb4ff"></i>Singer 2</span><span><i style="background:#78e678"></i>Both</span></span>
+      <span class="row"><span class="legend">${ed.cast.length ? ed.cast.map((n, k) => `<span><i style="background:${MEMBER_RGB[k]}"></i>${esc(n)}</span>`).join("") + '<span><i style="background:var(--gold)"></i>Together</span>' : '<span><i style="background:var(--gold)"></i>Singer 1</span><span><i style="background:#3cb4ff"></i>Singer 2</span><span><i style="background:#78e678"></i>Both</span>'}</span>
+      <button class="ghost" id="castbtn" style="padding:5px 10px;font-size:13px" title="Name the singers (up to 8) to colour lines by member">${ed.cast.length ? "Edit singers" : "Name singers"}</button>
       <button class="ghost" id="detect" style="padding:5px 10px;font-size:13px" title="Find the two voices in the vocals and colour each line (review, then Save)">Detect 2 singers</button>
       <button class="ghost" id="swap" style="padding:5px 10px;font-size:13px" title="Swap Singer 1 and Singer 2">Swap 1↔2</button>
       <button class="ib" id="zout" title="Zoom out">−</button><button class="ib" id="zin" title="Zoom in">+</button></span></div>
@@ -515,7 +521,7 @@ function renderEditor() {
         <td><button class="ib" data-act="play" title="Play from just before this line">▶</button></td>
         <td><input class="tm" data-act="time" value="${fmtT(l.words[0][0] + off)}" title="Line start (m:ss.cc)"></td>
         <td class="nowrap"><button class="ib" data-act="m" title="0.1 s earlier">−</button><button class="ib" data-act="p" title="0.1 s later">+</button><button class="ib" data-act="now" title="Start this line at the current playback time">⏱</button></td>
-        <td class="nowrap">${l.unsure ? '<span class="unsure" title="Detect 2 singers wasn\'t sure about this line">?</span>' : ""}<select class="sg" data-act="singer" title="Who sings this line">${[["", "–"], [1, "1"], [2, "2"], [3, "Both"]].map(([v, t]) => `<option value="${v}" ${(l.singer || "") == v ? "selected" : ""}>${t}</option>`).join("")}</select></td>
+        <td class="nowrap">${l.unsure ? '<span class="unsure" title="Detect 2 singers wasn\'t sure about this line">?</span>' : ""}${ed.cast.length ? memberSelect(l) : `<select class="sg" data-act="singer" title="Who sings this line">${[["", "–"], [1, "1"], [2, "2"], [3, "Both"]].map(([v, t]) => `<option value="${v}" ${(l.singer || "") == v ? "selected" : ""}>${t}</option>`).join("")}</select>`}</td>
         <td class="txc"><input class="tx" data-act="text" value="${esc(lineText(l))}">${l.orig ? `<div class="hint">${esc(l.orig)}</div>` : ""}</td>
         <td><button class="ib danger" data-act="del" title="Delete this line">✕</button></td>
       </tr>`).join("")}</tbody></table></div>`;
@@ -534,6 +540,7 @@ function renderEditor() {
   $(".edtab").onchange = e => {
     const inp = e.target, i = +inp.closest("tr").dataset.i, l = ed.lines[i];
     if (inp.dataset.act === "singer") { l.singer = inp.value ? +inp.value : null; l.unsure = false; return changed(); }
+    if (inp.dataset.act === "member") { l.members = inp.value === "" ? null : inp.value === "all" ? ed.cast.map((_, k) => k) : [+inp.value]; return changed(); }
     if (inp.dataset.act === "time") {
       const t = parseT(inp.value); if (t == null) { toast("Use m:ss.cc, e.g. 1:23.40"); return renderEditor(); }
       shiftLine(l, (t - curOff()) - l.words[0][0]);
@@ -571,6 +578,10 @@ function renderEditor() {
   if ($("#aiapply")) $("#aiapply").onclick = () => {
     const picked = [...document.querySelectorAll(".aipick:checked")].map(c => ed.ai.suggestions[+c.value]);
     picked.forEach(g => { if (ed.lines[g.i]) ed.lines[g.i].words = g.words; });
+    if ($("#aimembers") && $("#aimembers").checked) {
+      ed.cast = ed.ai.cast.slice(0, 8);
+      ed.lines.forEach((l, i) => { const m = ed.ai.members[i]; if (m) { l.members = m; l.singer = null; } });
+    }
     ed.ai = null; toast(`Applied ${picked.length} fix${picked.length === 1 ? "" : "es"}; Save to keep them`); changed();
   };
   $("#detect").onclick = async () => {
@@ -585,20 +596,34 @@ function renderEditor() {
       changed();
     } catch (e) { toast(e.message); renderEditor(); }
   };
+  $("#castbtn").onclick = () => {
+    const v = prompt("Singers' names, separated by commas (up to 8). Leave empty to go back to Singer 1 / 2.", ed.cast.join(", "));
+    if (v === null) return;
+    const names = v.split(",").map(x => x.trim()).filter(Boolean).slice(0, 8);
+    if (!names.length) ed.lines.forEach(l => l.members = null);
+    else ed.lines.forEach(l => { if (l.members) l.members = l.members.filter(k => k < names.length); });
+    ed.cast = names; changed();
+  };
   $("#swap").onclick = () => { ed.lines.forEach(l => { if (l.singer === 1) l.singer = 2; else if (l.singer === 2) l.singer = 1; }); changed(); };
   // click a block's singer quickly: right-click (or long-press) a waveform block cycles 1 → 2 → Both
   $("#wave").oncontextmenu = e => {
     e.preventDefault();
     const r = $("#wave").getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
     const b = (ed._blocks || []).find(b => x >= b.x0 && x <= b.x1 && y >= b.y0 && y <= b.y1); if (!b) return;
-    const l = ed.lines[b.i]; l.singer = l.singer === 1 ? 2 : l.singer === 2 ? 3 : 1; l.unsure = false; changed();
+    const l = ed.lines[b.i];
+    if (ed.cast.length) {  // member 1 → 2 → … → together → member 1
+      const cur = l.members && l.members.length === 1 ? l.members[0] : l.members && l.members.length > 1 ? ed.cast.length : -1;
+      const nx = (cur + 1) % (ed.cast.length + 1);
+      l.members = nx === ed.cast.length ? ed.cast.map((_, k) => k) : [nx];
+    } else l.singer = l.singer === 1 ? 2 : l.singer === 2 ? 3 : 1;
+    l.unsure = false; changed();
   };
   $("#newline").onkeydown = e => { if (e.key === "Enter") add(e.target.value); };
   document.querySelectorAll("[data-sk]").forEach(c => c.onclick = () => { $("#newline").value = ed.skipped[+c.dataset.sk]; $("#newline").focus(); });
   if ($("#edsave")) $("#edsave").onclick = async () => {
     $("#edsave").disabled = true;
     try {
-      await api(`/api/jobs/${ed.id}/lines`, {method: "POST", body: JSON.stringify({lines: ed.lines})});
+      await api(`/api/jobs/${ed.id}/lines`, {method: "POST", body: JSON.stringify({lines: ed.lines, cast: ed.cast})});
       ed.dirty = false; ed.canReset = true; reloadLyrics(); renderEditor(); toast("Saved: the preview shows your changes");
       if (ed.j.published) renderPublish(ed.id, {...ed.j, unpublished_changes: true});
     } catch (e) { toast(e.message); $("#edsave").disabled = false; }
@@ -608,6 +633,12 @@ function renderEditor() {
     try { await api(`/api/jobs/${ed.id}/lines/reset`, {method: "POST"}); reloadLyrics(); await initEditor(ed.id, ed.j); if (ed.j.published) renderPublish(ed.id, {...ed.j, unpublished_changes: true}); }
     catch (e) { toast(e.message); }
   };
+}
+function memberSelect(l) {
+  const v = l.members && l.members.length === 1 ? String(l.members[0]) : l.members && l.members.length > 1 ? "all" : "";
+  return `<select class="sg" data-act="member" title="Who sings this line" style="border-color:${l.members && l.members.length ? lineColour(l) : "var(--line)"}">
+    <option value="" ${v === "" ? "selected" : ""}>–</option>${ed.cast.map((n, k) => `<option value="${k}" ${v === String(k) ? "selected" : ""}>${esc(n)}</option>`).join("")}
+    <option value="all" ${v === "all" ? "selected" : ""}>Together</option></select>`;
 }
 const leaveOk = () => !(ed && ed.dirty) || confirm("You have unsaved lyric edits. Leave without saving?");
 window.addEventListener("beforeunload", e => { if (ed && ed.dirty) { e.preventDefault(); e.returnValue = ""; } });

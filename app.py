@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import config as C  # noqa: E402
-from assgen import load_lines, make_ass, save_lines  # noqa: E402
+from assgen import load_cast, load_lines, make_ass, save_lines  # noqa: E402
 
 JOBS, LIB, MV_DIR = C.JOBS, C.LIBRARY, C.MV_DIR
 PK_DB, PK_URL = C.PIKARAOKE_DB, C.PIKARAOKE_URL
@@ -348,7 +348,8 @@ async def set_offset(jid: str, req: Request):
         raise HTTPException(400, "offset must be within ±5 s")
     with lock:
         job = load(jid)
-        open(job_path(jid, "lyrics.ass"), "w").write(make_ass(load_lines(job_path(jid, "words.json")), off, video_size=vsize(job)))
+        open(job_path(jid, "lyrics.ass"), "w").write(make_ass(load_lines(job_path(jid, "words.json")), off, video_size=vsize(job),
+                                                              cast=load_cast(job_path(jid, "words.json"))))
         if round(off, 2) != job.get("offset") and job.get("published"):
             job["unpublished_changes"] = True
         job["offset"] = round(off, 2)
@@ -362,7 +363,8 @@ def get_lines(jid: str):
     job = load(jid)
     if job["status"] != "done":
         raise HTTPException(400, "finish making it first")
-    return {"lines": load_lines(job_path(jid, "words.json")), "offset": job.get("offset", 0.0),
+    return {"lines": load_lines(job_path(jid, "words.json")), "cast": load_cast(job_path(jid, "words.json")),
+            "offset": job.get("offset", 0.0),
             "can_reset": os.path.exists(job_path(jid, "words.orig.json")),
             "skipped": (job.get("result") or {}).get("skipped", []),
             "duration": (job.get("result") or {}).get("duration")}
@@ -393,8 +395,10 @@ def _valid_lines(raw, duration):
         orig = l.get("orig")
         sg = l.get("singer")
         heard = l.get("heard")
+        mem = l.get("members")
+        mem = sorted({int(i) for i in mem if isinstance(i, int) and 0 <= i < 8}) if isinstance(mem, list) else None
         out.append({"words": clean, "orig": orig.strip()[:300] if isinstance(orig, str) and orig.strip() else None,
-                    "singer": sg if sg in (1, 2, 3) else None,
+                    "singer": sg if sg in (1, 2, 3) else None, "members": mem or None,
                     "heard": heard.strip()[:200] if isinstance(heard, str) and heard.strip() else None})
     if not out:
         raise HTTPException(400, "no lines left")
@@ -411,10 +415,15 @@ async def put_lines(jid: str, req: Request):
         if job["status"] != "done":
             raise HTTPException(400, "finish making it first")
         lines = _valid_lines(b.get("lines"), (job.get("result") or {}).get("duration"))
+        cast = b.get("cast")
+        cast = [str(x).strip()[:40] for x in cast if str(x).strip()][:8] if isinstance(cast, list) else load_cast(job_path(jid, "words.json"))
+        for l in lines:
+            if l.get("members"):
+                l["members"] = [i for i in l["members"] if i < len(cast)] or None
         if not os.path.exists(job_path(jid, "words.orig.json")):
             shutil.copyfile(job_path(jid, "words.json"), job_path(jid, "words.orig.json"))
-        save_lines(job_path(jid, "words.json"), lines)
-        open(job_path(jid, "lyrics.ass"), "w").write(make_ass(lines, job.get("offset", 0.0), video_size=vsize(job)))
+        save_lines(job_path(jid, "words.json"), lines, cast)
+        open(job_path(jid, "lyrics.ass"), "w").write(make_ass(lines, job.get("offset", 0.0), video_size=vsize(job), cast=cast))
         job["edited"] = time.time()
         if job.get("published"):
             job["unpublished_changes"] = True
@@ -555,7 +564,8 @@ def auto_romaji(jid):
             for g in sugg:
                 lines[g["i"]]["words"] = g["words"]
             save_lines(job_path(jid, "words.json"), lines)
-            open(job_path(jid, "lyrics.ass"), "w").write(make_ass(lines, job.get("offset", 0.0), video_size=vsize(job)))
+            open(job_path(jid, "lyrics.ass"), "w").write(make_ass(lines, job.get("offset", 0.0), video_size=vsize(job),
+                                                                  cast=load_cast(job_path(jid, "words.json"))))
         job["ai_romaji"] = [{k: g[k] for k in ("japanese", "old", "new", "how")} for g in sugg]
         job.setdefault("log", []).append(f"AI romaji check: {len(sugg)} of {checked} lines fixed" if sugg else
                                          f"AI romaji check: all {checked} lines look right")
@@ -598,8 +608,31 @@ def paste_suggest(lines, text):
             for ch in letters(w[2]):
                 S.append(ch); sl.append(i)
     # the pasted text: tokens (headers like [Chorus] and lone symbols dropped), each with its letter range
-    toks = [t for ln in text.splitlines() if not re.match(r"^\s*[\[(].*[\])]\s*$", ln) for t in ln.split()]
-    toks = [t for t in toks if letters(t)]
+    # section headers like [Chorus: Bang Chan, Han] say who sings the lines below them
+    toks, tok_who, who, cast = [], [], None, []
+    GROUP = {"all", "everyone", "both", "together", "group", "tutti"}
+    for ln in text.splitlines():
+        for part in re.split(r"(\[[^\]]*\])", ln):
+            hdr = re.fullmatch(r"\[([^\]:]*)(?::\s*([^\]]*))?\]", part.strip())
+            if hdr:
+                names = [n.strip(" .") for n in re.split(r",|&|\+|/|\band\b|\bwith\b|\bfeat\.?", hdr.group(2) or "") if n.strip(" .")]
+                if not names:
+                    who = None
+                    continue
+                who = set()
+                for n in names:
+                    if n.lower() in GROUP:
+                        who.add("*")
+                        continue
+                    key = next((c for c in cast if c.lower() == n.lower()), None)
+                    if key is None and len(cast) < 8:
+                        cast.append(n); key = n
+                    if key:
+                        who.add(key)
+                continue
+            for t in part.split():
+                if letters(t):
+                    toks.append(t); tok_who.append(frozenset(who) if who else None)
     P, pt = [], []
     for k, t in enumerate(toks):
         for ch in letters(t):
@@ -619,6 +652,13 @@ def paste_suggest(lines, text):
         votes = Counter(owner[j] for j in range(len(P)) if pt[j] == k and owner[j] is not None)
         if votes:
             by_line.setdefault(votes.most_common(1)[0][0], []).append(toks[k])
+    # who sings each line: the members of the section most of its letters came from
+    members = []
+    for i in range(len(lines)):
+        votes = Counter(tok_who[pt[j]] for j in range(len(P)) if owner[j] == i and tok_who[pt[j]] is not None)
+        w = votes.most_common(1)[0][0] if votes else None
+        members.append(None if not w else sorted(range(len(cast))) if "*" in w else sorted(cast.index(n) for n in w if n in cast))
+    paste_suggest.last = {"cast": cast if any(members) else [], "members": members}
     out = []
     for i, l in enumerate(lines):
         new = " ".join(by_line.get(i, []))
@@ -643,8 +683,11 @@ async def romaji_paste(jid: str, req: Request):
     job = load(jid)
     if job["status"] != "done":
         raise HTTPException(400, "finish making it first")
+    paste_suggest.last = {"cast": [], "members": []}
     sugg = paste_suggest(load_lines(job_path(jid, "words.json")), text)
-    return {"model": "pasted romaji", "checked": len(load_lines(job_path(jid, "words.json"))), "suggestions": sugg}
+    extra = paste_suggest.last
+    return {"model": "pasted romaji", "checked": len(load_lines(job_path(jid, "words.json"))), "suggestions": sugg,
+            "cast": extra["cast"], "members": extra["members"] if extra["cast"] else []}
 
 
 @app.post("/api/jobs/{jid}/romaji-check")
@@ -675,7 +718,8 @@ async def reset_lines(jid: str, req: Request):
         if not os.path.exists(orig):
             raise HTTPException(400, "nothing to reset")
         shutil.copyfile(orig, job_path(jid, "words.json"))
-        open(job_path(jid, "lyrics.ass"), "w").write(make_ass(load_lines(orig), job.get("offset", 0.0), video_size=vsize(job)))
+        open(job_path(jid, "lyrics.ass"), "w").write(make_ass(load_lines(orig), job.get("offset", 0.0), video_size=vsize(job),
+                                                              cast=load_cast(orig)))
         job["edited"] = None
         job["ai_romaji"] = None  # back to the plain automatic romaji
         if job.get("published"):

@@ -24,6 +24,20 @@ Style: OrigB,Droid Sans Fallback,52,&H00F0F0F0,&H00F0F0F0,&H00000000,&H80000000,
 
 # fill colour per singer (ASS &HBBGGRR): 1 = gold (the default), 2 = sky blue, 3 = both = green
 SINGER_FILL = {1: "&H00D7FF&", 2: "&HFFB43C&", 3: "&H78E678&"}
+# named members ("cast", up to 8, e.g. from Genius section headers): one colour each; lines sung together keep gold
+MEMBER_RGB = ["#3cb4ff", "#ff6b6b", "#78e678", "#b98cff", "#ff9a3c", "#ff7ac8", "#3cdcc8", "#c8f050"]
+MEMBER_FILL = ["&H%s%s%s&" % (c[5:7], c[3:5], c[1:3]) for c in (x.upper() for x in MEMBER_RGB)]
+TOGETHER_FILL = "&H00D7FF&"
+LEGEND_STYLE = "Style: Legend,Arial,40,&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,1,8,60,60,36,1"
+
+
+def fill_of(line):
+    m = [i for i in (line.get("members") or []) if isinstance(i, int) and 0 <= i < 8]
+    if len(m) == 1:
+        return MEMBER_FILL[m[0]]
+    if len(m) > 1:
+        return TOGETHER_FILL
+    return SINGER_FILL.get(line.get("singer"))
 
 
 def header(styles):
@@ -50,10 +64,12 @@ def normalize(data):
     for l in lines:
         if isinstance(l, dict):
             sg = l.get("singer")
+            mem = [i for i in (l.get("members") or []) if isinstance(i, int) and 0 <= i < 8]
             out.append({"words": [list(w) for w in l.get("words", [])], "orig": l.get("orig") or None,
-                        "singer": sg if sg in (1, 2, 3) else None, "heard": l.get("heard") or None})
+                        "singer": sg if sg in (1, 2, 3) else None, "heard": l.get("heard") or None,
+                        "members": sorted(set(mem)) or None})
         else:
-            out.append({"words": [list(w) for w in l], "orig": None, "singer": None, "heard": None})
+            out.append({"words": [list(w) for w in l], "orig": None, "singer": None, "heard": None, "members": None})
     return [l for l in out if l["words"]]
 
 
@@ -61,13 +77,29 @@ def load_lines(path):
     return normalize(json.load(open(path)))
 
 
-def save_lines(path, lines):
+def load_cast(path):
+    """Member names (up to 8) stored with the lines, or []."""
+    try:
+        d = json.load(open(path))
+    except Exception:
+        return []
+    return [str(x)[:40] for x in (d.get("cast") or [])][:8] if isinstance(d, dict) else []
+
+
+_KEEP = object()
+
+
+def save_lines(path, lines, cast=_KEEP):
+    if cast is _KEEP:
+        cast = load_cast(path) if os.path.exists(path) else []
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
-        json.dump({"version": 2, "lines": [{"words": l["words"], **({"orig": l["orig"]} if l.get("orig") else {}),
-                                            **({"singer": l["singer"]} if l.get("singer") in (1, 2, 3) else {}),
-                                            **({"heard": l["heard"]} if l.get("heard") else {})}
-                                           for l in lines]}, f, ensure_ascii=False)
+        json.dump({"version": 2, **({"cast": list(cast)[:8]} if cast else {}),
+                   "lines": [{"words": l["words"], **({"orig": l["orig"]} if l.get("orig") else {}),
+                              **({"singer": l["singer"]} if l.get("singer") in (1, 2, 3) else {}),
+                              **({"members": l["members"]} if l.get("members") else {}),
+                              **({"heard": l["heard"]} if l.get("heard") else {})}
+                             for l in lines]}, f, ensure_ascii=False)
     os.replace(tmp, path)
 
 
@@ -96,7 +128,7 @@ def scaled(styles, k):
     return "\n".join(out)
 
 
-def make_ass(lines, offset=0.0, show_orig=True, video_size=None):
+def make_ass(lines, offset=0.0, show_orig=True, video_size=None, cast=None):
     """lines: words.json content (v1 or v2). offset shifts everything (+ = later).
     video_size (w, h): on videos narrower than 16:9 the text is scaled down so lines don't wrap as much."""
     lines = normalize(lines)
@@ -116,7 +148,7 @@ def make_ass(lines, offset=0.0, show_orig=True, video_size=None):
         show = max(0.0, min(show, start))
         h = end + 0.4
         hide.append(h)
-        sung = SINGER_FILL.get(lines[i].get("singer"))
+        sung = fill_of(lines[i])
         parts = [f"{{\\k{round((start - show) * 100)}{'' if sung is None else chr(92) + '1c' + sung}}}"]
         for j, (a, b, w) in enumerate(words):
             nxt = words[j + 1][0] if j + 1 < len(words) else b
@@ -125,4 +157,10 @@ def make_ass(lines, offset=0.0, show_orig=True, video_size=None):
         events.append(f"Dialogue: 0,{ts(show)},{ts(h)},Row{row},,0,0,0,,{''.join(parts)}")
         if dual and lines[i]["orig"]:
             events.append(f"Dialogue: 0,{ts(show)},{ts(h)},Orig{row},,0,0,0,,{clean(lines[i]['orig'])}")
-    return header(scaled(DUAL_STYLES if dual else LATIN_STYLES, k)) + "\n".join(events) + "\n"
+    styles = DUAL_STYLES if dual else LATIN_STYLES
+    if cast:  # who's who: each name in its colour, at the top for the first seconds of the song
+        styles += "\n" + LEGEND_STYLE
+        names = "   ".join(f"{{\\1c{MEMBER_FILL[i]}}}{clean(n)}" for i, n in enumerate(cast[:8]))
+        until = max(8.0, min(20.0, (segs[0][0][0] if segs else 8.0)))
+        events.insert(0, f"Dialogue: 1,{ts(0)},{ts(until)},Legend,,0,0,0,,{names}")
+    return header(scaled(styles, k)) + "\n".join(events) + "\n"
