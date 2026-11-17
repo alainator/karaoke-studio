@@ -89,6 +89,7 @@ td.n { text-align: right; font-variant-numeric: tabular-nums; }
 .ib:hover { border-color: var(--gold); }
 .ib.danger { color: var(--bad); }
 .nowrap { white-space: nowrap; }
+.unsure { display: inline-block; width: 18px; text-align: center; color: var(--bad); font-weight: 700; margin-right: 2px; }
 .edbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 8px; }
 .edbar input { flex: 1 1 220px; background: var(--bg); border: 1px solid var(--line); color: var(--text); border-radius: 8px; padding: 8px 10px; font: inherit; }
 .chip { background: var(--panel2); border: 1px dashed var(--line); color: var(--dim); border-radius: 99px; padding: 3px 10px; font-size: 13px; cursor: pointer; }
@@ -379,6 +380,7 @@ function initWave() {
   $("#zin").onclick = () => { ed.view.span = Math.max(3, ed.view.span / 1.6); drawWave(); };
   $("#zout").onclick = () => { ed.view.span = Math.min(120, ed.view.span * 1.6); drawWave(); };
   c.onpointerdown = e => {
+    if (e.button !== 0) return;  // right-click changes the singer (oncontextmenu)
     const r = c.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top, t = waveTime(x, c);
     const hit = (ed._blocks || []).find(b => x >= b.x0 - 6 && x <= b.x1 + 6 && y >= b.y0 && y <= b.y1);
     if (hit) {
@@ -438,6 +440,7 @@ function drawWave() {
     const x0 = X(a), x1 = Math.max(X(b), x0 + 4), y0 = WH + 18 + (i % 2) * 26, y1 = y0 + 22;
     const cur = l.words[0][0] <= t0 && t0 <= l.words[l.words.length - 1][1];
     g.fillStyle = (SING[l.singer] || "#ffc94d") + (cur ? "" : "88"); g.fillRect(x0, y0, x1 - x0, y1 - y0);
+    if (l.unsure) { g.save(); g.setLineDash([4, 3]); g.strokeStyle = "#ff7a85"; g.lineWidth = 2; g.strokeRect(x0 + 1, y0 + 1, x1 - x0 - 2, y1 - y0 - 2); g.restore(); }
     g.fillStyle = "rgba(0,0,0,.45)"; l.words.slice(1).forEach(w => g.fillRect(X(w[0] + curOff()), y0 + 3, 1, y1 - y0 - 6));
     g.save(); g.beginPath(); g.rect(x0 + 3, y0, x1 - x0 - 6, y1 - y0); g.clip();
     g.fillStyle = "#17121c"; g.font = "600 12px system-ui"; g.fillText(lineText(l), x0 + 5, y0 + 15); g.restore();
@@ -477,7 +480,7 @@ function renderEditor() {
         ${ed.canReset ? '<button class="ghost" id="edreset">Undo all edits</button>' : ""}
         <button class="primary" id="edsave" ${ed.dirty ? "" : "disabled"}>Save</button></div>
     </div>
-    <div class="wavebox"><div class="wavebar"><span class="hint">Vocals: drag a line's block to move it, drag its edge to stretch it, click to jump · Space plays/pauses</span>
+    <div class="wavebox"><div class="wavebar"><span class="hint">Vocals: drag a line's block to move it, drag its edge to stretch it, click to jump, right-click to change its singer · Space plays/pauses</span>
       <span class="row"><span class="legend"><span><i style="background:var(--gold)"></i>Singer 1</span><span><i style="background:#3cb4ff"></i>Singer 2</span><span><i style="background:#78e678"></i>Both</span></span>
       <button class="ghost" id="detect" style="padding:5px 10px;font-size:13px" title="Find the two voices in the vocals and colour each line (review, then Save)">Detect 2 singers</button>
       <button class="ghost" id="swap" style="padding:5px 10px;font-size:13px" title="Swap Singer 1 and Singer 2">Swap 1↔2</button>
@@ -490,7 +493,7 @@ function renderEditor() {
         <td><button class="ib" data-act="play" title="Play from just before this line">▶</button></td>
         <td><input class="tm" data-act="time" value="${fmtT(l.words[0][0] + off)}" title="Line start (m:ss.cc)"></td>
         <td class="nowrap"><button class="ib" data-act="m" title="0.1 s earlier">−</button><button class="ib" data-act="p" title="0.1 s later">+</button><button class="ib" data-act="now" title="Start this line at the current playback time">⏱</button></td>
-        <td><select class="sg" data-act="singer" title="Who sings this line">${[["", "–"], [1, "1"], [2, "2"], [3, "Both"]].map(([v, t]) => `<option value="${v}" ${(l.singer || "") == v ? "selected" : ""}>${t}</option>`).join("")}</select></td>
+        <td class="nowrap">${l.unsure ? '<span class="unsure" title="Detect 2 singers wasn\'t sure about this line">?</span>' : ""}<select class="sg" data-act="singer" title="Who sings this line">${[["", "–"], [1, "1"], [2, "2"], [3, "Both"]].map(([v, t]) => `<option value="${v}" ${(l.singer || "") == v ? "selected" : ""}>${t}</option>`).join("")}</select></td>
         <td class="txc"><input class="tx" data-act="text" value="${esc(lineText(l))}">${l.orig ? `<div class="hint">${esc(l.orig)}</div>` : ""}</td>
         <td><button class="ib danger" data-act="del" title="Delete this line">✕</button></td>
       </tr>`).join("")}</tbody></table></div>`;
@@ -508,7 +511,7 @@ function renderEditor() {
   };
   $(".edtab").onchange = e => {
     const inp = e.target, i = +inp.closest("tr").dataset.i, l = ed.lines[i];
-    if (inp.dataset.act === "singer") { l.singer = inp.value ? +inp.value : null; return changed(); }
+    if (inp.dataset.act === "singer") { l.singer = inp.value ? +inp.value : null; l.unsure = false; return changed(); }
     if (inp.dataset.act === "time") {
       const t = parseT(inp.value); if (t == null) { toast("Use m:ss.cc, e.g. 1:23.40"); return renderEditor(); }
       shiftLine(l, (t - curOff()) - l.words[0][0]);
@@ -534,13 +537,20 @@ function renderEditor() {
     try {
       const r = await api(`/api/jobs/${ed.id}/detect-singers`, {method: "POST"});
       if (r.singers.length !== ed.lines.length) { toast("The lines changed since saving; Save first, then detect"); return renderEditor(); }
-      ed.lines.forEach((l, i) => l.singer = r.singers[i]);
-      const n2 = r.singers.filter(x => x === 2).length;
-      toast(`Two voices found (${r.singers.length - n2} / ${n2} lines${r.separation < 0.18 ? ". They sound alike, so this may be one singer (verse vs chorus): check carefully" : ""}). Review the colours, Swap if needed, then Save.`, 9000);
+      ed.lines.forEach((l, i) => { l.singer = r.singers[i]; l.unsure = !!(r.unsure && r.unsure[i]); });
+      const n2 = r.singers.filter(x => x === 2).length, nu = (r.unsure || []).filter(Boolean).length;
+      toast(`Two voices found: ${r.singers.length - n2} lines Singer 1 (the chorus voice), ${n2} lines Singer 2${nu ? `; ${nu} uncertain lines marked ?` : ""}${r.separation < 0.18 ? ". They sound alike, so this may be one singer (verse vs chorus)" : ""}. Review, Swap or right-click blocks to change, then Save.`, 10000);
       changed();
     } catch (e) { toast(e.message); renderEditor(); }
   };
   $("#swap").onclick = () => { ed.lines.forEach(l => { if (l.singer === 1) l.singer = 2; else if (l.singer === 2) l.singer = 1; }); changed(); };
+  // click a block's singer quickly: right-click (or long-press) a waveform block cycles 1 → 2 → Both
+  $("#wave").oncontextmenu = e => {
+    e.preventDefault();
+    const r = $("#wave").getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+    const b = (ed._blocks || []).find(b => x >= b.x0 && x <= b.x1 && y >= b.y0 && y <= b.y1); if (!b) return;
+    const l = ed.lines[b.i]; l.singer = l.singer === 1 ? 2 : l.singer === 2 ? 3 : 1; l.unsure = false; changed();
+  };
   $("#newline").onkeydown = e => { if (e.key === "Enter") add(e.target.value); };
   document.querySelectorAll("[data-sk]").forEach(c => c.onclick = () => { $("#newline").value = ed.skipped[+c.dataset.sk]; $("#newline").focus(); });
   if ($("#edsave")) $("#edsave").onclick = async () => {

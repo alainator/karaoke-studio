@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """Guess which of two singers sings each line (the studio's "Detect 2 singers" button).
 
-    python -I singers.py <job dir>        -> JSON on stdout: {"singers": [1|2 per line], "separation": 0..1}
+    python -I singers.py <job dir>   -> JSON: {"singers": [1|2 per line], "unsure": [bool per line], "separation": 0..1}
 
 Each line's stretch of the separated vocal track gets a voice fingerprint (SpeechBrain ECAPA, trained on
 speakers). The average is removed (what all lines share: the mix, the singing style) and the lines are split
-into two groups with k-means. The group that sings the first line is Singer 1. Lines too short to fingerprint
-take the singer of the nearest line. Nothing is saved: the editor shows the result for review.
+into two groups with k-means. Singer 1 is the lead: the voice that sings most of the repeated lines (the chorus);
+without repeats, whoever sings first. Lines whose voice sits between the two groups are marked unsure. Lines too
+short to fingerprint take the singer of the nearest line. Nothing is saved: the editor shows it for review.
+(Tested on In The End against a hand-coloured version: 48/55 lines right; "Both" lines aren't detectable this way.)
 """
-import json, os, subprocess, sys
+import json, os, re, subprocess, sys
+from collections import Counter
 
 import numpy as np
 
@@ -52,16 +55,26 @@ if len(embs) < 4:
 X = np.array(embs)
 X = X - X.mean(0)
 X /= np.linalg.norm(X, axis=1, keepdims=True) + 1e-9
-lab = KMeans(2, n_init=20, random_state=0).fit(X).labels_
+km = KMeans(2, n_init=20, random_state=0).fit(X)
+lab = km.labels_
 sep = float(silhouette_score(X, lab, metric="cosine")) if len(set(lab)) == 2 else 0.0
-first = lab[0]
-by_line = {i: (1 if l == first else 2) for i, l in zip(idx, lab)}
+# the lead sings the chorus: majority group among lines whose text repeats
+key = lambda i: re.sub(r"[^a-z0-9]", "", " ".join(w[2] for w in lines[i]["words"]).lower())
+reps = Counter(key(i) for i in range(len(lines)))
+rep_labels = [l for i, l in zip(idx, lab) if reps[key(i)] > 1]
+lead = Counter(rep_labels).most_common(1)[0][0] if rep_labels else lab[0]
+cen = km.cluster_centers_ / (np.linalg.norm(km.cluster_centers_, axis=1, keepdims=True) + 1e-9)
+sim = X @ cen.T
+margin = np.abs(sim[:, 0] - sim[:, 1])
+cut = 0.45 * float(np.median(margin))
+by_line = {i: (1 if l == lead else 2) for i, l in zip(idx, lab)}
+unsure_line = {i: bool(m < cut) for i, m in zip(idx, margin)}
 starts = [l["words"][0][0] for l in lines]
-out = []
+out, unsure = [], []
 for i in range(len(lines)):
     if i in by_line:
-        out.append(by_line[i])
+        out.append(by_line[i]); unsure.append(unsure_line[i])
     else:  # too short to fingerprint: same singer as the nearest fingerprinted line
         j = min(by_line, key=lambda k: abs(starts[k] - starts[i]))
-        out.append(by_line[j])
-print(json.dumps({"singers": out, "separation": round(sep, 3)}))
+        out.append(by_line[j]); unsure.append(True)
+print(json.dumps({"singers": out, "unsure": unsure, "separation": round(sep, 3)}))
