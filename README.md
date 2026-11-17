@@ -7,17 +7,19 @@ You type `Artist - Title`. The studio finds the official video on YouTube and ti
 - **Search:** shows music-video candidates (artist channel and "live", "lyrics" or "cover" uploads are flagged) and LRCLIB lyrics, with whether they're timed and how their length compares to the video. The best of each is picked for you.
 - **Make:** one job at a time. Jobs wait if the GPU doesn't have enough free memory, for example while a big LLM is loaded. A typical song takes about a minute on an RTX 5090.
 - **Preview:** plays the video with the instrumental and the moving lyrics, using the same renderer as PiKaraoke's TV page. A *Guide vocals* slider plays the separated vocals quietly along, and a *Lyrics timing* slider shifts the lyrics earlier or later without redoing anything.
+- **Lyrics editor:** a waveform of the separated vocals with every lyric line drawn as a block. Drag a block to move a line, drag its edge to stretch it, click to jump, Space to play or pause. Below it is a line list where you can fix words, nudge a line by 0.1 s, start it at the playback position, add a missing line or delete one. You can set the singer for duets (Singer 1, Singer 2 or Both, each in its own colour on screen), and *Undo all edits* restores the automatic timing.
+- **Japanese:** hand-timed romaji from [kara.moe](https://kara.moe) (the Karaoke Mugen database) when a full-length version exists. Otherwise Japanese lyrics from LRCLIB get automatic romaji (cutlet + MeCab), with the Japanese line shown above. Automatic readings are about 96–98% right; fix the rest in the editor. English translations in brackets inside romaji lyrics are dropped. On square or portrait videos the lyrics are scaled down so lines don't wrap.
 - **Publish:** copies `Artist - Title (Music Video).mp4` and `.ass` into your PiKaraoke library and asks PiKaraoke to rescan. It can also remove the older YouTube lyric-video copy of the same song, but only exact matches, and you can untick them.
 - **Library:** your PiKaraoke songs, most-sung first (read from PiKaraoke's play history), with a "Make MV version" button for songs that only have a lyric video.
 
 ## How the timing works
 
 1. [BS-RoFormer](https://github.com/nomadkaraoke/python-audio-separator) separates the vocals from the instrumental.
-2. LRCLIB's synced lyrics give a human-made start time for each line. Those times are usually for the album version, so [stable-ts](https://github.com/jianfch/stable-ts) (Whisper large-v3) aligns the lyrics to this video's vocals once. The median difference becomes the video's offset.
+2. LRCLIB's synced lyrics give a human-made start time for each line. Those times are usually for the album version, so the video's offset is needed. There are three candidates: the median and the most common difference from a [stable-ts](https://github.com/jianfch/stable-ts) (Whisper large-v3) alignment, and the best fit of line starts against the vocal track. The word aligner tries each, and the offset whose words fit the singing best wins. Repeated choruses can fool Whisper, and dense rap fools the vocal fit; the word fit catches both.
 3. Inside each line, torchaudio's MMS_FA forced aligner places every word on the vocal stem. Held last notes run as long as the singer does, and lines the video doesn't sing (album-only intros and the like) are dropped.
 4. The output is an `.ass` subtitle with `\kf` word fills on two alternating rows, so the next line is visible before it's sung.
 
-English and other Latin-alphabet songs only for now; Japanese needs a romaji step that isn't built yet.
+Works for Latin-alphabet and Japanese songs. Other scripts (Korean, Chinese, Cyrillic) are refused rather than turned into wrong romaji.
 
 ## Requirements
 
