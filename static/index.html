@@ -89,6 +89,9 @@ td.n { text-align: right; font-variant-numeric: tabular-nums; }
 .ib:hover { border-color: var(--gold); }
 .ib.danger { color: var(--bad); }
 .nowrap { white-space: nowrap; }
+.aibox { margin-top: 10px; border: 1px solid var(--gold); border-radius: 10px; padding: 10px 12px; background: rgba(255,201,77,.05); }
+.aisug { align-items: flex-start !important; justify-content: flex-start !important; gap: 10px !important; padding: 6px 0; border-bottom: 1px solid var(--line); color: var(--text) !important; }
+.aisug s { color: var(--dim); }
 .unsure { display: inline-block; width: 18px; text-align: center; color: var(--bad); font-weight: 700; margin-right: 2px; }
 .edbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 8px; }
 .edbar input { flex: 1 1 220px; background: var(--bg); border: 1px solid var(--line); color: var(--text); border-radius: 8px; padding: 8px 10px; font: inherit; }
@@ -169,10 +172,10 @@ window.onhashchange = () => {
 };
 
 // ---------- status ----------
-let FONTS = [];
+let FONTS = [], STATUS = {};
 async function status() {
   try {
-    const s = await api("/api/status"); $("#gpu").textContent = `GPU ${s.gpu_free_gb} GB free`; FONTS = s.fonts || ["/static/octopus/Arial.ttf", "/static/octopus/DroidSansFallback.ttf"];
+    const s = await api("/api/status"); STATUS = s; $("#gpu").textContent = `GPU ${s.gpu_free_gb} GB free`; FONTS = s.fonts || ["/static/octopus/Arial.ttf", "/static/octopus/DroidSansFallback.ttf"];
     if (s.renderer === false) toast("Lyrics preview needs the renderer: run  python get_renderer.py  on the server", 15000);
   } catch {}
 }
@@ -479,9 +482,14 @@ function renderEditor() {
     <div class="row" style="justify-content:space-between">
       <div><h3>Lyrics editor</h3><div class="hint">Fix a word, or move a line: ⏱ starts it at the current playback time, −/+ nudge it 0.1 s. Save to update the preview.</div></div>
       <div class="row">${ed.dirty ? '<span class="dirty">unsaved changes</span>' : ""}
+        ${STATUS.romaji_ai && ed.lines.some(l => l.orig) ? '<button class="ghost" id="aicheck" title="A local AI (Ollama) reads the Japanese and suggests fixes for wrong romaji readings">Check romaji with AI</button>' : ""}
         ${ed.canReset ? '<button class="ghost" id="edreset">Undo all edits</button>' : ""}
         <button class="primary" id="edsave" ${ed.dirty ? "" : "disabled"}>Save</button></div>
     </div>
+    ${ed.ai ? `<div class="aibox"><div class="row" style="justify-content:space-between"><b>AI romaji suggestions</b><span class="hint">${esc(ed.ai.model)} checked ${ed.ai.checked} lines</span></div>
+      ${ed.ai.suggestions.length ? ed.ai.suggestions.map((g, k) => `<label class="chk aisug"><input type="checkbox" class="aipick" value="${k}" checked>
+        <span><span class="hint">${esc(g.japanese)}</span><br><s>${esc(g.old)}</s> → <b>${esc(g.new)}</b></span></label>`).join("") : '<div class="hint">No changes suggested: the romaji looks right.</div>'}
+      <div class="row" style="margin-top:8px">${ed.ai.suggestions.length ? '<button class="primary" id="aiapply">Apply selected</button>' : ""}<button class="ghost" id="aidismiss">Close</button></div></div>` : ""}
     <div class="wavebox"><div class="wavebar"><span class="hint">Vocals: drag a line's block to move it, drag its edge to stretch it, click to jump, right-click to change its singer · Space plays/pauses</span>
       <span class="row"><span class="legend"><span><i style="background:var(--gold)"></i>Singer 1</span><span><i style="background:#3cb4ff"></i>Singer 2</span><span><i style="background:#78e678"></i>Both</span></span>
       <button class="ghost" id="detect" style="padding:5px 10px;font-size:13px" title="Find the two voices in the vocals and colour each line (review, then Save)">Detect 2 singers</button>
@@ -533,6 +541,18 @@ function renderEditor() {
     $("#newline").value = ""; changed();
   };
   $("#addline").onclick = () => add($("#newline").value);
+  if ($("#aicheck")) $("#aicheck").onclick = async () => {
+    if (ed.dirty) return toast("Save your edits first, then check the romaji");
+    $("#aicheck").disabled = true; $("#aicheck").textContent = "Checking… (about 30 s)";
+    try { const r = await api(`/api/jobs/${ed.id}/romaji-check`, {method: "POST"}); ed.ai = r; renderEditor(); }
+    catch (e) { toast(e.message); renderEditor(); }
+  };
+  if ($("#aidismiss")) $("#aidismiss").onclick = () => { ed.ai = null; renderEditor(); };
+  if ($("#aiapply")) $("#aiapply").onclick = () => {
+    const picked = [...document.querySelectorAll(".aipick:checked")].map(c => ed.ai.suggestions[+c.value]);
+    picked.forEach(g => { if (ed.lines[g.i]) ed.lines[g.i].words = g.words; });
+    ed.ai = null; toast(`Applied ${picked.length} fix${picked.length === 1 ? "" : "es"}; Save to keep them`); changed();
+  };
   $("#detect").onclick = async () => {
     if (ed.dirty && !confirm("Detect singers on the saved lyrics? Unsaved edits are kept, singer colours get replaced.")) return;
     $("#detect").disabled = true; $("#detect").textContent = "Listening…";

@@ -417,6 +417,77 @@ async def detect_singers(jid: str, req: Request):
     return res
 
 
+ROMAJI_PROMPT = (
+    "You proofread romaji for Japanese song lyrics, for karaoke singers who can't read Japanese.\n"
+    "For each line you get the Japanese and an automatic romaji (from a dictionary, which sometimes picks the wrong reading "
+    "of a kanji, e.g. 刃 as 'ha' when the song sings 'yaiba', 何も as 'nan mo' instead of 'nanimo', or splits words oddly).\n"
+    "Return the romaji as it is SUNG: Hepburn, particles は=wa, を=wo, へ=e, long vowels written as in the input (ou, uu), "
+    "words separated by spaces like the input, English words unchanged. Only change what is wrong; copy correct lines exactly.\n\n")
+ROMAJI_SCHEMA = {"type": "object", "required": ["lines"], "properties": {"lines": {"type": "array", "items": {
+    "type": "object", "required": ["n", "romaji"], "properties": {"n": {"type": "integer"}, "romaji": {"type": "string"}}}}}}
+
+
+def remap_words(old, text):
+    """New text for a line, keeping the timing of words that didn't change; changed stretches share their old span."""
+    import difflib
+    new = text.split()
+    a, b = [w[2].lower().strip(".,!?") for w in old], [w.lower().strip(".,!?") for w in new]
+    out = []
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+        if tag == "equal":
+            out += [[old[i1 + k][0], old[i1 + k][1], new[j1 + k]] for k in range(i2 - i1)]
+        elif j2 > j1:
+            if i2 > i1:
+                s0, e0 = old[i1][0], old[i2 - 1][1]
+            else:  # inserted words: squeeze them in after the previous word
+                s0 = out[-1][1] if out else old[0][0]
+                e0 = old[i1][0] if i1 < len(old) else s0 + 0.3 * (j2 - j1)
+            e0 = max(e0, s0 + 0.15 * (j2 - j1))
+            ws = new[j1:j2]
+            tot, t = sum(max(2, len(w)) for w in ws), s0
+            for w in ws:
+                d = (e0 - s0) * max(2, len(w)) / tot
+                out.append([round(t, 3), round(t + d * 0.92, 3), w]); t += d
+    return out or [list(w) for w in old]
+
+
+@app.post("/api/jobs/{jid}/romaji-check")
+async def romaji_check(jid: str, req: Request):
+    """Ask the local LLM to fix wrong readings in automatic romaji. Returns suggestions; nothing is saved."""
+    check_origin(req)
+    if not C.OLLAMA_URL:
+        raise HTTPException(400, "no Ollama server configured (OLLAMA_URL)")
+    job = load(jid)
+    if job["status"] != "done":
+        raise HTTPException(400, "finish making it first")
+    lines = load_lines(job_path(jid, "words.json"))
+    items = [{"n": i, "japanese": l["orig"], "romaji": " ".join(w[2] for w in l["words"])}
+             for i, l in enumerate(lines) if l.get("orig") and re.search(r"[\u3040-\u30ff\u4e00-\u9fff]", l["orig"])]
+    if not items:
+        raise HTTPException(400, "this song has no Japanese lines to check")
+    body = {"model": C.OLLAMA_MODEL, "prompt": ROMAJI_PROMPT + json.dumps(items, ensure_ascii=False), "stream": False,
+            "think": False, "format": ROMAJI_SCHEMA, "keep_alive": "2m",
+            "options": {"temperature": 0, "num_ctx": 8192, "num_predict": 4000}}
+
+    def ask():
+        r = urllib.request.Request(f"{C.OLLAMA_URL}/api/generate", data=json.dumps(body).encode(),
+                                   headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(r, timeout=600) as f:
+            return json.load(f)
+    try:
+        res = await asyncio.to_thread(ask)
+        fixed = {int(x["n"]): str(x["romaji"]).strip() for x in json.loads(res["response"])["lines"]}
+    except Exception as e:
+        raise HTTPException(502, f"the AI check failed ({str(e)[:100]})")
+    out = []
+    for it in items:
+        new = re.sub(r"\s+", " ", fixed.get(it["n"], "")).strip()
+        if new and new.lower() != it["romaji"].lower() and len(new) <= 300:
+            out.append({"i": it["n"], "japanese": it["japanese"], "old": it["romaji"], "new": new,
+                        "words": remap_words(lines[it["n"]]["words"], new)})
+    return {"model": C.OLLAMA_MODEL, "checked": len(items), "suggestions": out}
+
+
 @app.post("/api/jobs/{jid}/lines/reset")
 async def reset_lines(jid: str, req: Request):
     check_origin(req)
@@ -667,7 +738,7 @@ def library():
 @app.get("/api/status")
 def status():
     return {"gpu_free_gb": round(gpu_free_mib() / 1024, 1), "need_gb": NEED_GPU_MIB // 1024,
-            "pikaraoke_password": bool(C.PIKARAOKE_PASSWORD),
+            "pikaraoke_password": bool(C.PIKARAOKE_PASSWORD), "romaji_ai": bool(C.OLLAMA_URL),
             "renderer": os.path.exists(f"{HERE}/static/octopus/subtitles-octopus.js"),
             "fonts": sorted(f"/static/octopus/{f}" for f in os.listdir(f"{HERE}/static/octopus")
                             if f.lower().endswith((".ttf", ".otf")))

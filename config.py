@@ -36,6 +36,9 @@ ORIGINS = {o.strip().rstrip("/") for o in env("STUDIO_ORIGINS", "").split(",") i
 NODE_BIN = env("NODE_BIN", "")
 # don't start a job unless this much GPU memory is free (MiB)
 MIN_GPU_FREE_MIB = int(env("MIN_GPU_FREE_MIB", "9000"))
+# optional: a local Ollama server to proofread automatic romaji ("Check romaji with AI"); leave empty to hide it
+OLLAMA_URL = env("OLLAMA_URL", "").rstrip("/")
+OLLAMA_MODEL = env("OLLAMA_MODEL", "gemma4:26b")
 USER_AGENT = env("STUDIO_USER_AGENT", "karaoke-studio/0.1 (+https://github.com/alainator/karaoke-studio)")
 
 
