@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install the Karaoke Studio GPU helper on a Linux PC with an NVIDIA card (tested on CachyOS/Arch).
 #
-#   bash install-helper.sh <studio server address>      e.g. bash install-helper.sh 10.0.0.140
+#   bash install-helper.sh <studio server address>      e.g. bash install-helper.sh 192.168.1.10
 #
 # - installs git, ffmpeg, node and uv with pacman (asks for your password once), if they're missing
 # - sets up ~/karaoke-studio (Python 3.12 venv, PyTorch with CUDA, the pipeline's packages, ~10 GB with models)

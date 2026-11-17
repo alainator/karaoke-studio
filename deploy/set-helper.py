@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Connect the studio to a GPU helper PC (run on the studio server, from the studio folder).
 
-    python3 -I deploy/set-helper.py <helper address> [name]       e.g. deploy/set-helper.py 10.0.0.16 "3090 PC"
+    python3 -I deploy/set-helper.py <helper address> [name]       e.g. deploy/set-helper.py 192.168.1.20 "gaming PC"
 
 Asks for the helper's shared secret with a hidden prompt (shown once by install-helper.sh on the PC), checks that
 the helper answers with it, and saves GPU_HELPER_URL / GPU_HELPER_NAME / HELPER_TOKEN in .env (0600).
