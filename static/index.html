@@ -15,6 +15,11 @@ body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 sys
 header { display: flex; align-items: center; gap: 18px; padding: 14px 20px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: rgba(18,16,22,.92); backdrop-filter: blur(8px); z-index: 5; flex-wrap: wrap; }
 header h1 { font-size: 18px; margin: 0; letter-spacing: .3px; display: flex; align-items: center; gap: 8px; }
 header h1 span { color: var(--gold); }
+header h1 a { color: inherit; text-decoration: none; display: flex; align-items: center; gap: 8px; }
+a.back { display: inline-flex; align-items: center; gap: 6px; color: var(--dim); text-decoration: none; font-size: 14px; padding: 6px 10px 6px 0; }
+a.back:hover { color: var(--gold); }
+.detail-head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 4px; }
+.detail-head h2 { margin: 0; }
 nav { display: flex; gap: 4px; }
 nav button { background: none; border: 0; color: var(--dim); padding: 8px 12px; border-radius: 8px; font: inherit; cursor: pointer; }
 nav button.on { background: var(--panel2); color: var(--text); }
@@ -73,7 +78,7 @@ td.n { text-align: right; font-variant-numeric: tabular-nums; }
 </head>
 <body>
 <header>
-  <h1>🎤 Karaoke <span>Studio</span></h1>
+  <h1><a href="#make">🎤 Karaoke <span>Studio</span></a></h1>
   <nav>
     <button data-v="make" class="on">Make</button>
     <button data-v="jobs">Songs</button>
@@ -93,8 +98,8 @@ td.n { text-align: right; font-variant-numeric: tabular-nums; }
 
   <section id="v-jobs" class="view">
     <div id="jobdetail"></div>
-    <h2>Your songs</h2>
-    <div class="list jobs" id="joblist"></div>
+    <div id="jobsindex"><h2>Your songs</h2>
+    <div class="list jobs" id="joblist"></div></div>
   </section>
 
   <section id="v-lib" class="view">
@@ -126,14 +131,21 @@ function show(v) {
   if (v !== "jobs") closePlayer();
 }
 document.querySelectorAll("nav button").forEach(b => b.onclick = () => { location.hash = b.dataset.v; });
-window.onhashchange = () => { const [v, id] = location.hash.slice(1).split("/"); show(v || "make"); if (v === "jobs" && id) openJob(id); };
+window.onhashchange = () => {
+  const [v, id] = location.hash.slice(1).split("/");
+  show(v || "make");
+  const detail = v === "jobs" && id;
+  $("#jobsindex").style.display = detail ? "none" : "";
+  if (detail) { openJob(id); window.scrollTo(0, 0); }
+  else { closePlayer(); $("#jobdetail").innerHTML = ""; }
+};
 
 // ---------- status ----------
 let FONTS = [];
 async function status() {
   try {
-    const s = await api("/api/status"); $("#gpu").textContent = `GPU ${s.gpu_free_gb} GB free`; FONTS = s.fonts;
-    if (!s.renderer) toast("Lyrics preview needs the renderer: run  python get_renderer.py  on the server", 15000);
+    const s = await api("/api/status"); $("#gpu").textContent = `GPU ${s.gpu_free_gb} GB free`; FONTS = s.fonts || ["/static/octopus/Arial.ttf", "/static/octopus/DroidSansFallback.ttf"];
+    if (s.renderer === false) toast("Lyrics preview needs the renderer: run  python get_renderer.py  on the server", 15000);
   } catch {}
 }
 const statusReady = status(); setInterval(status, 30000);
@@ -234,6 +246,7 @@ function closePlayer() {
   if (vox) { vox.pause(); vox = null; }
   currentJob = null;
 }
+const backLink = () => `<a class="back" href="#jobs">← All songs</a>`;
 async function openJob(id) {
   if (currentJob !== id) closePlayer();
   currentJob = id;
@@ -241,7 +254,7 @@ async function openJob(id) {
   try { j = await api("/api/jobs/" + id); } catch (e) { $("#jobdetail").innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
   if (currentJob !== id) return;
   if (j.status !== "done") {
-    $("#jobdetail").innerHTML = `<h2>${esc(j.artist)} – ${esc(j.title)}</h2>
+    $("#jobdetail").innerHTML = `${backLink()}<h2>${esc(j.artist)} – ${esc(j.title)}</h2>
       <div class="ctl"><div class="status ${esc(j.status)}">${j.status === "failed" ? "Failed: " + esc(j.error) : esc(j.status === "queued" ? (j.waiting || "Waiting for its turn") : STEP_NAMES[j.step] || j.step)}</div>
       ${stepBar(j)}<div class="m hint" style="margin-top:8px">${j.log.map(esc).join("<br>")}</div>
       ${j.status === "failed" ? `<div class="row" style="margin-top:10px"><button class="ghost" id="retry">Try again</button><button class="ghost danger" id="del">Delete</button></div>` : ""}</div>`;
@@ -251,7 +264,7 @@ async function openJob(id) {
   }
   if (document.getElementById("pv") && document.getElementById("pv").dataset.id === id) return renderPublish(id, j);
   const r = j.result || {};
-  $("#jobdetail").innerHTML = `
+  $("#jobdetail").innerHTML = `${backLink()}
     <h2>${esc(j.artist)} – ${esc(j.title)}</h2>
     <div class="player"><video id="pv" data-id="${esc(id)}" controls playsinline preload="auto" src="/api/jobs/${esc(id)}/file/video.mp4"></video></div>
     <div class="controls">
@@ -301,7 +314,7 @@ async function renderPublish(id, j) {
 }
 async function delJob(id, published) {
   if (!confirm(published ? "Delete the studio copy? The published song stays in PiKaraoke." : "Delete this song from the studio?")) return;
-  try { await api("/api/jobs/" + id, {method: "DELETE"}); closePlayer(); $("#jobdetail").innerHTML = ""; location.hash = "jobs"; loadJobs(); } catch (e) { toast(e.message); }
+  try { await api("/api/jobs/" + id, {method: "DELETE"}); location.hash = "jobs"; loadJobs(); } catch (e) { toast(e.message); }
 }
 
 // ---------- library ----------

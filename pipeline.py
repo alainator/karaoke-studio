@@ -97,13 +97,64 @@ lines = [t for _, t in synced]
 res = model.align(audio, "\n".join(lines), language=lang, original_split=True)
 wsegs = [[(x.start, x.end) for x in s.words if x.word.strip()] for s in res.segments if s.words]
 del model; gc.collect(); torch.cuda.empty_cache()
+# Where does the video's singing sit relative to LRCLIB's (album) timing? Candidates:
+#  - Whisper: median and most common difference of line starts (repeated choruses can fool the median)
+#  - vocal activity: slide all line starts over the vocal stem; best match of "singing right after a line
+#    start, silence just before one that follows a pause"
+# Each candidate is scored on the vocal stem; Whisper's is kept unless activity is clearly better.
 if len(wsegs) == len(synced):
-    off = float(np.median(sorted(s[0][0] - t for s, (t, _) in zip(wsegs, synced))))
-else:  # whisper merged/split lines: fall back to matching the first few line starts
+    diffs = np.array([s[0][0] - t for s, (t, _) in zip(wsegs, synced)])
+else:
     n = min(len(wsegs), len(synced), 8)
-    off = float(np.median([wsegs[i][0][0] - synced[i][0] for i in range(n)])) if n else 0.0
-    say("info", f"whisper found {len(wsegs)} lines vs {len(synced)}; offset from the first {n}")
-say("info", f"video offset vs album timing {off:+.2f}s")
+    diffs = np.array([wsegs[i][0][0] - synced[i][0] for i in range(n)]) if n else np.array([0.0])
+    say("info", f"whisper found {len(wsegs)} lines vs {len(synced)}; using the first {n}")
+w_median = float(np.median(diffs))
+bins = np.round(diffs * 4) / 4
+vals, counts = np.unique(bins, return_counts=True)
+top = vals[counts == counts.max()]
+mode_bin = float(top[np.argmin(np.abs(top - w_median))])
+w_mode = float(np.median(diffs[np.abs(diffs - mode_bin) <= 0.5]))
+
+HOP = 0.05
+_n = int(HOP * SR)
+_r = np.sqrt((audio[: len(audio) // _n * _n].reshape(-1, _n) ** 2).mean(1))
+_act = (_r > 0.3 * np.percentile(_r, 90)).astype(float)
+_cs = np.concatenate([[0.0], np.cumsum(_act)])
+_starts = np.array([t for t, _ in synced])
+
+
+def _mean_act(a, b):
+    a, b = int(round(a / HOP)), int(round(b / HOP))
+    if b <= 0 or a >= len(_act):
+        return 0.0
+    a, b = max(a, 0), min(b, len(_act))
+    return (_cs[b] - _cs[a]) / max(1, b - a)
+
+
+def fit(o):
+    sc = 0.0
+    for i, ti in enumerate(_starts):
+        nxt = _starts[i + 1] if i + 1 < len(_starts) else ti + 4
+        sc += _mean_act(ti + o, ti + o + min(2.0, nxt - ti))
+        if i == 0 or ti - _starts[i - 1] > 3.5:
+            sc -= _mean_act(ti + o - 0.8, ti + o - 0.15)
+    return sc / len(_starts)
+
+
+_span = len(audio) / SR
+_grid = np.arange(-min(120.0, _starts[-1]), min(120.0, _span), 0.1)
+_g = np.array([fit(o) for o in _grid])
+_best = _grid[_g.argmax()]
+_fine = np.arange(_best - 0.3, _best + 0.3, 0.02)
+e_off = float(_fine[np.argmax([fit(o) for o in _fine])])
+cands = {"whisper": w_median, "whisper-mode": w_mode, "activity": e_off}
+scores = {k: fit(v) for k, v in cands.items()}
+# first candidate within 0.05 of the best fit wins (the plain Whisper median is the proven default)
+top = max(scores.values())
+pick = next(k for k in ("whisper", "whisper-mode", "activity") if scores[k] >= top - 0.05)
+off = cands[pick]
+say("info", "offset candidates " + ", ".join(f"{k} {v:+.2f}s (fit {scores[k]:.2f})" for k, v in cands.items()))
+say("info", f"video offset vs album timing {off:+.2f}s ({pick})")
 
 import torchaudio  # noqa: E402
 fa = torchaudio.pipelines.MMS_FA
