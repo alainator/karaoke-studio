@@ -739,6 +739,21 @@ def helper_health():
     return h
 
 
+def ask_helper_update():
+    """Ask an out-of-date helper to update itself from GitHub (at most every 10 minutes)."""
+    if time.time() - helper_seen.get("asked", 0) < 600:
+        return
+    helper_seen["asked"] = time.time()
+
+    def go():
+        try:
+            r = helper_call("/update", "POST", {"want": CODE_VERSION}, timeout=1900)
+            print(f"helper update: {r}", flush=True)
+        except Exception as e:
+            print(f"helper update failed: {e!r}", flush=True)
+    threading.Thread(target=go, daemon=True).start()
+
+
 def set_job(jid, **kw):
     with lock:
         job = load(jid)
@@ -779,8 +794,9 @@ def schedule_once():
         if slots["remote"] is None:
             h = helper_health()
             if h and h.get("version") != CODE_VERSION:
-                h = None  # the helper runs different code: don't use it until it's updated
                 helper_seen["stale"] = True
+                ask_helper_update()
+                h = None  # the helper runs different code: don't use it until it's updated
             elif h:
                 helper_seen["stale"] = False
             if h and not h.get("busy") and h.get("free_mib", 0) >= NEED_GPU_MIB:
@@ -790,7 +806,7 @@ def schedule_once():
         why = (f"waiting for the graphics card ({free // 1024} GB free, needs {NEED_GPU_MIB // 1024})"
                if slots["local"] is None else "waiting: the graphics card is making another song")
         if C.GPU_HELPER_URL and slots["remote"] is None:
-            why += f"; {C.GPU_HELPER_NAME} " + ("runs older studio code (update it: on that PC run deploy/install-helper.sh again)"
+            why += f"; {C.GPU_HELPER_NAME} " + ("is updating to the new studio code (if this stays, update it: on that PC run deploy/install-helper.sh again)"
                                                if helper_seen.get("stale") else "is busy" if helper_seen["health"] else "is off or unreachable")
         if j.get("waiting") != why:
             set_job(jid, waiting=why)

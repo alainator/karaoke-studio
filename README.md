@@ -55,7 +55,7 @@ On the PC (Arch/CachyOS; it asks for your password for pacman and the firewall):
 curl -fsSLO https://raw.githubusercontent.com/alainator/karaoke-studio/main/deploy/install-helper.sh
 bash install-helper.sh <studio server IP>
 ```
-This installs about 10 GB (PyTorch, models). It prints a shared secret once and runs the helper as a user service on port 5580, which only the studio server may reach, and only with the secret. Then, on the studio server:
+This installs about 10 GB (PyTorch, models). The helper keeps itself up to date: when the studio sees it running different code, it asks the helper to pull the latest version from GitHub, install new packages and restart; until then it gets no jobs. It prints a shared secret once and runs the helper as a user service on port 5580, which only the studio server may reach, and only with the secret. Then, on the studio server:
 ```sh
 venv/bin/python -I deploy/set-helper.py <PC IP> "gaming PC"   # hidden prompt for the secret, checks the connection
 sudo systemctl restart karaoke-studio

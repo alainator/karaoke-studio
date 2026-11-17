@@ -114,6 +114,37 @@ async def create(req: Request):
     return {"id": jid}
 
 
+@app.post("/update")
+async def update(req: Request):
+    """The studio asks the helper to update itself (it saw different code): pull the studio's GitHub repo, install new
+    packages if requirements.txt changed, then restart (systemd brings the service back). Refused while a job runs."""
+    b = await req.json()
+    want = str(b.get("want", ""))
+    with lock:
+        if state["busy"]:
+            raise HTTPException(409, "busy")
+        state["busy"] = "update"
+    try:
+        before = open(os.path.join(HERE, "requirements.txt")).read()
+        r = subprocess.run(["git", "-C", HERE, "pull", "--ff-only", "-q"], capture_output=True, text=True, timeout=120)
+        if r.returncode:
+            raise HTTPException(500, "git pull failed: " + (r.stderr or r.stdout).strip()[-200:])
+        if open(os.path.join(HERE, "requirements.txt")).read() != before:
+            uv = shutil.which("uv") or "uv"
+            r = subprocess.run([uv, "pip", "install", "--python", sys.executable, "-q", "-r", os.path.join(HERE, "requirements.txt")],
+                               capture_output=True, text=True, timeout=1800)
+            if r.returncode:
+                raise HTTPException(500, "package install failed: " + (r.stderr or r.stdout).strip()[-200:])
+        import importlib
+        importlib.reload(C)
+        now = C.code_version()
+    finally:
+        state["busy"] = None
+    # restart into the new code shortly after answering (Restart=on-failure brings it back)
+    threading.Timer(1.0, lambda: os._exit(3)).start()
+    return {"ok": True, "version": now, "matches": now == want}
+
+
 @app.get("/jobs/{jid}")
 def status(jid: str):
     if jid not in jobs:
