@@ -390,6 +390,42 @@ off = cands[pick]
 out_lines, skipped, _ = tried[pick]
 say("info", "word fit " + ", ".join(f"{n} {cands[n]:+.2f}s = {fit_words[n]:.3f}" for n in tried))
 say("info", f"video offset vs album timing {off:+.2f}s ({pick})")
+
+
+def _fa_words(a, b, texts):
+    """Align words (each must have letters) in audio [a, b]: (start, end) per word and its mean token score."""
+    clip = audio[int(a * SR):int(b * SR)]
+    with torch.inference_mode():
+        em, _ = fa_model(torch.from_numpy(clip).float().unsqueeze(0).to("cuda"))
+    spans = aligner(em[0], tokenizer([_nz(t) for t in texts]))
+    fps = len(clip) / SR / em.size(1)
+    return [(a + sp[0].start * fps, a + sp[-1].end * fps) for sp in spans], [float(np.mean([x.score for x in sp])) for sp in spans]
+
+
+_nz = lambda x: re.sub(r"[^a-z']", "", unicodedata.normalize("NFKD", x.replace("đ", "d").replace("Đ", "D")).lower())
+# Lines are aligned one by one inside the slot LRCLIB's timestamps give them, so one wrong timestamp squeezes a line
+# ("we'll carry on, we'll carry on" crammed into the time before a too-early next line). Re-check every pair of
+# touching lines aligned together, the boundary free to move; keep the joint timing when it clearly fits the vocals
+# better. Tested: Welcome to the Black Parade's choruses fixed, wrong moves on other songs score lower and are refused.
+moved = 0
+for i in range(len(out_lines) - 1):
+    A, B = out_lines[i]["words"], out_lines[i + 1]["words"]
+    if B[0][0] - A[-1][1] > 0.6 or any(not _nz(wd[2]) for wd in A + B):
+        continue
+    try:
+        _, sa = _fa_words(A[0][0] - 0.15, A[-1][1] + 0.15, [wd[2] for wd in A])
+        _, sb = _fa_words(B[0][0] - 0.15, B[-1][1] + 0.15, [wd[2] for wd in B])
+        tj, sj = _fa_words(A[0][0] - 0.15, B[-1][1] + 0.15, [wd[2] for wd in A + B])
+    except Exception:
+        continue
+    if abs(tj[len(A)][0] - B[0][0]) >= 0.5 and np.mean(sj) - np.mean(sa + sb) >= 0.09:
+        held = B[-1][1]  # the second line's held last note (measured earlier) isn't affected by the boundary
+        for wd, (x, y) in zip(A + B, tj):
+            wd[0], wd[1] = round(x, 3), round(y, 3)
+        B[-1][1] = max(B[-1][1], held)
+        moved += 1
+if moved:
+    say("info", f"{moved} line boundar{'y' if moved == 1 else 'ies'} moved where the lyrics' timestamps squeezed a line")
 del fa_model; gc.collect(); torch.cuda.empty_cache()
 if heard_words:
     for l in out_lines:
