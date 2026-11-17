@@ -164,18 +164,26 @@ def lrc_search(artist, title, extra_titles=()):
         text = re.sub(r"\[[^\]]*\]", "", synced) or (h.get("plainLyrics") or "")
         letters = [c for c in text if c.isalpha()]
         japanese = bool(KANA.search(text))
+        from romanize import script_of
+        script = script_of([text])
+        native = script in ("ja", "ko", "zh")
         toks = re.findall(r"[a-z']+", text.lower())
         # (only for lyrics without Japanese: a Japanese song with a few English words isn't "English lyrics")
-        english = not japanese and bool(toks) and sum(t in ENGLISH_HINTS for t in toks) / len(toks) > 0.12
-        latin = not japanese and (not letters or sum(c.isascii() for c in letters) / len(letters) >= 0.85)
+        english = not native and bool(toks) and sum(t in ENGLISH_HINTS for t in toks) / len(toks) > 0.12
+        latin = not native and (not letters or sum(c.isascii() for c in letters) / len(letters) >= 0.85)
         artist_ok = not artist or (lambda a, b: bool(a) and bool(b) and (a in b or b in a))(loose(artist), loose(h.get("artistName") or ""))
+        mt = lambda x: re.sub(r"[\W_]+", " ", unicodedata.normalize("NFKC", x or "").lower()).strip()  # keeps 漢字/한글
+        native_title = bool(re.search(r"[\u3040-\u30ff\u4e00-\u9fff\uac00-\ud7a3]", title)) and bool(mt(title)) \
+            and mt(title) in mt(h.get("trackName") or "")
         sample = " ".join(re.sub(r"^\[[^\]]*\]\s*", "", l) for l in synced.splitlines()[:14])
         out.append({"source": "lrclib", "id": h["id"], "artist": h.get("artistName"), "title": h.get("trackName"), "_sample": sample,
                     "album": h.get("albumName"), "duration": h.get("duration"), "timed": bool(synced.strip()),
-                    "latin": latin, "japanese": japanese, "english": english, "romaji": "automatic" if japanese else None,
+                    "latin": latin, "japanese": japanese, "native": native, "script": script, "english": english,
+                    "romaji": "automatic" if native else None,
                     "lines": sum(1 for l in synced.splitlines() if l.strip()), "first": first[:80],
                     "artist_match": artist_ok,
-                    "name_match": artist_ok and (by_title or (bool(norm(title)) and norm(title) in norm(h.get("trackName") or "")))})
+                    # a native-script title (月亮代表我的心) that matches counts even if the artist is typed in English
+                    "name_match": native_title or (artist_ok and (by_title or (bool(norm(title)) and norm(title) in norm(h.get("trackName") or ""))))})
     return out[:20]
 
 
@@ -834,7 +842,8 @@ def finish(jid, rc, err, oom, where):
 def maybe_auto_romaji(jid, rc):
     if rc != 0 or not C.OLLAMA_URL or not os.path.exists(job_path(jid, "result.json")):
         return
-    if json.load(open(job_path(jid, "result.json"))).get("romaji") != "automatic":
+    res = json.load(open(job_path(jid, "result.json")))
+    if res.get("romaji") != "automatic" or res.get("lang") != "ja":  # the AI checks are for Japanese romaji
         return
     set_job(jid, step="romaji")
     auto_romaji(jid)

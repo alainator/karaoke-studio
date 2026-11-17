@@ -104,7 +104,7 @@ if len(synced) < 4:
 # translation, often marked with arrows (↓ original, → romaji, ↑ translation). Group lines that start within
 # 0.15 s, keep the Japanese, use a human romaji if there is one, drop translations.
 DECOR = re.compile(r"[\u2190-\u21ff\u2669-\u266f\u2605\u2606]")
-CJK = re.compile(r"[\u3040-\u30ff\u4e00-\u9fff]")
+CJK = re.compile(r"[\u3040-\u30ff\u4e00-\u9fff\uac00-\ud7a3]")  # Japanese, Chinese, Korean
 EN_HINT = set("the you i and my me is your it's i'm don't can't of in it love all that this what with be are we they "
               "was for on so just know never can will if as at to".split())
 _english = lambda x: (lambda t: bool(t) and sum(w in EN_HINT for w in t) / len(t) > 0.12)(re.findall(r"[a-z']+", x.lower()))
@@ -148,6 +148,8 @@ else:
 synced = [(t, x) for t, x in synced if x]
 align_text = [t for _, t in synced]   # what Whisper reads (original script)
 origs = [None] * len(synced)          # original line shown above the romaji
+from romanize import script_of  # noqa: E402
+SCRIPT = script_of([t for _, t in synced])
 if any(KANA.search(t) for _, t in synced):
     # Japanese: automatic romaji (cutlet + MeCab), the Japanese line stays on screen above it
     import cutlet  # noqa: E402
@@ -162,6 +164,17 @@ if any(KANA.search(t) for _, t in synced):
     auto_n = sum(1 for k in range(len(synced)) if k not in hand_romaji and CJK.search(origs[k] or ""))
     say("info", "Japanese lyrics: " + ("hand-made romaji from the lyrics" if not auto_n else
              f"automatic romaji for {auto_n} lines" + (f", hand-made for {len(hand_romaji)}" if hand_romaji else "")) + ", Japanese shown above")
+elif SCRIPT in ("ko", "zh"):
+    # Korean: pronounced romanization (sound changes applied); Mandarin: pinyin, one syllable per character.
+    # The original line stays on screen above.
+    from romanize import romanize_korean, romanize_mandarin
+    conv = romanize_korean if SCRIPT == "ko" else romanize_mandarin
+    origs = [t if CJK.search(t) else None for _, t in synced]
+    synced = [(t, hand_romaji[k] if k in hand_romaji else (re.sub(r"\s+", " ", conv(x)).strip() or x) if CJK.search(x) else x)
+              for k, (t, x) in enumerate(synced)]
+    lang = SCRIPT
+    say("info", ("Korean lyrics: romanized as pronounced" if SCRIPT == "ko" else "Chinese lyrics: pinyin (Mandarin)")
+        + ", original shown above")
 elif source == "karamoe":
     lang = "ja"
     align_text = [t for _, t in synced]
@@ -171,7 +184,10 @@ elif source == "karamoe":
 EN = set("the you i and my me is your it's i'm don't can't of in it love all that this what with be are we they "
          "was for on so just know never can will".split())
 _en = lambda x: (lambda t: sum(w in EN for w in t) / len(t) if t else 0.0)(re.findall(r"[a-z']+", x.lower()))
-if _en(" ".join(re.sub(r"\([^)]*\)", " ", t) for _, t in synced)) < 0.05:
+ROMAJI_HINT = set("wa wo ni ga kimi boku watashi naka kokoro nai desu dake kara made".split())
+_rj = lambda x: (lambda t: sum(w in ROMAJI_HINT for w in t) / len(t) if t else 0.0)(re.findall(r"[a-z']+", x.lower()))
+_romanized = SCRIPT != "latin" or _rj(" ".join(t for _, t in synced)) > 0.05  # romaji uploads (not e.g. Spanish)
+if _romanized and _en(" ".join(re.sub(r"\([^)]*\)", " ", t) for _, t in synced)) < 0.05:
     def _strip(t):
         out = re.sub(r"\s*\(([^)]*)\)", lambda m: "" if len(m.group(1).split()) >= 3 and _en(m.group(1)) >= 0.2 else m.group(0), t)
         return out.strip() or t
@@ -183,7 +199,7 @@ if _en(" ".join(re.sub(r"\([^)]*\)", " ", t) for _, t in synced)) < 0.05:
             align_text = [t for _, t in synced]
 letters = [c for _, t in synced for c in t if c.isalpha()]
 if letters and sum(c.isascii() for c in letters) / len(letters) < 0.85:
-    fail("these lyrics are in a script the studio can't romanise yet (Japanese and Latin-alphabet songs work)")
+    fail("these lyrics are in a script the studio can't romanise yet (Latin-alphabet, Japanese, Korean and Mandarin work)")
 say("info", f"{len(synced)} timed lines")
 
 # 2. video (H.264 so PiKaraoke can pass it through untouched)
@@ -216,6 +232,18 @@ say("step", "align")
 import numpy as np, stable_whisper  # noqa: E402
 model = stable_whisper.load_model(C.WHISPER_MODEL, device="cuda")
 audio = stable_whisper.audio.load_audio(vocals)  # 16 kHz mono
+if SCRIPT == "zh" or (SCRIPT == "latin" and _en(" ".join(t for _, t in synced)) < 0.05):
+    # which language is actually sung? (the lyrics' letters can't tell Spanish from Portuguese, or Mandarin from Cantonese)
+    try:
+        mid = len(audio) // 2
+        det = model.transcribe(audio[max(0, mid - 15 * SR):mid + 15 * SR], language=None, vad=True, verbose=None).language
+    except Exception:
+        det = None
+    if SCRIPT == "zh" and det == "yue":
+        fail("this sounds like Cantonese; only Mandarin is supported for Chinese songs so far")
+    if SCRIPT == "latin" and det and det not in ("ja", "ko", "zh", "yue"):
+        lang = det
+    say("info", f"sung language: {det or 'unknown'}")
 res = model.align(audio, "\n".join(align_text), language=lang, original_split=True)
 wsegs = [[(x.start, x.end) for x in s.words if x.word.strip()] for s in res.segments if s.words]
 heard_words = []

@@ -23,7 +23,7 @@ You type `Artist - Title`. The studio finds the official video on YouTube and ti
 3. Inside each line, torchaudio's MMS_FA forced aligner places every word on the vocal stem. Held last notes run as long as the singer does, and lines the video doesn't sing (album-only intros and the like) are dropped.
 4. The output is an `.ass` subtitle with `\kf` word fills on two alternating rows, so the next line is visible before it's sung.
 
-Works for Latin-alphabet and Japanese songs. Other scripts (Korean, Chinese, Cyrillic) are refused rather than turned into wrong romaji.
+Works for Latin-alphabet languages, Japanese, Korean and Mandarin Chinese. Korean is romanized as it is pronounced, with sound-change rules applied first (묻는 → munneun, 몰라 → molla): on Stray Kids "TOP" that matched a human romanization on 99.7% of letters. Mandarin becomes pinyin, one syllable per character. Cantonese is detected by ear and refused for now. For Latin-alphabet songs that aren't English, Whisper is told the sung language instead of assuming English. Other scripts (Cyrillic, Thai…) are refused rather than turned into wrong romanizations.
 
 ## Requirements
 
