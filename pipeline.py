@@ -120,6 +120,9 @@ if any(CJK.search(x) for _, x in synced):
         groups.append(cur)
     merged = []
     for g in groups:
+        if len(g) == 1:  # a line on its own is sung, even if it's English ("Stay the night")
+            merged.append((g[0][0], _clean(g[0][1])))
+            continue
         kinds = []
         for t, x in g:
             mark = "jp" if "\u2193" in x else "ro" if "\u2192" in x else "tr" if "\u2191" in x else None
@@ -215,6 +218,16 @@ model = stable_whisper.load_model(C.WHISPER_MODEL, device="cuda")
 audio = stable_whisper.audio.load_audio(vocals)  # 16 kHz mono
 res = model.align(audio, "\n".join(align_text), language=lang, original_split=True)
 wsegs = [[(x.start, x.end) for x in s.words if x.word.strip()] for s in res.segments if s.words]
+heard_words = []
+if lang == "ja" and any(origs) and len(hand_romaji) < 0.8 * sum(1 for o in origs if o):
+    # what the singer actually sings: Japanese lyrics often write one word and sing another (幻 sung "yume");
+    # the AI romaji check compares this with the written line
+    try:
+        tr = model.transcribe(audio, language="ja", word_timestamps=True, vad=True, verbose=None)
+        heard_words = [((w.start + w.end) / 2, w.word) for sg in tr.segments for w in sg.words]
+        say("info", f"listened to the vocals for the romaji check ({len(heard_words)} words heard)")
+    except Exception as e:
+        say("info", f"couldn't transcribe the vocals ({str(e)[:60]})")
 del model; gc.collect(); torch.cuda.empty_cache()
 # Where does the video's singing sit relative to LRCLIB's (album) timing? Candidates:
 #  - Whisper: median and most common difference of line starts (repeated choruses can fool the median)
@@ -346,6 +359,11 @@ out_lines, skipped, _ = tried[pick]
 say("info", "word fit " + ", ".join(f"{n} {cands[n]:+.2f}s = {fit_words[n]:.3f}" for n in tried))
 say("info", f"video offset vs album timing {off:+.2f}s ({pick})")
 del fa_model; gc.collect(); torch.cuda.empty_cache()
+if heard_words:
+    for l in out_lines:
+        if l.get("orig"):
+            s0, s1 = l["words"][0][0] - 0.3, l["words"][-1][1] + 0.3
+            l["heard"] = "".join(w for t, w in heard_words if s0 <= t <= s1).strip()[:200] or None
 save_lines(f"{job_dir}/words.json", out_lines)
 vw, vh = (int(x) for x in vinfo.split(",")[1:3])
 open(f"{job_dir}/lyrics.ass", "w").write(make_ass(out_lines, video_size=(vw, vh)))

@@ -256,7 +256,7 @@ async def create_job(req: Request):
 
 def summary(job):
     keys = ("id", "artist", "title", "yt", "status", "step", "created", "finished", "error", "offset",
-            "published", "published_as", "video_title", "result", "waiting", "edited", "unpublished_changes", "lang", "gpu")
+            "published", "published_as", "video_title", "result", "waiting", "edited", "unpublished_changes", "lang", "gpu", "ai_romaji")
     return {k: job.get(k) for k in keys}
 
 
@@ -349,8 +349,10 @@ def _valid_lines(raw, duration):
         clean.sort(key=lambda w: w[0])
         orig = l.get("orig")
         sg = l.get("singer")
+        heard = l.get("heard")
         out.append({"words": clean, "orig": orig.strip()[:300] if isinstance(orig, str) and orig.strip() else None,
-                    "singer": sg if sg in (1, 2, 3) else None})
+                    "singer": sg if sg in (1, 2, 3) else None,
+                    "heard": heard.strip()[:200] if isinstance(heard, str) and heard.strip() else None})
     if not out:
         raise HTTPException(400, "no lines left")
     out.sort(key=lambda l: l["words"][0][0])
@@ -419,12 +421,74 @@ async def detect_singers(jid: str, req: Request):
 
 ROMAJI_PROMPT = (
     "You proofread romaji for Japanese song lyrics, for karaoke singers who can't read Japanese.\n"
-    "For each line you get the Japanese and an automatic romaji (from a dictionary, which sometimes picks the wrong reading "
-    "of a kanji, e.g. 刃 as 'ha' when the song sings 'yaiba', 何も as 'nan mo' instead of 'nanimo', or splits words oddly).\n"
+    "Each line has the written lyrics (japanese) and an automatic romaji from a dictionary, which sometimes picks the wrong "
+    "reading of a kanji (e.g. 刃 read 'ha' when the song sings 'yaiba', 何も 'nan mo' instead of 'nanimo') or splits words "
+    "oddly (傷つけあう as 'kizutsuke a u'). HEARD_RULES"
     "Return the romaji as it is SUNG: Hepburn, particles は=wa, を=wo, へ=e, long vowels written as in the input (ou, uu), "
     "words separated by spaces like the input, English words unchanged. Only change what is wrong; copy correct lines exactly.\n\n")
+HEARD_RULES = (
+    "Lines may also have 'heard': a rough automatic transcription of what the singer sings around that line (it can "
+    "include a word of the neighbouring lines and mistakes). Japanese lyrics often write one word but sing another "
+    "(furigana), e.g. written 幻 sung 夢 'yume', written 約束 sung 言葉 'kotoba'. Use 'heard' ONLY for that: a word whose "
+    "meaning is related to the written one but whose sound is completely different. If the heard word merely SOUNDS "
+    "similar to the written reading (soete vs osorete, kodomo vs kotomo), it is a transcription mistake: keep the written "
+    "reading. Never take extra words from 'heard', never change verbs, particles or kana, never add or drop words.\n")
 ROMAJI_SCHEMA = {"type": "object", "required": ["lines"], "properties": {"lines": {"type": "array", "items": {
     "type": "object", "required": ["n", "romaji"], "properties": {"n": {"type": "integer"}, "romaji": {"type": "string"}}}}}}
+
+
+def ai_romaji_suggest(lines):
+    """Ask the local LLM to fix romaji readings (using what was heard, when known). Returns (checked, suggestions)."""
+    items = []
+    for i, l in enumerate(lines):
+        if l.get("orig") and re.search(r"[\u3040-\u30ff\u4e00-\u9fff]", l["orig"]):
+            it = {"n": i, "japanese": l["orig"], "romaji": " ".join(w[2] for w in l["words"])}
+            if l.get("heard"):
+                it["heard"] = l["heard"]
+            items.append(it)
+    if not items:
+        return 0, []
+    rules = HEARD_RULES if any("heard" in it for it in items) else ""
+    body = {"model": C.OLLAMA_MODEL, "prompt": ROMAJI_PROMPT.replace("HEARD_RULES", rules) + json.dumps(items, ensure_ascii=False),
+            "stream": False, "think": False, "format": ROMAJI_SCHEMA, "keep_alive": "2m",
+            "options": {"temperature": 0, "num_ctx": 12288, "num_predict": 4000}}
+    r = urllib.request.Request(f"{C.OLLAMA_URL}/api/generate", data=json.dumps(body).encode(),
+                               headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(r, timeout=600) as f:
+        res = json.load(f)
+    fixed = {int(x["n"]): str(x["romaji"]).strip() for x in json.loads(res["response"])["lines"]}
+    out = []
+    for it in items:
+        new = re.sub(r"\s+", " ", fixed.get(it["n"], "")).strip()
+        old_n, new_n = len(it["romaji"].split()), len(new.split())
+        # guard: a "fix" that adds or drops more than a couple of words is the model pasting neighbours: skip it
+        if new and new.lower() != it["romaji"].lower() and len(new) <= 300 and abs(new_n - old_n) <= 2:
+            out.append({"i": it["n"], "japanese": it["japanese"], "old": it["romaji"], "new": new,
+                        "words": remap_words(lines[it["n"]]["words"], new)})
+    return len(items), out
+
+
+def auto_romaji(jid):
+    """After a song with automatic romaji is made: apply the AI's fixes (the plain version stays in words.orig.json)."""
+    try:
+        lines = load_lines(job_path(jid, "words.json"))
+        checked, sugg = ai_romaji_suggest(lines)
+    except Exception as e:
+        set_job(jid, log=load(jid).get("log", []) + [f"AI romaji check skipped ({str(e)[:80]})"])
+        return
+    with lock:
+        job = load(jid)
+        if sugg:
+            if not os.path.exists(job_path(jid, "words.orig.json")):
+                shutil.copyfile(job_path(jid, "words.json"), job_path(jid, "words.orig.json"))
+            for g in sugg:
+                lines[g["i"]]["words"] = g["words"]
+            save_lines(job_path(jid, "words.json"), lines)
+            open(job_path(jid, "lyrics.ass"), "w").write(make_ass(lines, job.get("offset", 0.0), video_size=vsize(job)))
+        job["ai_romaji"] = [{k: g[k] for k in ("japanese", "old", "new")} for g in sugg]
+        job.setdefault("log", []).append(f"AI romaji check: {len(sugg)} of {checked} lines fixed" if sugg else
+                                         f"AI romaji check: all {checked} lines look right")
+        save(jid, job)
 
 
 def remap_words(old, text):
@@ -461,31 +525,13 @@ async def romaji_check(jid: str, req: Request):
     if job["status"] != "done":
         raise HTTPException(400, "finish making it first")
     lines = load_lines(job_path(jid, "words.json"))
-    items = [{"n": i, "japanese": l["orig"], "romaji": " ".join(w[2] for w in l["words"])}
-             for i, l in enumerate(lines) if l.get("orig") and re.search(r"[\u3040-\u30ff\u4e00-\u9fff]", l["orig"])]
-    if not items:
-        raise HTTPException(400, "this song has no Japanese lines to check")
-    body = {"model": C.OLLAMA_MODEL, "prompt": ROMAJI_PROMPT + json.dumps(items, ensure_ascii=False), "stream": False,
-            "think": False, "format": ROMAJI_SCHEMA, "keep_alive": "2m",
-            "options": {"temperature": 0, "num_ctx": 8192, "num_predict": 4000}}
-
-    def ask():
-        r = urllib.request.Request(f"{C.OLLAMA_URL}/api/generate", data=json.dumps(body).encode(),
-                                   headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(r, timeout=600) as f:
-            return json.load(f)
     try:
-        res = await asyncio.to_thread(ask)
-        fixed = {int(x["n"]): str(x["romaji"]).strip() for x in json.loads(res["response"])["lines"]}
+        checked, out = await asyncio.to_thread(ai_romaji_suggest, lines)
     except Exception as e:
         raise HTTPException(502, f"the AI check failed ({str(e)[:100]})")
-    out = []
-    for it in items:
-        new = re.sub(r"\s+", " ", fixed.get(it["n"], "")).strip()
-        if new and new.lower() != it["romaji"].lower() and len(new) <= 300:
-            out.append({"i": it["n"], "japanese": it["japanese"], "old": it["romaji"], "new": new,
-                        "words": remap_words(lines[it["n"]]["words"], new)})
-    return {"model": C.OLLAMA_MODEL, "checked": len(items), "suggestions": out}
+    if not checked:
+        raise HTTPException(400, "this song has no Japanese lines to check")
+    return {"model": C.OLLAMA_MODEL, "checked": checked, "suggestions": out}
 
 
 @app.post("/api/jobs/{jid}/lines/reset")
@@ -499,6 +545,7 @@ async def reset_lines(jid: str, req: Request):
         shutil.copyfile(orig, job_path(jid, "words.json"))
         open(job_path(jid, "lyrics.ass"), "w").write(make_ass(load_lines(orig), job.get("offset", 0.0), video_size=vsize(job)))
         job["edited"] = None
+        job["ai_romaji"] = None  # back to the plain automatic romaji
         if job.get("published"):
             job["unpublished_changes"] = True
         save(jid, job)
@@ -637,6 +684,15 @@ def finish(jid, rc, err, oom, where):
         save(jid, job)
 
 
+def maybe_auto_romaji(jid, rc):
+    if rc != 0 or not C.OLLAMA_URL or not os.path.exists(job_path(jid, "result.json")):
+        return
+    if json.load(open(job_path(jid, "result.json"))).get("romaji") != "automatic":
+        return
+    set_job(jid, step="romaji")
+    auto_romaji(jid)
+
+
 def run_local(jid):
     rc, err, oom = 1, None, False
     try:
@@ -660,6 +716,7 @@ def run_local(jid):
         rc = p.wait()
         if oom:
             time.sleep(20)
+        maybe_auto_romaji(jid, rc)
         finish(jid, rc, err, oom, "local")
     except Exception as e:
         try:
@@ -699,6 +756,7 @@ def run_remote(jid):
                     with helper_call(f"/jobs/{jid}/files/{name}", timeout=120, raw=True) as r, open(dst + ".part", "wb") as f:
                         shutil.copyfileobj(r, f, 1 << 20)
                     os.replace(dst + ".part", dst)
+                maybe_auto_romaji(jid, 0)
                 finish(jid, 0, None, False, "remote")
             else:
                 finish(jid, 1, st.get("error"), bool(st.get("oom")), "remote")

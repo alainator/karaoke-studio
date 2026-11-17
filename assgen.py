@@ -3,7 +3,8 @@ the lyric editor).
 
 words.json, version 2: {"version": 2, "lines": [{"words": [[start, end, "word"], ...], "orig": "原文", "singer": 2}, ...]}
   times in seconds on the video's clock *before* the job's timing offset; "orig" is optional (the original
-  Japanese line shown above the romaji); "singer" is optional: 1, 2 or 3 (both), each sung in its own colour.
+  Japanese line shown above the romaji); "singer" is optional: 1, 2 or 3 (both), each sung in its own colour; "heard"
+  (optional) is Whisper's transcription of what is sung on a Japanese line, for the AI romaji check.
   Version 1 (older jobs) was just the list of word lists.
 """
 import json, os
@@ -50,9 +51,9 @@ def normalize(data):
         if isinstance(l, dict):
             sg = l.get("singer")
             out.append({"words": [list(w) for w in l.get("words", [])], "orig": l.get("orig") or None,
-                        "singer": sg if sg in (1, 2, 3) else None})
+                        "singer": sg if sg in (1, 2, 3) else None, "heard": l.get("heard") or None})
         else:
-            out.append({"words": [list(w) for w in l], "orig": None, "singer": None})
+            out.append({"words": [list(w) for w in l], "orig": None, "singer": None, "heard": None})
     return [l for l in out if l["words"]]
 
 
@@ -64,7 +65,8 @@ def save_lines(path, lines):
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
         json.dump({"version": 2, "lines": [{"words": l["words"], **({"orig": l["orig"]} if l.get("orig") else {}),
-                                            **({"singer": l["singer"]} if l.get("singer") in (1, 2, 3) else {})}
+                                            **({"singer": l["singer"]} if l.get("singer") in (1, 2, 3) else {}),
+                                            **({"heard": l["heard"]} if l.get("heard") else {})}
                                            for l in lines]}, f, ensure_ascii=False)
     os.replace(tmp, path)
 

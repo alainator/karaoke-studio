@@ -92,6 +92,8 @@ td.n { text-align: right; font-variant-numeric: tabular-nums; }
 .aibox { margin-top: 10px; border: 1px solid var(--gold); border-radius: 10px; padding: 10px 12px; background: rgba(255,201,77,.05); }
 .aisug { align-items: flex-start !important; justify-content: flex-start !important; gap: 10px !important; padding: 6px 0; border-bottom: 1px solid var(--line); color: var(--text) !important; }
 .aisug s { color: var(--dim); }
+details.aidone { margin-top: 14px; } details.aidone summary { cursor: pointer; }
+details.aidone .aisug { display: block; padding: 6px 0; }
 .unsure { display: inline-block; width: 18px; text-align: center; color: var(--bad); font-weight: 700; margin-right: 2px; }
 .edbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 8px; }
 .edbar input { flex: 1 1 220px; background: var(--bg); border: 1px solid var(--line); color: var(--text); border-radius: 8px; padding: 8px 10px; font: inherit; }
@@ -261,11 +263,11 @@ async function makeJob() {
 }
 
 // ---------- jobs ----------
-const STEP_NAMES = {queued: "Waiting", lyrics: "Getting lyrics", download: "Downloading video", separate: "Removing vocals", align: "Lining up lyrics", render: "Finishing", done: "Ready"};
+const STEP_NAMES = {queued: "Waiting", lyrics: "Getting lyrics", download: "Downloading video", separate: "Removing vocals", align: "Lining up lyrics", render: "Finishing", romaji: "Checking romaji with AI", done: "Ready"};
 let jobsTimer = null, currentJob = null;
 function stepBar(j) {
   const order = ["lyrics", "download", "separate", "align", "render"];
-  const k = j.status === "done" ? 99 : order.indexOf(j.step);
+  const k = j.status === "done" ? 99 : j.step === "romaji" ? order.length - 1 : order.indexOf(j.step);
   return `<div class="steps">${order.map((s, i) => `<i class="${i < k ? "d" : i === k && j.status === "running" ? "a" : ""}"></i>`).join("")}</div>`;
 }
 function jobLine(j) {
@@ -321,6 +323,8 @@ async function openJob(id) {
         <div class="hint">Drag right if the words light up too early.</div></div>
       <div class="ctl"><div class="hint">${r.romaji === "automatic" ? '<span class="tag warn">automatic romaji</span> check readings in the editor below<br>' : r.romaji === "kara.moe" ? '<span class="tag good">hand-timed romaji (kara.moe)</span><br>' : ""}${r.lines ?? "?"} lines · video ${esc(r.video || "")} · made in ${r.seconds ?? "?"} s${r.gpu ? " on " + esc(r.gpu) : ""}${r.skipped && r.skipped.length ? `<br>Not sung in this video: ${r.skipped.map(s => "“" + esc(s) + "”").join(", ")}` : ""}</div></div>
     </div>
+    ${j.ai_romaji && j.ai_romaji.length ? `<details class="ctl aidone"><summary><b>AI fixed ${j.ai_romaji.length} romaji reading${j.ai_romaji.length === 1 ? "" : "s"}</b> <span class="hint">(it read the Japanese and listened to the singing; <i>Undo all edits</i> in the editor restores the plain automatic romaji)</span></summary>
+      ${j.ai_romaji.map(g => `<div class="aisug"><span class="hint">${esc(g.japanese)}</span><br><s>${esc(g.old)}</s> → <b>${esc(g.new)}</b></div>`).join("")}</details>` : ""}
     <div class="ctl editor" id="editor"><span class="spinner"></span></div>
     <div class="ctl pub" id="pub"><span class="spinner"></span></div>`;
   const v = $("#pv");
