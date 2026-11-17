@@ -251,6 +251,8 @@ async function makeJob() {
   $("#make").disabled = true;
   try {
     const r = await api("/api/jobs", {method: "POST", body: JSON.stringify({yt: pick.video.id, lrc_id: pick.lyr.id, lyrics_source: pick.lyr.source, artist, title, video_title: pick.video.title})});
+    // the search is done with: start the Make tab fresh next time
+    $("#q").value = ""; $("#results").innerHTML = ""; pick = {video: null, lyr: null, data: null};
     location.hash = "jobs/" + r.id;
   } catch (e) { toast(e.message); $("#make").disabled = false; }
 }
