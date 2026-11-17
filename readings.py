@@ -53,7 +53,7 @@ dev = "cuda" if torch.cuda.is_available() else "cpu"
 fa = torchaudio.pipelines.MMS_FA
 model = fa.get_model(with_star=False).to(dev)
 tok = fa.get_tokenizer()
-norm = lambda x: [w for w in (re.sub(r"[^a-z']", "", unicodedata.normalize("NFKD", w).lower()) for w in x.split()) if w]
+norm = lambda x: [w for w in (re.sub(r"[^a-z']", "", unicodedata.normalize("NFKD", w.replace("đ", "d").replace("Đ", "D")).lower()) for w in x.split()) if w]
 
 
 def fit(clip, text):

@@ -10,7 +10,7 @@ Progress goes to stdout as "@step <name>" / "@info <text>"; failures end with "@
 Line starts come from LRCLIB's human timing shifted by this video's offset (found with Whisper); words inside
 a line come from torchaudio MMS_FA forced alignment on the separated vocal stem.
 """
-import json, os, re, shutil, subprocess, sys, time, urllib.parse, urllib.request
+import json, os, re, shutil, subprocess, sys, time, unicodedata, urllib.parse, urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config as C  # noqa: E402
@@ -198,7 +198,7 @@ if _romanized and _en(" ".join(re.sub(r"\([^)]*\)", " ", t) for _, t in synced))
         if not any(origs):
             align_text = [t for _, t in synced]
 letters = [c for _, t in synced for c in t if c.isalpha()]
-if letters and sum(c.isascii() for c in letters) / len(letters) < 0.85:
+if letters and sum(unicodedata.name(c, "").startswith("LATIN") for c in letters) / len(letters) < 0.85:
     fail("these lyrics are in a script the studio can't romanise yet (Latin-alphabet, Japanese, Korean and Mandarin work)")
 say("info", f"{len(synced)} timed lines")
 
@@ -232,7 +232,9 @@ say("step", "align")
 import numpy as np, stable_whisper  # noqa: E402
 model = stable_whisper.load_model(C.WHISPER_MODEL, device="cuda")
 audio = stable_whisper.audio.load_audio(vocals)  # 16 kHz mono
-if SCRIPT == "zh" or (SCRIPT == "latin" and _en(" ".join(t for _, t in synced)) < 0.05):
+_txt = " ".join(t for _, t in synced)
+_accented = sum(1 for c in _txt if c.isalpha() and not c.isascii()) / max(1, sum(c.isalpha() for c in _txt))
+if SCRIPT == "zh" or (SCRIPT == "latin" and (_en(_txt) < 0.05 or _accented > 0.03)):
     # which language is actually sung? (the lyrics' letters can't tell Spanish from Portuguese, or Mandarin from Cantonese)
     try:
         mid = len(audio) // 2
@@ -334,7 +336,7 @@ def align_at(off):
         clip = audio[int(a * SR):int(b_al * SR)]
         if len(clip) == 0 or float(np.sqrt(np.mean(clip ** 2))) < 0.08 * VOCAL_RMS:
             skipped.append(text); continue
-        norm = [re.sub(r"[^a-z']", "", unicodedata.normalize("NFKD", x).lower()) for x in orig]
+        norm = [re.sub(r"[^a-z']", "", unicodedata.normalize("NFKD", x.replace("đ", "d").replace("Đ", "D")).lower()) for x in orig]
         keep = [k for k, x in enumerate(norm) if x]
         words = []
         try:

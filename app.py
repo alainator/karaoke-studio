@@ -35,7 +35,7 @@ lock = threading.Lock()
 
 # ---------------- helpers ----------------
 def norm(s):
-    s = unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode().lower()
+    s = unicodedata.normalize("NFKD", (s or "").replace("đ", "d").replace("Đ", "D")).encode("ascii", "ignore").decode().lower()
     return re.sub(r"[^a-z0-9]+", " ", s).strip()
 
 
@@ -170,7 +170,7 @@ def lrc_search(artist, title, extra_titles=()):
         toks = re.findall(r"[a-z']+", text.lower())
         # (only for lyrics without Japanese: a Japanese song with a few English words isn't "English lyrics")
         english = not native and bool(toks) and sum(t in ENGLISH_HINTS for t in toks) / len(toks) > 0.12
-        latin = not native and (not letters or sum(c.isascii() for c in letters) / len(letters) >= 0.85)
+        latin = not native and (not letters or sum(unicodedata.name(c, "").startswith("LATIN") for c in letters) / len(letters) >= 0.85)
         artist_ok = not artist or (lambda a, b: bool(a) and bool(b) and (a in b or b in a))(loose(artist), loose(h.get("artistName") or ""))
         mt = lambda x: re.sub(r"[\W_]+", " ", unicodedata.normalize("NFKC", x or "").lower()).strip()  # keeps 漢字/한글
         native_title = bool(re.search(r"[\u3040-\u30ff\u4e00-\u9fff\uac00-\ud7a3]", title)) and bool(mt(title)) \
@@ -590,7 +590,7 @@ def paste_suggest(lines, text):
     """Line up pasted romaji (any site's layout: lines split or joined differently, section headers) with the song's
     lines by their letters, and suggest each line's text from it. Returns suggestions like the AI check."""
     import difflib
-    letters = lambda w: re.sub(r"[^a-z]", "", unicodedata.normalize("NFKD", w).lower())
+    letters = lambda w: re.sub(r"[^a-z]", "", unicodedata.normalize("NFKD", w.replace("đ", "d").replace("Đ", "D")).lower())
     # the song: one letter string, remembering which line each letter belongs to
     S, sl = [], []
     for i, l in enumerate(lines):
