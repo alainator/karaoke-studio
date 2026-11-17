@@ -249,13 +249,15 @@ if SCRIPT == "zh" or (SCRIPT == "latin" and (_en(_txt) < 0.05 or _accented > 0.0
 res = model.align(audio, "\n".join(align_text), language=lang, original_split=True)
 wsegs = [[(x.start, x.end) for x in s.words if x.word.strip()] for s in res.segments if s.words]
 heard_words = []
-if lang == "ja" and any(origs) and len(hand_romaji) < 0.8 * sum(1 for o in origs if o):
-    # what the singer actually sings: Japanese lyrics often write one word and sing another (幻 sung "yume");
-    # the AI romaji check compares this with the written line
+listen_ja = lang == "ja" and any(origs) and len(hand_romaji) < 0.8 * sum(1 for o in origs if o)
+listen_latin = SCRIPT == "latin" and not any(origs)
+if listen_ja or listen_latin:
+    # what the singer actually sings. Japanese lyrics often write one word and sing another (幻 sung "yume");
+    # crowd-sourced lyrics of any language drop or swap words. The AI checks compare this with the written line.
     try:
-        tr = model.transcribe(audio, language="ja", word_timestamps=True, vad=True, verbose=None)
+        tr = model.transcribe(audio, language=lang, word_timestamps=True, vad=True, verbose=None)
         heard_words = [((w.start + w.end) / 2, w.word) for sg in tr.segments for w in sg.words]
-        say("info", f"listened to the vocals for the romaji check ({len(heard_words)} words heard)")
+        say("info", f"listened to the vocals for the lyrics check ({len(heard_words)} words heard)")
     except Exception as e:
         say("info", f"couldn't transcribe the vocals ({str(e)[:60]})")
 del model; gc.collect(); torch.cuda.empty_cache()
@@ -391,9 +393,11 @@ say("info", f"video offset vs album timing {off:+.2f}s ({pick})")
 del fa_model; gc.collect(); torch.cuda.empty_cache()
 if heard_words:
     for l in out_lines:
-        if l.get("orig"):
+        if l.get("orig") or listen_latin:
             s0, s1 = l["words"][0][0] - 0.3, l["words"][-1][1] + 0.3
-            l["heard"] = "".join(w for t, w in heard_words if s0 <= t <= s1).strip()[:200] or None
+            ws = [w for t, w in heard_words if s0 <= t <= s1]
+            text = "".join(ws) if l.get("orig") else " ".join(w.strip() for w in ws)
+            l["heard"] = re.sub(r"\s+", " ", text).strip()[:200] or None
 save_lines(f"{job_dir}/words.json", out_lines)
 vw, vh = (int(x) for x in vinfo.split(",")[1:3])
 open(f"{job_dir}/lyrics.ass", "w").write(make_ass(out_lines, video_size=(vw, vh)))

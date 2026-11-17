@@ -269,7 +269,7 @@ async function makeJob() {
 }
 
 // ---------- jobs ----------
-const STEP_NAMES = {queued: "Waiting", lyrics: "Getting lyrics", download: "Downloading video", separate: "Removing vocals", align: "Lining up lyrics", render: "Finishing", romaji: "Checking romaji with AI", done: "Ready"};
+const STEP_NAMES = {queued: "Waiting", lyrics: "Getting lyrics", download: "Downloading video", separate: "Removing vocals", align: "Lining up lyrics", render: "Finishing", romaji: "Checking lyrics with AI", done: "Ready"};
 let jobsTimer = null, currentJob = null;
 function stepBar(j) {
   const order = ["lyrics", "download", "separate", "align", "render"];
@@ -331,7 +331,7 @@ async function openJob(id) {
         <div class="hint">Drag right if the words light up too early.</div></div>
       <div class="ctl"><div class="hint">${r.romaji === "automatic" && r.lang && r.lang !== "ja" ? `<span class="tag warn">automatic ${r.lang === "ko" ? "romanization" : "pinyin"}</span> check it against the singing<br>` : r.romaji === "automatic" ? '<span class="tag warn">automatic romaji</span> check readings in the editor below<br>' : r.romaji === "kara.moe" ? '<span class="tag good">hand-timed romaji (kara.moe)</span><br>' : ""}${r.lines ?? "?"} lines · video ${esc(r.video || "")} · made in ${r.seconds ?? "?"} s${r.gpu ? " on " + esc(r.gpu) : ""}${r.skipped && r.skipped.length ? `<br>Not sung in this video: ${r.skipped.map(s => "“" + esc(s) + "”").join(", ")}` : ""}</div></div>
     </div>
-    ${j.ai_romaji && j.ai_romaji.length ? `<details class="ctl aidone"><summary><b>AI fixed ${j.ai_romaji.length} romaji reading${j.ai_romaji.length === 1 ? "" : "s"}</b> <span class="hint">(it read the Japanese, and checked special readings against the singing; <i>Undo all edits</i> in the editor restores the plain automatic romaji)</span></summary>
+    ${j.ai_romaji && j.ai_romaji.length ? `<details class="ctl aidone"><summary><b>AI fixed ${j.ai_romaji.length} ${j.ai_romaji.some(g => g.japanese) ? "romaji reading" : "lyric line"}${j.ai_romaji.length === 1 ? "" : "s"}</b> <span class="hint">(${j.ai_romaji.some(g => g.japanese) ? "it read the Japanese, and checked special readings against the singing" : "where the lyrics differ from what's sung, checked against the vocals"}; <i>Undo all edits</i> in the editor restores the original)</span></summary>
       ${j.ai_romaji.map(g => `<div class="aisug"><span class="hint">${esc(g.japanese)}${g.how && g.how.includes("heard") ? " · confirmed by the singing" : ""}</span><br><s>${esc(g.old)}</s> → <b>${esc(g.new)}</b></div>`).join("")}</details>` : ""}
     <div class="ctl editor" id="editor"><span class="spinner"></span></div>
     <div class="ctl pub" id="pub"><span class="spinner"></span></div>`;
@@ -503,19 +503,19 @@ function renderEditor() {
       <div><h3>Lyrics editor</h3><div class="hint">Fix a word, or move a line: ⏱ starts it at the current playback time, −/+ nudge it 0.1 s. Save to update the preview.</div></div>
       <div class="row">${ed.dirty ? '<span class="dirty">unsaved changes</span>' : ""}
         <button class="ghost" id="pastebtn" title="Paste the lyrics from a lyrics site (e.g. Genius): fixes words/readings and, from section headers like [Chorus: Name], colours lines by singer; you review every change">${ed.lines.some(l => l.orig) ? "Paste romaji" : "Paste lyrics"}</button>
-        ${STATUS.romaji_ai && ed.lines.some(l => l.orig) ? '<button class="ghost" id="aicheck" title="A local AI (Ollama) reads the Japanese and suggests fixes for wrong romaji readings">Check romaji with AI</button>' : ""}
+        ${STATUS.romaji_ai && (ed.lines.some(l => l.orig && /[\u3040-\u30ff]/.test(l.orig)) || !ed.lines.some(l => l.orig)) ? `<button class="ghost" id="aicheck" title="Compares the lyrics with what's actually sung and suggests fixes; you review every change">${ed.lines.some(l => l.orig) ? "Check romaji with AI" : "Check lyrics with AI"}</button>` : ""}
         ${ed.canReset ? '<button class="ghost" id="edreset">Undo all edits</button>' : ""}
         <button class="primary" id="edsave" ${ed.dirty ? "" : "disabled"}>Save</button></div>
     </div>
     ${ed.paste ? `<div class="aibox"><b>Paste lyrics</b><div class="hint">Copy the whole lyrics from a lyrics site and paste them here (for Japanese/Korean/Chinese songs, the "Romanized" version, e.g. Genius Romanizations). Line breaks don't matter: they're lined up with this song by sound. Section headers like <i>[Chorus: Bang Chan, Han]</i> colour the lines by singer. You review every change.</div>
       <textarea id="pastetext" rows="8" style="width:100%;margin-top:8px;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:8px;font:inherit"></textarea>
       <div class="row" style="margin-top:8px"><button class="primary" id="pastego">Compare</button><button class="ghost" id="pastecancel">Cancel</button></div></div>` : ""}
-    ${ed.ai ? `<div class="aibox"><div class="row" style="justify-content:space-between"><b>${ed.ai.model === "pasted romaji" ? "Changes from the pasted lyrics" : "AI romaji suggestions"}</b><span class="hint">${ed.ai.model === "pasted romaji" ? "untick any you don't want" : esc(ed.ai.model) + " checked " + ed.ai.checked + " lines"}</span></div>
+    ${ed.ai ? `<div class="aibox"><div class="row" style="justify-content:space-between"><b>${ed.ai.model === "pasted romaji" ? "Changes from the pasted lyrics" : ed.lines.some(l => l.orig) ? "AI romaji suggestions" : "AI lyrics suggestions"}</b><span class="hint">${ed.ai.model === "pasted romaji" ? "untick any you don't want" : esc(ed.ai.model) + " checked " + ed.ai.checked + (ed.lines.some(l => l.orig) ? " lines" : " lines that sounded different")}</span></div>
       ${ed.ai.cast && ed.ai.cast.length ? `<label class="chk aisug"><input type="checkbox" id="aimembers" checked>
         <span><b>Use singer colours</b> from the section headers (${ed.ai.members.filter(Boolean).length} lines):
         ${ed.ai.cast.map((n, k) => `<span class="tag" style="color:${MEMBER_RGB[k]}">${esc(n)}</span>`).join("")}</span></label>` : ""}
       ${ed.ai.suggestions.length ? ed.ai.suggestions.map((g, k) => `<label class="chk aisug"><input type="checkbox" class="aipick" value="${k}" checked>
-        <span><span class="hint">${esc(g.japanese)}${g.how && g.how.includes("heard") ? " · confirmed by the singing" : ""}</span><br><s>${esc(g.old)}</s> → <b>${esc(g.new)}</b></span></label>`).join("") : '<div class="hint">No changes suggested: the romaji looks right.</div>'}
+        <span><span class="hint">${esc(g.japanese)}${g.how && g.how.includes("heard") ? " · confirmed by the singing" : ""}</span><br><s>${esc(g.old)}</s> → <b>${esc(g.new)}</b></span></label>`).join("") : `<div class="hint">No changes suggested: ${ed.lines.some(l => l.orig) ? "the romaji looks right" : "where the singing sounded different, the written lyrics still fit the vocals best"}.</div>`}
       <div class="row" style="margin-top:8px">${ed.ai.suggestions.length || (ed.ai.cast && ed.ai.cast.length) ? '<button class="primary" id="aiapply">Apply selected</button>' : ""}<button class="ghost" id="aidismiss">Close</button></div></div>` : ""}
     <div class="wavebox"><div class="wavebar"><span class="hint">Vocals: drag a line's block to move it, drag its edge to stretch it, click to jump, right-click to change its singer · Space plays/pauses</span>
       <span class="row"><span class="legend">${ed.cast.length ? ed.cast.map((n, k) => `<span><i style="background:${MEMBER_RGB[k]}"></i>${esc(n)}</span>`).join("") + '<span><i style="background:var(--gold)"></i>Together</span>' : '<span><i style="background:var(--gold)"></i>Singer 1</span><span><i style="background:#3cb4ff"></i>Singer 2</span><span><i style="background:#78e678"></i>Both</span>'}</span>

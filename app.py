@@ -553,13 +553,28 @@ def romaji_fixes(jid, lines):
     return checked, out
 
 
+def lyrics_fixes(jid, lines):
+    """Latin-script songs: lyricscheck.py (LLM proposes the sung line where Whisper heard something else; the aligner
+    decides against the vocals). Returns suggestions against the saved lines."""
+    try:
+        r = subprocess.run([sys.executable, "-I", f"{HERE}/lyricscheck.py", job_path(jid)], input=json.dumps(lines),
+                           capture_output=True, text=True, timeout=900, env=C.tool_env())
+        res = json.loads(r.stdout.strip().splitlines()[-1])
+    except Exception:
+        return 0, []
+    out = [{"i": c["i"], "japanese": "", "old": c["old"], "new": c["new"], "how": "heard",
+            "words": remap_words(lines[c["i"]]["words"], c["new"])} for c in res.get("changes", [])]
+    return res.get("checked", 0), out
+
+
 def auto_romaji(jid):
     """After a song with automatic romaji is made: apply the AI's fixes (the plain version stays in words.orig.json)."""
     try:
         lines = load_lines(job_path(jid, "words.json"))
-        checked, sugg = romaji_fixes(jid, lines)
+        latin = not any(l.get("orig") for l in lines)
+        checked, sugg = (lyrics_fixes if latin else romaji_fixes)(jid, lines)
     except Exception as e:
-        set_job(jid, log=load(jid).get("log", []) + [f"AI romaji check skipped ({str(e)[:80]})"])
+        set_job(jid, log=load(jid).get("log", []) + [f"AI lyrics check skipped ({str(e)[:80]})"])
         return
     with lock:
         job = load(jid)
@@ -572,8 +587,9 @@ def auto_romaji(jid):
             open(job_path(jid, "lyrics.ass"), "w").write(make_ass(lines, job.get("offset", 0.0), video_size=vsize(job),
                                                                   cast=load_cast(job_path(jid, "words.json"))))
         job["ai_romaji"] = [{k: g[k] for k in ("japanese", "old", "new", "how")} for g in sugg]
-        job.setdefault("log", []).append(f"AI romaji check: {len(sugg)} of {checked} lines fixed" if sugg else
-                                         f"AI romaji check: all {checked} lines look right")
+        what = "lyrics" if latin else "romaji"
+        job.setdefault("log", []).append(f"AI {what} check: {len(sugg)} lines fixed ({checked} looked different from what's sung)"
+                                         if sugg else f"AI {what} check: no changes needed")
         save(jid, job)
 
 
@@ -706,10 +722,11 @@ async def romaji_check(jid: str, req: Request):
         raise HTTPException(400, "finish making it first")
     lines = load_lines(job_path(jid, "words.json"))
     try:
-        checked, out = await asyncio.to_thread(romaji_fixes, jid, lines)
+        fixer = romaji_fixes if any(l.get("orig") for l in lines) else lyrics_fixes
+        checked, out = await asyncio.to_thread(fixer, jid, lines)
     except Exception as e:
         raise HTTPException(502, f"the AI check failed ({str(e)[:100]})")
-    if not checked:
+    if not checked and any(l.get("orig") for l in lines):
         raise HTTPException(400, "this song has no Japanese lines to check")
     return {"model": C.OLLAMA_MODEL, "checked": checked, "suggestions": out}
 
@@ -919,7 +936,9 @@ def maybe_auto_romaji(jid, rc):
     if rc != 0 or not C.OLLAMA_URL or not os.path.exists(job_path(jid, "result.json")):
         return
     res = json.load(open(job_path(jid, "result.json")))
-    if res.get("romaji") != "automatic" or res.get("lang") != "ja":  # the AI checks are for Japanese romaji
+    ja_auto = res.get("romaji") == "automatic" and res.get("lang") == "ja"
+    latin = not res.get("romaji") and res.get("lang") not in ("ko", "zh", "ja")
+    if not (ja_auto or latin):  # Korean/Chinese romanization and hand-made romaji aren't checked
         return
     set_job(jid, step="romaji")
     auto_romaji(jid)
