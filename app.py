@@ -105,7 +105,9 @@ def final_base(job):
 
 # ---------------- search ----------------
 BAD_WORDS = ("lyric", "karaoke", "live", "cover", "reaction", "remix", "instrumental", "8d", "sped up", "slowed",
-             "nightcore", "tutorial", "lesson", "audio only", "visualizer", "fan made", "unofficial", "concert")
+             "nightcore", "tutorial", "lesson", "audio only", "visualizer", "fan made", "unofficial", "concert",
+             "dance practice", "practice", "performance video", "performance", "making film", "making", "teaser",
+             "behind", "fancam", "focus cam", "choreography", "relay dance", "dance cover", "skzoo ver", "shorts")
 
 
 def yt_search(artist, title):
@@ -128,9 +130,12 @@ def yt_search(artist, title):
             score += 1.5
         if "official" in nt_ and "unofficial" not in nt_:
             score += 2
+        if re.search(r"\bm v\b|\bmv\b|music video", nt_):  # "M/V" (K-pop labels), "MV", "Music Video"
+            score += 2
         if nt and nt in nt_:
             score += 1
         bad = [w for w in BAD_WORDS if w in nt_]
+        bad = [w for w in bad if not any(w != o and w in o for o in bad)]
         score -= 4 * len(bad)
         score += math.log10((e.get("view_count") or 0) + 1) / 3
         out.append({"id": e["id"], "title": t, "channel": ch, "duration": int(e["duration"]),
