@@ -204,12 +204,7 @@ _fine = np.arange(_best - 0.3, _best + 0.3, 0.02)
 e_off = float(_fine[np.argmax([fit(o) for o in _fine])])
 cands = {"whisper": w_median, "whisper-mode": w_mode, "activity": e_off}
 scores = {k: fit(v) for k, v in cands.items()}
-# first candidate within 0.05 of the best fit wins (the plain Whisper median is the proven default)
-top = max(scores.values())
-pick = next(k for k in ("whisper", "whisper-mode", "activity") if scores[k] >= top - 0.05)
-off = cands[pick]
-say("info", "offset candidates " + ", ".join(f"{k} {v:+.2f}s (fit {scores[k]:.2f})" for k, v in cands.items()))
-say("info", f"video offset vs album timing {off:+.2f}s ({pick})")
+say("info", "offset candidates " + ", ".join(f"{k} {v:+.2f}s (activity fit {scores[k]:.2f})" for k, v in cands.items()))
 
 import torchaudio  # noqa: E402
 fa = torchaudio.pipelines.MMS_FA
@@ -217,51 +212,74 @@ fa_model = fa.get_model(with_star=False).to("cuda")
 tokenizer, aligner = fa.get_tokenizer(), fa.get_aligner()
 VOCAL_RMS = float(np.sqrt(np.mean(audio ** 2)))
 end_all = len(audio) / SR
-out_lines, skipped = [], []
-for i, (t, text) in enumerate(synced):
-    a = max(0.0, t + off - 0.3)
-    b = (synced[i + 1][0] + off - 0.05) if i + 1 < len(synced) else min(end_all, a + 12)
-    if a >= end_all - 0.5:
-        skipped.append(text); continue
-    orig = text.split()
-    b_al = min(b, a + 0.3 + max(3.0, 0.9 * len(orig) + 2.5))
-    clip = audio[int(a * SR):int(b_al * SR)]
-    if len(clip) == 0 or float(np.sqrt(np.mean(clip ** 2))) < 0.08 * VOCAL_RMS:
-        skipped.append(text); continue
-    norm = [re.sub(r"[^a-z']", "", x.lower()) for x in orig]
-    keep = [k for k, x in enumerate(norm) if x]
-    words = []
-    try:
-        with torch.inference_mode():
-            em, _ = fa_model(torch.from_numpy(clip).float().unsqueeze(0).to("cuda"))
-        spans = aligner(em[0], tokenizer([norm[k] for k in keep]))
-        fps = len(clip) / SR / em.size(1)
-        words = [[a + sp[0].start * fps, a + sp[-1].end * fps, orig[k]] for k, sp in zip(keep, spans)]
-        # words without letters (e.g. "&") ride along with the previous word
-        if len(keep) != len(orig) and words:
-            full, wi = [], 0
-            for k, x in enumerate(orig):
-                if k in keep:
-                    full.append(words[wi]); wi += 1
-                elif full:
-                    full[-1][2] += " " + x
-            words = full
-    except Exception as e:
-        say("info", f"line {i + 1}: aligner failed ({str(e)[:80]}); words spread evenly")
-    if not words:
-        step = max(0.2, (b_al - a - 0.3) / len(orig))
-        words = [[a + 0.3 + k * step, a + 0.3 + (k + 1) * step, x] for k, x in enumerate(orig)]
-    # the last word is often a held note: end it where the singing actually stops
-    s0, s1 = int(words[-1][0] * SR), int(b * SR)
-    seg = audio[s0:s1]
-    if len(seg) > SR // 10:
-        fr = SR // 50
-        rms = np.sqrt(np.mean(seg[: len(seg) // fr * fr].reshape(-1, fr) ** 2, axis=1))
-        loud = np.nonzero(rms > max(rms.max() * 0.12, 0.2 * VOCAL_RMS, 1e-4))[0]
-        if len(loud):
-            end = words[-1][0] + (loud[-1] + 1) * fr / SR
-            words[-1][1] = max(words[-1][1], min(end, words[-1][1] + 5.0))
-    out_lines.append({"words": [[round(x, 3), round(y, 3), z] for x, y, z in words], "orig": origs[i]})
+import unicodedata  # noqa: E402
+
+
+def align_at(off):
+    """Place every line at LRCLIB time + off and align its words; returns (lines, skipped, fit score)."""
+    out_lines, skipped, total = [], [], 0.0
+    for i, (t, text) in enumerate(synced):
+        a = max(0.0, t + off - 0.3)
+        b = (synced[i + 1][0] + off - 0.05) if i + 1 < len(synced) else min(end_all, a + 12)
+        if a >= end_all - 0.5:
+            skipped.append(text); continue
+        orig = text.split()
+        b_al = min(b, a + 0.3 + max(3.0, 0.9 * len(orig) + 2.5))
+        clip = audio[int(a * SR):int(b_al * SR)]
+        if len(clip) == 0 or float(np.sqrt(np.mean(clip ** 2))) < 0.08 * VOCAL_RMS:
+            skipped.append(text); continue
+        norm = [re.sub(r"[^a-z']", "", unicodedata.normalize("NFKD", x).lower()) for x in orig]
+        keep = [k for k, x in enumerate(norm) if x]
+        words = []
+        try:
+            with torch.inference_mode():
+                em, _ = fa_model(torch.from_numpy(clip).float().unsqueeze(0).to("cuda"))
+            spans = aligner(em[0], tokenizer([norm[k] for k in keep]))
+            fps = len(clip) / SR / em.size(1)
+            words = [[a + sp[0].start * fps, a + sp[-1].end * fps, orig[k]] for k, sp in zip(keep, spans)]
+            total += float(np.mean([np.mean([x.score for x in sp]) for sp in spans])) if spans else 0.0
+            # words without letters (e.g. "&") ride along with the previous word
+            if len(keep) != len(orig) and words:
+                full, wi = [], 0
+                for k, x in enumerate(orig):
+                    if k in keep:
+                        full.append(words[wi]); wi += 1
+                    elif full:
+                        full[-1][2] += " " + x
+                words = full
+        except Exception as e:
+            say("info", f"line {i + 1}: aligner failed ({str(e)[:80]}); words spread evenly")
+        if not words:
+            step = max(0.2, (b_al - a - 0.3) / len(orig))
+            words = [[a + 0.3 + k * step, a + 0.3 + (k + 1) * step, x] for k, x in enumerate(orig)]
+        # the last word is often a held note: end it where the singing actually stops
+        s0, s1 = int(words[-1][0] * SR), int(b * SR)
+        seg = audio[s0:s1]
+        if len(seg) > SR // 10:
+            fr = SR // 50
+            rms = np.sqrt(np.mean(seg[: len(seg) // fr * fr].reshape(-1, fr) ** 2, axis=1))
+            loud = np.nonzero(rms > max(rms.max() * 0.12, 0.2 * VOCAL_RMS, 1e-4))[0]
+            if len(loud):
+                end = words[-1][0] + (loud[-1] + 1) * fr / SR
+                words[-1][1] = max(words[-1][1], min(end, words[-1][1] + 5.0))
+        out_lines.append({"words": [[round(x, 3), round(y, 3), z] for x, y, z in words], "orig": origs[i]})
+    return out_lines, skipped, total / len(synced)
+
+
+# judge each offset candidate by how well the words actually fit the vocals (skipped lines count as 0)
+tried = {}
+for name in ("whisper", "whisper-mode", "activity"):
+    v = cands[name]
+    if any(abs(v - cands[n]) < 0.25 for n in tried):
+        continue
+    tried[name] = align_at(v)
+fit_words = {n: r[2] for n, r in tried.items()}
+best = max(fit_words.values())
+pick = next(n for n in tried if fit_words[n] >= best - 0.01)  # near-tie: keep the earlier (Whisper) candidate
+off = cands[pick]
+out_lines, skipped, _ = tried[pick]
+say("info", "word fit " + ", ".join(f"{n} {cands[n]:+.2f}s = {fit_words[n]:.3f}" for n in tried))
+say("info", f"video offset vs album timing {off:+.2f}s ({pick})")
 del fa_model; gc.collect(); torch.cuda.empty_cache()
 save_lines(f"{job_dir}/words.json", out_lines)
 vw, vh = (int(x) for x in vinfo.split(",")[1:3])
