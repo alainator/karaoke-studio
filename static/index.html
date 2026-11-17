@@ -130,7 +130,7 @@ select.sg { background: var(--bg); border: 1px solid var(--line); color: var(--t
   </section>
 
   <section id="v-lib" class="view">
-    <p class="hint">Everything in PiKaraoke, most-sung first. "Make MV version" starts a search for songs that only have a YouTube lyric video.</p>
+    <p class="hint">Everything in PiKaraoke, most-sung first. "Make MV version" starts a search for songs that only have a YouTube lyric video or an anime TV version.</p>
     <div id="lib"></div>
   </section>
 </main>
@@ -479,6 +479,8 @@ function renderEditor() {
     </div>
     <div class="wavebox"><div class="wavebar"><span class="hint">Vocals: drag a line's block to move it, drag its edge to stretch it, click to jump · Space plays/pauses</span>
       <span class="row"><span class="legend"><span><i style="background:var(--gold)"></i>Singer 1</span><span><i style="background:#3cb4ff"></i>Singer 2</span><span><i style="background:#78e678"></i>Both</span></span>
+      <button class="ghost" id="detect" style="padding:5px 10px;font-size:13px" title="Find the two voices in the vocals and colour each line (review, then Save)">Detect 2 singers</button>
+      <button class="ghost" id="swap" style="padding:5px 10px;font-size:13px" title="Swap Singer 1 and Singer 2">Swap 1↔2</button>
       <button class="ib" id="zout" title="Zoom out">−</button><button class="ib" id="zin" title="Zoom in">+</button></span></div>
       <canvas id="wave"></canvas></div>
     <div class="edbar"><input id="newline" placeholder="Missing line? Type it, play to where it's sung, then Add"><button class="ghost" id="addline">Add at playback time</button>
@@ -526,6 +528,19 @@ function renderEditor() {
     $("#newline").value = ""; changed();
   };
   $("#addline").onclick = () => add($("#newline").value);
+  $("#detect").onclick = async () => {
+    if (ed.dirty && !confirm("Detect singers on the saved lyrics? Unsaved edits are kept, singer colours get replaced.")) return;
+    $("#detect").disabled = true; $("#detect").textContent = "Listening…";
+    try {
+      const r = await api(`/api/jobs/${ed.id}/detect-singers`, {method: "POST"});
+      if (r.singers.length !== ed.lines.length) { toast("The lines changed since saving; Save first, then detect"); return renderEditor(); }
+      ed.lines.forEach((l, i) => l.singer = r.singers[i]);
+      const n2 = r.singers.filter(x => x === 2).length;
+      toast(`Two voices found (${r.singers.length - n2} / ${n2} lines${r.separation < 0.18 ? ". They sound alike, so this may be one singer (verse vs chorus): check carefully" : ""}). Review the colours, Swap if needed, then Save.`, 9000);
+      changed();
+    } catch (e) { toast(e.message); renderEditor(); }
+  };
+  $("#swap").onclick = () => { ed.lines.forEach(l => { if (l.singer === 1) l.singer = 2; else if (l.singer === 2) l.singer = 1; }); changed(); };
   $("#newline").onkeydown = e => { if (e.key === "Enter") add(e.target.value); };
   document.querySelectorAll("[data-sk]").forEach(c => c.onclick = () => { $("#newline").value = ed.skipped[+c.dataset.sk]; $("#newline").focus(); });
   if ($("#edsave")) $("#edsave").onclick = async () => {
@@ -576,7 +591,7 @@ async function loadLib() {
       <tr><td>${esc(s.title)}</td>
       <td><span class="tag ${s.folder === "Music Videos" ? "good" : ""}">${esc(s.folder === "YouTube" ? "YouTube lyrics" : s.folder)}</span>${s.lyrics ? "" : ""}</td>
       <td class="n">${s.plays || ""}</td>
-      <td>${s.folder === "YouTube" && !s.has_mv ? `<button class="ghost" data-q="${esc(s.query)}">Make MV version</button>` : s.has_mv ? '<span class="hint">has MV</span>' : ""}</td></tr>`).join("")}</tbody></table>`
+      <td>${s.folder === "Music Videos" ? "" : s.has_mv ? '<span class="hint">has MV version</span>' : s.official_mv ? '<span class="hint">official anime MV</span>' : `<button class="ghost" data-q="${esc(s.query)}">Make MV version</button>`}</td></tr>`).join("")}</tbody></table>`
       : `<div class="empty">The library is empty</div>`;
     document.querySelectorAll("[data-q]").forEach(b => b.onclick = () => { $("#q").value = b.dataset.q; location.hash = "make"; $("#sform").requestSubmit(); });
   } catch (e) { $("#lib").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }

@@ -8,7 +8,7 @@ Search (YouTube + LRCLIB) -> job (pipeline.py subprocess, one at a time on the G
 library (optionally deleting the older YouTube lyric version) and ask PiKaraoke to rescan.
 There is no login of its own: put it behind an authenticating reverse proxy, or keep it on 127.0.0.1.
 """
-import argparse, http.cookiejar, json, math, os, re, shutil, sqlite3, subprocess, sys, threading, time
+import argparse, asyncio, http.cookiejar, json, math, os, re, shutil, sqlite3, subprocess, sys, threading, time
 import unicodedata, urllib.error, urllib.parse, urllib.request
 
 from fastapi import FastAPI, HTTPException, Request
@@ -399,6 +399,24 @@ def peaks(jid: str):
     return FileResponse(cache, media_type="application/json")
 
 
+@app.post("/api/jobs/{jid}/detect-singers")
+async def detect_singers(jid: str, req: Request):
+    """Run singers.py (a few seconds); returns a singer per line for the editor to show. Nothing is saved."""
+    check_origin(req)
+    job = load(jid)
+    if job["status"] != "done":
+        raise HTTPException(400, "finish making it first")
+    r = await asyncio.to_thread(subprocess.run, [sys.executable, "-I", f"{HERE}/singers.py", job_path(jid)],
+                                capture_output=True, text=True, timeout=300, env=C.tool_env())
+    try:
+        res = json.loads(r.stdout.strip().splitlines()[-1])
+    except Exception:
+        raise HTTPException(500, "singer detection failed: " + (r.stderr or r.stdout).strip()[-200:])
+    if "error" in res:
+        raise HTTPException(400, res["error"])
+    return res
+
+
 @app.post("/api/jobs/{jid}/lines/reset")
 async def reset_lines(jid: str, req: Request):
     check_origin(req)
@@ -627,13 +645,21 @@ def library():
                 n, last = plays.get(title, (0, None))
                 songs.append({"file": rel, "title": title, "folder": folder, "plays": n, "last_played": last,
                               "lyrics": os.path.exists(os.path.join(d, os.path.splitext(f)[0] + ".ass"))})
-    mv = {norm(s["title"].replace("(Music Video)", "")) for s in songs if s["folder"] == "Music Videos"}
+    mv_full = {loose(s["title"].replace("(Music Video)", "")) for s in songs if s["folder"] == "Music Videos"}
+    mv_titles = {loose(s["title"].replace("(Music Video)", "").split(" - ", 1)[-1]) for s in songs if s["folder"] == "Music Videos"}
     for s in songs:
+        if s["folder"] == "Music Videos":
+            continue
         if s["folder"] == "YouTube":
             q = re.sub(r"\s*[\(\[][^\)\]]*(karaoke|lyrics?|instrumental)[^\)\]]*[\)\]]", "", s["title"], flags=re.I)
             q = re.split(r"\s+_\s+|\s+-\s+(?=karaoke\b|lyrics?\b)", q, flags=re.I)[0].strip(" -_")
-            s["query"] = q
-            s["has_mv"] = norm(q) in mv
+        else:  # e.g. Anime/ from kara.moe: "Singer - Title (Series OP) (AI instrumental)"
+            q = re.sub(r"\s*\([^)]*\)", "", s["title"]).strip(" -_")
+        s["query"] = q
+        title_part = q.split(" - ", 1)[-1]
+        # an anime song whose video already IS the official (anime) music video doesn't need one
+        s["official_mv"] = s["folder"] != "YouTube" and bool(re.search(r"\([^)]*\bMV\b[^)]*\)", s["title"]))
+        s["has_mv"] = loose(q) in mv_full or loose(title_part) in mv_titles
     songs.sort(key=lambda s: (-s["plays"], s["title"].lower()))
     return {"songs": songs}
 
