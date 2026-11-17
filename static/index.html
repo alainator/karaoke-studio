@@ -58,6 +58,8 @@ h2 { font-size: 15px; margin: 26px 0 10px; color: var(--dim); font-weight: 600; 
 .status.done { color: var(--ok); } .status.failed { color: var(--bad); } .status.running, .status.queued { color: var(--info); }
 .player { position: relative; background: #000; border-radius: var(--radius); overflow: hidden; }
 .player video { width: 100%; display: block; aspect-ratio: 16/9; }
+/* SubtitlesOctopus pins its layer with position:fixed (fine on a TV page, wrong on a scrolling one) */
+.player .libassjs-canvas-parent { position: relative !important; }
 .controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; margin-top: 14px; }
 .ctl { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; }
 .ctl label { display: flex; justify-content: space-between; font-size: 13px; color: var(--dim); margin-bottom: 6px; }
@@ -455,7 +457,11 @@ function markCurrent() {
   ed.lines.forEach((l, i) => { if (l.words[0][0] - 0.05 <= t) k = i; });
   document.querySelectorAll(".edtab tr").forEach(tr => {
     const on = +tr.dataset.i === k;
-    if (on && !tr.classList.contains("cur") && !document.activeElement.closest(".edtab")) tr.scrollIntoView({block: "nearest"});
+    if (on && !tr.classList.contains("cur") && !document.activeElement.closest(".edtab")) {
+      // scroll only the lyric list, never the page (the video must stay where the user put it)
+      const box = tr.closest(".edwrap"), r = tr.getBoundingClientRect(), br = box.getBoundingClientRect();
+      if (r.top < br.top || r.bottom > br.bottom) box.scrollTop = Math.max(0, box.scrollTop + (r.top - br.top) - box.clientHeight / 3);
+    }
     tr.classList.toggle("cur", on);
   });
 }

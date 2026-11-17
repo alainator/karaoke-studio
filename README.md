@@ -1,5 +1,9 @@
 # Karaoke Studio
 
+![Karaoke Studio: search, preview with word-by-word lyrics, and the waveform lyrics editor](docs/demo.gif)
+
+<sub>Demo: the music video and thumbnails are blurred on purpose (copyright); in the app they're shown normally.</sub>
+
 Turn an official music video into a karaoke video, with the real video, the vocals removed, and word-by-word lyrics, then publish it to [PiKaraoke](https://github.com/vicwomg/pikaraoke).
 
 You type `Artist - Title`. The studio finds the official video on YouTube and timed lyrics on [LRCLIB](https://lrclib.net). It removes the vocals on your GPU and lines up every word with the singing. You can preview the result in the browser before it goes anywhere near PiKaraoke.
