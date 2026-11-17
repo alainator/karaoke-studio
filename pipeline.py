@@ -88,11 +88,13 @@ def karamoe_lines(kid):
     return sorted(out)
 
 
+album_dur = 0.0  # the album recording's length (LRCLIB gives it): the music video's extra scenes lie outside it
 if source == "karamoe":
     synced = karamoe_lines(lrc_id)
 else:
     req = urllib.request.Request(f"https://lrclib.net/api/get/{int(lrc_id)}", headers=UA)
     lyr = json.load(urllib.request.urlopen(req, timeout=30))
+    album_dur = float(lyr.get("duration") or 0)
     synced = []
     for l in (lyr.get("syncedLyrics") or "").splitlines():
         m = re.match(r"\[(\d+):(\d+(?:\.\d+)?)\]\s*(.*)", l)
@@ -325,11 +327,14 @@ import unicodedata  # noqa: E402
 
 
 def align_at(off):
-    """Place every line at LRCLIB time + off and align its words; returns (lines, skipped, fit score)."""
-    out_lines, skipped, total = [], [], 0.0
+    """Place every line at LRCLIB time + off (one offset, or one per line) and align its words;
+    returns (lines, skipped, fit score)."""
+    offs = np.broadcast_to(np.asarray(off, dtype=float), (len(synced),))
+    out_lines, skipped, total, per = [], [], 0.0, []
     for i, (t, text) in enumerate(synced):
-        a = max(0.0, t + off - 0.3)
-        b = (synced[i + 1][0] + off - 0.05) if i + 1 < len(synced) else min(end_all, a + 12)
+        per.append(0.0)
+        a = max(0.0, t + offs[i] - 0.3)
+        b = (synced[i + 1][0] + offs[i + 1] - 0.05) if i + 1 < len(synced) else min(end_all, a + 12)
         if a >= end_all - 0.5:
             skipped.append(text); continue
         orig = text.split()
@@ -347,7 +352,8 @@ def align_at(off):
             spans = aligner(em[0], tokenizer([norm[k] for k in keep]))
             fps = len(clip) / SR / em.size(1)
             words = [[a + sp[0].start * fps, a + sp[-1].end * fps, orig[k]] for k, sp in zip(keep, spans)]
-            total += float(np.mean([np.mean([x.score for x in sp]) for sp in spans])) if spans else 0.0
+            per[-1] = float(np.mean([np.mean([x.score for x in sp]) for sp in spans])) if spans else 0.0
+            total += per[-1]
             # words without letters (e.g. "&") ride along with the previous word
             if len(keep) != len(orig) and words:
                 full, wi = [], 0
@@ -373,7 +379,7 @@ def align_at(off):
                 end = words[-1][0] + (loud[-1] + 1) * fr / SR
                 words[-1][1] = max(words[-1][1], min(end, words[-1][1] + 5.0))
         out_lines.append({"words": [[round(x, 3), round(y, 3), z] for x, y, z in words], "orig": origs[i]})
-    return out_lines, skipped, total / len(synced)
+    return out_lines, skipped, total / len(synced), per
 
 
 # judge each offset candidate by how well the words actually fit the vocals (skipped lines count as 0)
@@ -387,9 +393,100 @@ fit_words = {n: r[2] for n, r in tried.items()}
 best = max(fit_words.values())
 pick = next(n for n in tried if fit_words[n] >= best - 0.01)  # near-tie: keep the earlier (Whisper) candidate
 off = cands[pick]
-out_lines, skipped, _ = tried[pick]
+out_lines, skipped = tried[pick][0], tried[pick][1]
 say("info", "word fit " + ", ".join(f"{n} {cands[n]:+.2f}s = {fit_words[n]:.3f}" for n in tried))
 say("info", f"video offset vs album timing {off:+.2f}s ({pick})")
+
+# Music videos sometimes stop the song for a scene, or cut part of it: from there on, the album timing shifts by
+# that much. Score every line at every offset near the chosen one (vocal activity), then find the best piecewise-
+# constant path (Viterbi): changing offset costs a penalty and must be a real jump (>= 2 s), each part >= 4 lines.
+# The result is kept only if the words then fit the vocals better than with one offset (the same judge as above).
+off_first = off_last = off  # the offset at the song's start and end (they differ when the video's timing jumps)
+scenes = []  # video times where a part with a later offset starts (the song was stopped for a scene before it)
+STEP, JUMP, PENALTY = 0.25, 2.0, 2.0
+grid = off + np.arange(-60.0, 60.0 + STEP / 2, STEP)
+n_l = len(_starts)
+S = np.zeros((n_l, len(grid)))
+for i, ti in enumerate(_starts):
+    nxt = _starts[i + 1] if i + 1 < n_l else ti + 4
+    S[i] = [_mean_act(ti + o, ti + o + min(2.0, nxt - ti)) for o in grid]
+    if i == 0 or ti - _starts[i - 1] > 3.5:
+        S[i] -= [_mean_act(ti + o - 0.8, ti + o - 0.15) for o in grid]
+far = int(round(JUMP / STEP))
+dp, back = S[0].copy(), np.zeros((n_l, len(grid)), dtype=int)
+G = len(grid); idx = np.arange(G)
+for i in range(1, n_l):
+    # best earlier state at least `far` bins below / above each state (running max with its position)
+    pre_v, pre_i = np.maximum.accumulate(dp), np.zeros(G, dtype=int)
+    suf_v, suf_i = np.maximum.accumulate(dp[::-1])[::-1], np.zeros(G, dtype=int)
+    for k in range(1, G):
+        pre_i[k] = k if dp[k] > pre_v[k - 1] else pre_i[k - 1]
+    suf_i[G - 1] = G - 1
+    for k in range(G - 2, -1, -1):
+        suf_i[k] = k if dp[k] >= suf_v[k + 1] else suf_i[k + 1]
+    lo, hi = idx - far, idx + far
+    from_lo = np.where(lo >= 0, pre_v[np.clip(lo, 0, G - 1)], -1e9)
+    from_hi = np.where(hi < G, suf_v[np.clip(hi, 0, G - 1)], -1e9)
+    jump = np.maximum(from_lo, from_hi) - PENALTY
+    src = np.where(from_lo >= from_hi, pre_i[np.clip(lo, 0, G - 1)], suf_i[np.clip(hi, 0, G - 1)])
+    take = jump > dp
+    back[i] = np.where(take, src, idx)
+    dp = S[i] + np.maximum(dp, jump)
+path = [int(np.argmax(dp))]
+for i in range(n_l - 1, 0, -1):
+    path.append(int(back[i][path[-1]]))
+path = path[::-1]
+# candidate offsets: the chosen one plus each part of that path (fine-tuned); now judge them by the words
+def _line_act(i, x):
+    nxt = _starts[i + 1] if i + 1 < n_l else _starts[i] + 4
+    return _mean_act(_starts[i] + x, _starts[i] + x + min(2.0, nxt - _starts[i]))
+
+
+cands_o = [off]
+for g in dict.fromkeys(path):
+    o = float(grid[g])
+    if all(abs(o - c) >= JUMP for c in cands_o):
+        mine = [i for i, h in enumerate(path) if abs(float(grid[h]) - o) < STEP / 2]  # fine-tune on its own lines
+        fine = np.arange(o - 0.3, o + 0.3, 0.02)
+        cands_o.append(float(fine[int(np.argmax([np.mean([_line_act(i, x) for i in mine]) for x in fine]))]))
+if len(cands_o) > 1:
+    runs = {o: (tried[pick] if o == off else align_at(o)) for o in cands_o[:5]}
+    C = list(runs)
+    F = np.array([runs[o][3] for o in C]).T  # lines x candidates: word fit of each line at each offset
+    WP = 0.6  # word-fit cost of a jump (a line's fit is ~0.2-0.7)
+    dp2, back2 = F[0].copy(), np.zeros((n_l, len(C)), dtype=int)
+    for i in range(1, n_l):
+        new, bk = np.zeros(len(C)), np.zeros(len(C), dtype=int)
+        for c in range(len(C)):
+            best_v, best_k = dp2[c], c
+            for k in range(len(C)):
+                ok = _starts[i] + C[c] > _starts[i - 1] + C[k] + 0.3  # lines stay in order
+                if k != c and ok and dp2[k] - WP > best_v:
+                    best_v, best_k = dp2[k] - WP, k
+            new[c], bk[c] = F[i, c] + best_v, best_k
+        dp2, back2[i] = new, bk
+    p2 = [int(np.argmax(dp2))]
+    for i in range(n_l - 1, 0, -1):
+        p2.append(int(back2[i][p2[-1]]))
+    p2 = p2[::-1]
+    parts = []
+    for i, c in enumerate(p2):
+        if parts and p2[i - 1] == c:
+            parts[-1][1] = i
+        else:
+            parts.append([i, i, C[c]])
+    if len(parts) > 1 and all(b - a + 1 >= 4 for a, b, _ in parts):
+        offs = np.array([C[c] for c in p2])
+        pw = align_at(offs)
+        desc = " | ".join(f"lines {a + 1}-{b + 1} {o:+.1f}s" for a, b, o in parts)
+        if pw[2] > fit_words[pick] + 0.005:
+            out_lines, skipped = pw[0], pw[1]
+            off_first, off_last = float(offs[0]), float(offs[-1])
+            scenes = [_starts[a] + o for k, (a, b, o) in enumerate(parts) if k and o > parts[k - 1][2]]
+            say("info", f"the video's timing jumps partway (a scene or a cut): {desc}; word fit {pw[2]:.3f} vs {fit_words[pick]:.3f}")
+        else:
+            say("info", f"a timing jump looked possible ({desc}) but fit the words no better; kept one offset")
+
 
 
 def _fa_words(a, b, texts):
@@ -441,8 +538,39 @@ say("info", f"{len(out_lines)} lines aligned" + (f", {len(skipped)} not sung in 
 
 # 5. render: video copied + instrumental; vocals separately for the preview toggle
 say("step", "render")
-run("ffmpeg", "-v", "error", "-y", "-i", f"{w}.mp4", "-i", inst, "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy",
-    "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", f"{job_dir}/out.tmp.mp4")
+# Music videos often add scenes before or after the song (a skit, dialogue). The album recording starts at `off` in
+# the video and lasts album_dur; outside it, keep the video's own sound (with its talking) instead of the
+# instrumental, crossfading over a second. Only when the extra part is clear: >3 s, and no lyric line inside it.
+FADE = 1.0
+first_t = min(l["words"][0][0] for l in out_lines)
+last_t = max(l["words"][-1][1] for l in out_lines)
+pre = off_first - 0.2 if 3.0 < off_first < first_t - 0.5 else None
+post = off_last + album_dur + 0.2 if album_dur and last_t + 0.5 < off_last + album_dur < duration - 3.0 else None
+# scenes inside the song: the silence-of-the-song between the last word before a jump and the first word after it
+mids = []
+for v in scenes:
+    s0 = max([l["words"][-1][1] for l in out_lines if l["words"][0][0] < v - 0.3], default=None)
+    e0 = min([l["words"][0][0] for l in out_lines if l["words"][0][0] >= v - 0.3], default=None)
+    if s0 is not None and e0 is not None and e0 - s0 >= 3.0:
+        mids.append((s0 + 0.3, e0 - 0.3))
+if pre or post or mids:
+    terms = ([f"clip(({pre:.2f}-t)/{FADE},0,1)"] if pre else []) + ([f"clip((t-{post:.2f})/{FADE},0,1)"] if post else []) + \
+            [f"min(clip((t-{a:.2f})/{FADE},0,1),clip(({b:.2f}-t)/{FADE},0,1))" for a, b in mids]
+    g = terms[0]
+    for x in terms[1:]:
+        g = f"max({g},{x})"
+    say("info", "kept the video's own sound " + ", ".join(x for x in (
+        f"for its first {pre:.0f}s (before the song)" if pre else "",
+        *[f"at {a:.0f}-{b:.0f}s (a scene inside the song)" for a, b in mids],
+        f"after {post:.0f}s (after the song)" if post else "") if x))
+    mix = (f"[0:a:0]aformat=sample_rates=44100:channel_layouts=stereo,volume='{g}':eval=frame[o];"
+           f"[1:a:0]aformat=sample_rates=44100:channel_layouts=stereo,volume='1-{g}':eval=frame[i];"
+           "[o][i]amix=inputs=2:duration=shortest:normalize=0[a]")
+    run("ffmpeg", "-v", "error", "-y", "-i", f"{w}.mp4", "-i", inst, "-filter_complex", mix, "-map", "0:v:0", "-map", "[a]",
+        "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", f"{job_dir}/out.tmp.mp4")
+else:
+    run("ffmpeg", "-v", "error", "-y", "-i", f"{w}.mp4", "-i", inst, "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy",
+        "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", f"{job_dir}/out.tmp.mp4")
 os.replace(f"{job_dir}/out.tmp.mp4", f"{job_dir}/out.mp4")
 run("ffmpeg", "-v", "error", "-y", "-i", vocals, "-c:a", "aac", "-b:a", "128k", f"{job_dir}/vocals.tmp.m4a")
 os.replace(f"{job_dir}/vocals.tmp.m4a", f"{job_dir}/vocals.m4a")
