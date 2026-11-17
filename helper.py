@@ -62,7 +62,7 @@ def gpu():
 @app.get("/health")
 def health():
     name, free = gpu()
-    return {"ok": True, "gpu": name, "free_mib": free, "busy": state["busy"] is not None}
+    return {"ok": True, "gpu": name, "free_mib": free, "busy": state["busy"] is not None, "version": C.code_version()}
 
 
 def run(jid):

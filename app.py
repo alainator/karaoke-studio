@@ -717,6 +717,7 @@ def local_gpu_name():
 
 
 LOCAL_GPU = local_gpu_name()
+CODE_VERSION = C.code_version()
 
 
 def helper_call(path, method="GET", body=None, timeout=10, raw=False):
@@ -777,6 +778,11 @@ def schedule_once():
             continue
         if slots["remote"] is None:
             h = helper_health()
+            if h and h.get("version") != CODE_VERSION:
+                h = None  # the helper runs different code: don't use it until it's updated
+                helper_seen["stale"] = True
+            elif h:
+                helper_seen["stale"] = False
             if h and not h.get("busy") and h.get("free_mib", 0) >= NEED_GPU_MIB:
                 if claim(jid, "remote", h.get("gpu", "helper").replace("NVIDIA GeForce ", "") + " (" + C.GPU_HELPER_NAME + ")"):
                     threading.Thread(target=run_remote, args=(jid,), daemon=True).start()
@@ -784,7 +790,8 @@ def schedule_once():
         why = (f"waiting for the graphics card ({free // 1024} GB free, needs {NEED_GPU_MIB // 1024})"
                if slots["local"] is None else "waiting: the graphics card is making another song")
         if C.GPU_HELPER_URL and slots["remote"] is None:
-            why += f"; {C.GPU_HELPER_NAME} is " + ("busy" if helper_seen["health"] else "off or unreachable")
+            why += f"; {C.GPU_HELPER_NAME} " + ("runs older studio code (update it: on that PC run deploy/install-helper.sh again)"
+                                               if helper_seen.get("stale") else "is busy" if helper_seen["health"] else "is off or unreachable")
         if j.get("waiting") != why:
             set_job(jid, waiting=why)
         break  # first come, first served
@@ -1041,7 +1048,8 @@ def status():
             "gpus": {"local": LOCAL_GPU, "local_busy": slots["local"] is not None,
                      "helper": C.GPU_HELPER_NAME if C.GPU_HELPER_URL else None,
                      "helper_online": bool(helper_seen["health"]) if C.GPU_HELPER_URL else None,
-                     "helper_busy": slots["remote"] is not None},
+                     "helper_busy": slots["remote"] is not None, "helper_outdated": bool(helper_seen.get("stale")),
+                     "code_version": CODE_VERSION},
             "renderer": os.path.exists(f"{HERE}/static/octopus/subtitles-octopus.js"),
             "fonts": sorted(f"/static/octopus/{f}" for f in os.listdir(f"{HERE}/static/octopus")
                             if f.lower().endswith((".ttf", ".otf")))

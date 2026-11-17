@@ -47,6 +47,15 @@ USE_LOCAL_GPU = env("USE_LOCAL_GPU", "1") != "0"   # 0 = send every job to the h
 USER_AGENT = env("STUDIO_USER_AGENT", "karaoke-studio/0.1 (+https://github.com/alainator/karaoke-studio)")
 
 
+def code_version():
+    """Fingerprint of the code that makes songs; the studio only sends jobs to a helper running the same."""
+    import hashlib
+    h = hashlib.sha256()
+    for f in ("pipeline.py", "assgen.py", "config.py"):
+        h.update(open(os.path.join(HERE, f), "rb").read())
+    return h.hexdigest()[:12]
+
+
 def tool_env():
     """Environment for subprocesses (yt-dlp needs node on PATH)."""
     e = dict(os.environ)
