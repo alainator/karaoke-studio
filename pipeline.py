@@ -1,0 +1,173 @@
+#!/usr/bin/env python3
+"""Make one karaoke song from an official music video (the studio runs this as a subprocess per job).
+
+    python -I pipeline.py <job dir>
+
+Reads <job dir>/job.json {"yt": id, "lrc_id": int, "artist", "title", "lang": "en"} and writes, all inside
+the job dir: out.mp4 (video copied + instrumental), vocals.m4a (preview toggle), words.json (word timings),
+lyrics.ass, result.json. Downloads and stems are cached in KARAOKE_WORK by YouTube id.
+Progress goes to stdout as "@step <name>" / "@info <text>"; failures end with "@error <text>" and exit 1.
+Line starts come from LRCLIB's human timing shifted by this video's offset (found with Whisper); words inside
+a line come from torchaudio MMS_FA forced alignment on the separated vocal stem.
+"""
+import json, os, re, shutil, subprocess, sys, time, urllib.request
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import config as C  # noqa: E402
+from assgen import make_ass  # noqa: E402
+
+WORK, MODELS, SEP_MODEL = C.WORK, C.MODELS, C.SEP_MODEL
+UA = {"User-Agent": C.USER_AGENT}
+BIN = os.path.dirname(sys.executable)
+SR = 16000
+
+
+def say(kind, text=""):
+    print(f"@{kind} {text}".rstrip(), flush=True)
+
+
+def fail(text):
+    say("error", text)
+    sys.exit(1)
+
+
+def run(*c):
+    r = subprocess.run(c, capture_output=True, text=True)
+    if r.returncode:
+        fail(f"{os.path.basename(c[0])} failed: {(r.stderr or r.stdout).strip()[-400:]}")
+    return r.stdout
+
+
+job_dir = os.path.abspath(sys.argv[1])
+job = json.load(open(f"{job_dir}/job.json"))
+yt, lrc_id, lang = job["yt"], int(job["lrc_id"]), job.get("lang") or "en"
+if not re.fullmatch(r"[A-Za-z0-9_-]{11}", yt):
+    fail("bad YouTube id")
+os.makedirs(WORK, exist_ok=True); os.makedirs(MODELS, exist_ok=True)
+w = f"{WORK}/{yt}"
+t0 = time.time()
+
+# 1. lyrics first: cheap, and the job is pointless without synced lines
+say("step", "lyrics")
+req = urllib.request.Request(f"https://lrclib.net/api/get/{lrc_id}", headers=UA)
+lyr = json.load(urllib.request.urlopen(req, timeout=30))
+synced = []
+for l in (lyr.get("syncedLyrics") or "").splitlines():
+    m = re.match(r"\[(\d+):(\d+(?:\.\d+)?)\]\s*(.*)", l)
+    if m and m.group(3).strip():
+        synced.append((int(m.group(1)) * 60 + float(m.group(2)), m.group(3).strip()))
+if len(synced) < 4:
+    fail("these lyrics have no line timings; pick a lyrics entry marked 'timed'")
+letters = [c for _, t in synced for c in t if c.isalpha()]
+if letters and sum(c.isascii() for c in letters) / len(letters) < 0.85:
+    fail("these lyrics aren't in Latin letters (Japanese etc. isn't supported yet)")
+say("info", f"{len(synced)} timed lines")
+
+# 2. video (H.264 so PiKaraoke can pass it through untouched)
+say("step", "download")
+if not os.path.exists(f"{w}.mp4"):
+    run(f"{BIN}/yt-dlp", "--js-runtimes", "node", "-q", "--no-playlist", "--no-progress",
+        "-f", "bv*[vcodec^=avc1][height<=1080]+ba[ext=m4a]/bv*[vcodec^=avc1]+ba/b[ext=mp4]",
+        "--merge-output-format", "mp4", "-o", f"{w}.mp4", "--", f"https://www.youtube.com/watch?v={yt}")
+vinfo = run("ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name,width,height",
+            "-of", "csv=p=0", f"{w}.mp4").strip()
+duration = float(run("ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", f"{w}.mp4"))
+say("info", f"video {vinfo}, {duration:.0f}s")
+
+# 3. separation (cached)
+say("step", "separate")
+vocals, inst = f"{WORK}/{yt}-vocals.wav", f"{WORK}/{yt}-inst.wav"
+if not (os.path.exists(vocals) and os.path.exists(inst)):
+    run("ffmpeg", "-v", "error", "-y", "-i", f"{w}.mp4", "-map", "0:a:0", "-ac", "2", "-ar", "44100", f"{w}.wav")
+    from audio_separator.separator import Separator
+    sep = Separator(model_file_dir=MODELS, output_dir=WORK, output_format="WAV")
+    sep.load_model(SEP_MODEL)
+    sep.separate(f"{w}.wav", {"Vocals": f"{yt}-vocals", "Instrumental": f"{yt}-inst"})
+    del sep
+    os.remove(f"{w}.wav")
+import gc, torch  # noqa: E402
+gc.collect(); torch.cuda.empty_cache()
+
+# 4. alignment
+say("step", "align")
+import numpy as np, stable_whisper  # noqa: E402
+model = stable_whisper.load_model(C.WHISPER_MODEL, device="cuda")
+audio = stable_whisper.audio.load_audio(vocals)  # 16 kHz mono
+lines = [t for _, t in synced]
+res = model.align(audio, "\n".join(lines), language=lang, original_split=True)
+wsegs = [[(x.start, x.end) for x in s.words if x.word.strip()] for s in res.segments if s.words]
+del model; gc.collect(); torch.cuda.empty_cache()
+if len(wsegs) == len(synced):
+    off = float(np.median(sorted(s[0][0] - t for s, (t, _) in zip(wsegs, synced))))
+else:  # whisper merged/split lines: fall back to matching the first few line starts
+    n = min(len(wsegs), len(synced), 8)
+    off = float(np.median([wsegs[i][0][0] - synced[i][0] for i in range(n)])) if n else 0.0
+    say("info", f"whisper found {len(wsegs)} lines vs {len(synced)}; offset from the first {n}")
+say("info", f"video offset vs album timing {off:+.2f}s")
+
+import torchaudio  # noqa: E402
+fa = torchaudio.pipelines.MMS_FA
+fa_model = fa.get_model(with_star=False).to("cuda")
+tokenizer, aligner = fa.get_tokenizer(), fa.get_aligner()
+VOCAL_RMS = float(np.sqrt(np.mean(audio ** 2)))
+end_all = len(audio) / SR
+out_lines, skipped = [], []
+for i, (t, text) in enumerate(synced):
+    a = max(0.0, t + off - 0.3)
+    b = (synced[i + 1][0] + off - 0.05) if i + 1 < len(synced) else min(end_all, a + 12)
+    if a >= end_all - 0.5:
+        skipped.append(text); continue
+    orig = text.split()
+    b_al = min(b, a + 0.3 + max(3.0, 0.9 * len(orig) + 2.5))
+    clip = audio[int(a * SR):int(b_al * SR)]
+    if len(clip) == 0 or float(np.sqrt(np.mean(clip ** 2))) < 0.08 * VOCAL_RMS:
+        skipped.append(text); continue
+    norm = [re.sub(r"[^a-z']", "", x.lower()) for x in orig]
+    keep = [k for k, x in enumerate(norm) if x]
+    words = []
+    try:
+        with torch.inference_mode():
+            em, _ = fa_model(torch.from_numpy(clip).float().unsqueeze(0).to("cuda"))
+        spans = aligner(em[0], tokenizer([norm[k] for k in keep]))
+        fps = len(clip) / SR / em.size(1)
+        words = [[a + sp[0].start * fps, a + sp[-1].end * fps, orig[k]] for k, sp in zip(keep, spans)]
+        # words without letters (e.g. "&") ride along with the previous word
+        if len(keep) != len(orig) and words:
+            full, wi = [], 0
+            for k, x in enumerate(orig):
+                if k in keep:
+                    full.append(words[wi]); wi += 1
+                elif full:
+                    full[-1][2] += " " + x
+            words = full
+    except Exception as e:
+        say("info", f"line {i + 1}: aligner failed ({str(e)[:80]}); words spread evenly")
+    if not words:
+        step = max(0.2, (b_al - a - 0.3) / len(orig))
+        words = [[a + 0.3 + k * step, a + 0.3 + (k + 1) * step, x] for k, x in enumerate(orig)]
+    # the last word is often a held note: end it where the singing actually stops
+    s0, s1 = int(words[-1][0] * SR), int(b * SR)
+    seg = audio[s0:s1]
+    if len(seg) > SR // 10:
+        fr = SR // 50
+        rms = np.sqrt(np.mean(seg[: len(seg) // fr * fr].reshape(-1, fr) ** 2, axis=1))
+        loud = np.nonzero(rms > max(rms.max() * 0.12, 0.2 * VOCAL_RMS, 1e-4))[0]
+        if len(loud):
+            end = words[-1][0] + (loud[-1] + 1) * fr / SR
+            words[-1][1] = max(words[-1][1], min(end, words[-1][1] + 5.0))
+    out_lines.append([[round(x, 3), round(y, 3), z] for x, y, z in words])
+del fa_model; gc.collect(); torch.cuda.empty_cache()
+json.dump(out_lines, open(f"{job_dir}/words.json", "w"))
+open(f"{job_dir}/lyrics.ass", "w").write(make_ass(out_lines))
+say("info", f"{len(out_lines)} lines aligned" + (f", {len(skipped)} not sung in this video" if skipped else ""))
+
+# 5. render: video copied + instrumental; vocals separately for the preview toggle
+say("step", "render")
+run("ffmpeg", "-v", "error", "-y", "-i", f"{w}.mp4", "-i", inst, "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy",
+    "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", f"{job_dir}/out.tmp.mp4")
+os.replace(f"{job_dir}/out.tmp.mp4", f"{job_dir}/out.mp4")
+run("ffmpeg", "-v", "error", "-y", "-i", vocals, "-c:a", "aac", "-b:a", "128k", f"{job_dir}/vocals.tmp.m4a")
+os.replace(f"{job_dir}/vocals.tmp.m4a", f"{job_dir}/vocals.m4a")
+json.dump({"offset": round(off, 2), "lines": len(out_lines), "skipped": skipped, "video": vinfo,
+           "duration": round(duration, 1), "seconds": round(time.time() - t0)}, open(f"{job_dir}/result.json", "w"))
+say("step", "done")

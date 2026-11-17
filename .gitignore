@@ -1,0 +1,10 @@
+.env
+data/
+jobs/
+shots/
+dev.log
+__pycache__/
+*.pyc
+venv/
+static/octopus/*
+!static/octopus/.gitkeep

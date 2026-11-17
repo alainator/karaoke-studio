@@ -1,0 +1,17 @@
+# /etc/systemd/system/karaoke-studio.service  (adjust User, paths; then: systemctl enable --now karaoke-studio)
+[Unit]
+Description=Karaoke Studio
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=karaoke
+WorkingDirectory=/opt/karaoke-studio
+# settings come from /opt/karaoke-studio/.env
+ExecStart=/opt/karaoke-studio/venv/bin/python -I /opt/karaoke-studio/app.py --host 127.0.0.1 --port 5570
+Restart=on-failure
+RestartSec=10
+Nice=5
+
+[Install]
+WantedBy=multi-user.target

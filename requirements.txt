@@ -1,0 +1,9 @@
+# install torch + torchaudio with CUDA first (see README), then: pip install -r requirements.txt
+fastapi>=0.115
+uvicorn[standard]>=0.30
+audio-separator[gpu]>=0.48
+audioread>=3.0
+stable-ts>=2.19
+yt-dlp>=2026.10.26
+numpy>=2.0
+# optional, for ui-test.py:  playwright

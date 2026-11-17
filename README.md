@@ -1,0 +1,55 @@
+# Karaoke Studio
+
+Turn an official music video into a karaoke video, with the real video, the vocals removed, and word-by-word lyrics, then publish it to [PiKaraoke](https://github.com/vicwomg/pikaraoke).
+
+You type `Artist - Title`. The studio finds the official video on YouTube and timed lyrics on [LRCLIB](https://lrclib.net). It removes the vocals on your GPU and lines up every word with the singing. You can preview the result in the browser before it goes anywhere near PiKaraoke.
+
+- **Search:** shows music-video candidates (artist channel and "live", "lyrics" or "cover" uploads are flagged) and LRCLIB lyrics, with whether they're timed and how their length compares to the video. The best of each is picked for you.
+- **Make:** one job at a time. Jobs wait if the GPU doesn't have enough free memory, for example while a big LLM is loaded. A typical song takes about a minute on an RTX 5090.
+- **Preview:** plays the video with the instrumental and the moving lyrics, using the same renderer as PiKaraoke's TV page. A *Guide vocals* slider plays the separated vocals quietly along, and a *Lyrics timing* slider shifts the lyrics earlier or later without redoing anything.
+- **Publish:** copies `Artist - Title (Music Video).mp4` and `.ass` into your PiKaraoke library and asks PiKaraoke to rescan. It can also remove the older YouTube lyric-video copy of the same song, but only exact matches, and you can untick them.
+- **Library:** your PiKaraoke songs, most-sung first (read from PiKaraoke's play history), with a "Make MV version" button for songs that only have a lyric video.
+
+## How the timing works
+
+1. [BS-RoFormer](https://github.com/nomadkaraoke/python-audio-separator) separates the vocals from the instrumental.
+2. LRCLIB's synced lyrics give a human-made start time for each line. Those times are usually for the album version, so [stable-ts](https://github.com/jianfch/stable-ts) (Whisper large-v3) aligns the lyrics to this video's vocals once. The median difference becomes the video's offset.
+3. Inside each line, torchaudio's MMS_FA forced aligner places every word on the vocal stem. Held last notes run as long as the singer does, and lines the video doesn't sing (album-only intros and the like) are dropped.
+4. The output is an `.ass` subtitle with `\kf` word fills on two alternating rows, so the next line is visible before it's sung.
+
+English and other Latin-alphabet songs only for now; Japanese needs a romaji step that isn't built yet.
+
+## Requirements
+
+- Linux with an NVIDIA GPU (about 9 GB free VRAM per job), Python 3.12, ffmpeg, and Node.js (yt-dlp needs a JS runtime for YouTube).
+- [PiKaraoke](https://github.com/vicwomg/pikaraoke) 1.23 or newer, if you want to publish to it. The studio works on its own for previews.
+
+## Setup
+
+```sh
+git clone https://github.com/alainator/karaoke-studio && cd karaoke-studio
+python3.12 -m venv venv
+venv/bin/pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128   # pick the CUDA build for your driver
+venv/bin/pip install -r requirements.txt
+venv/bin/python -I get_renderer.py        # lyric renderer + fonts, taken from PiKaraoke's PyPI package
+cp .env.example .env && chmod 600 .env    # then edit it
+venv/bin/python -I app.py                 # http://127.0.0.1:5570
+```
+
+The first job downloads the separation model (about 610 MB) into `KARAOKE_MODELS`, and Whisper large-v3 (about 3 GB) into `~/.cache/whisper`.
+
+`deploy/karaoke-studio.service.example` is a systemd unit.
+
+## Security
+
+**The studio has no login of its own.** It can download, publish and delete files in your karaoke library. Keep it on `127.0.0.1`, or put it behind a reverse proxy that authenticates users (Authentik, Authelia, oauth2-proxy and the like), and set `STUDIO_ORIGINS` to the address you use. Requests that change something must come from those origins.
+
+## Notes
+
+- You are responsible for what you download from YouTube and how you use it. This is meant for private karaoke at home.
+- LRCLIB is a free community service. Requests send the `STUDIO_USER_AGENT` header, so please keep it meaningful.
+- Not affiliated with PiKaraoke. The lyric renderer is [JavascriptSubtitlesOctopus](https://github.com/libass/JavascriptSubtitlesOctopus) (MIT and others; see `static/octopus/COPYRIGHT` after `get_renderer.py`).
+
+## License
+
+MIT, see [LICENSE](LICENSE).
