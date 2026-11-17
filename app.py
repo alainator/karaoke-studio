@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import config as C  # noqa: E402
-from assgen import make_ass  # noqa: E402
+from assgen import load_lines, make_ass, save_lines  # noqa: E402
 
 JOBS, LIB, MV_DIR = C.JOBS, C.LIBRARY, C.MV_DIR
 PK_DB, PK_URL = C.PIKARAOKE_DB, C.PIKARAOKE_URL
@@ -183,7 +183,7 @@ async def create_job(req: Request):
 
 def summary(job):
     keys = ("id", "artist", "title", "yt", "status", "step", "created", "finished", "error", "offset",
-            "published", "published_as", "video_title", "result", "waiting")
+            "published", "published_as", "video_title", "result", "waiting", "edited", "unpublished_changes", "lang")
     return {k: job.get(k) for k in keys}
 
 
@@ -232,11 +232,91 @@ async def set_offset(jid: str, req: Request):
         raise HTTPException(400, "offset must be within ±5 s")
     with lock:
         job = load(jid)
-        words = json.load(open(job_path(jid, "words.json")))
-        open(job_path(jid, "lyrics.ass"), "w").write(make_ass(words, off))
+        open(job_path(jid, "lyrics.ass"), "w").write(make_ass(load_lines(job_path(jid, "words.json")), off))
+        if round(off, 2) != job.get("offset") and job.get("published"):
+            job["unpublished_changes"] = True
         job["offset"] = round(off, 2)
         save(jid, job)
     return {"offset": job["offset"]}
+
+
+# ---------------- lyric editor ----------------
+@app.get("/api/jobs/{jid}/lines")
+def get_lines(jid: str):
+    job = load(jid)
+    if job["status"] != "done":
+        raise HTTPException(400, "finish making it first")
+    return {"lines": load_lines(job_path(jid, "words.json")), "offset": job.get("offset", 0.0),
+            "can_reset": os.path.exists(job_path(jid, "words.orig.json")),
+            "skipped": (job.get("result") or {}).get("skipped", []),
+            "duration": (job.get("result") or {}).get("duration")}
+
+
+def _valid_lines(raw, duration):
+    if not isinstance(raw, list) or not 1 <= len(raw) <= 500:
+        raise HTTPException(400, "expected 1-500 lines")
+    limit = (duration or 3600) + 60
+    out = []
+    for l in raw:
+        words = l.get("words") if isinstance(l, dict) else None
+        if not isinstance(words, list) or not 1 <= len(words) <= 60:
+            raise HTTPException(400, "each line needs 1-60 words")
+        clean = []
+        for w in words:
+            if not (isinstance(w, list) and len(w) == 3 and all(isinstance(x, (int, float)) for x in w[:2])
+                    and isinstance(w[2], str)):
+                raise HTTPException(400, "bad word entry")
+            a, b, t = float(w[0]), float(w[1]), w[2].strip()[:80]
+            if not (math.isfinite(a) and math.isfinite(b)) or not 0 <= a <= limit or not 0 <= b <= limit:
+                raise HTTPException(400, "word time out of range")
+            if t:
+                clean.append([round(a, 3), round(max(a, b), 3), t])
+        if not clean:
+            continue
+        clean.sort(key=lambda w: w[0])
+        orig = l.get("orig")
+        out.append({"words": clean, "orig": orig.strip()[:300] if isinstance(orig, str) and orig.strip() else None})
+    if not out:
+        raise HTTPException(400, "no lines left")
+    out.sort(key=lambda l: l["words"][0][0])
+    return out
+
+
+@app.post("/api/jobs/{jid}/lines")
+async def put_lines(jid: str, req: Request):
+    check_origin(req)
+    b = await req.json()
+    with lock:
+        job = load(jid)
+        if job["status"] != "done":
+            raise HTTPException(400, "finish making it first")
+        lines = _valid_lines(b.get("lines"), (job.get("result") or {}).get("duration"))
+        if not os.path.exists(job_path(jid, "words.orig.json")):
+            shutil.copyfile(job_path(jid, "words.json"), job_path(jid, "words.orig.json"))
+        save_lines(job_path(jid, "words.json"), lines)
+        open(job_path(jid, "lyrics.ass"), "w").write(make_ass(lines, job.get("offset", 0.0)))
+        job["edited"] = time.time()
+        if job.get("published"):
+            job["unpublished_changes"] = True
+        save(jid, job)
+    return {"lines": len(lines)}
+
+
+@app.post("/api/jobs/{jid}/lines/reset")
+async def reset_lines(jid: str, req: Request):
+    check_origin(req)
+    with lock:
+        job = load(jid)
+        orig = job_path(jid, "words.orig.json")
+        if not os.path.exists(orig):
+            raise HTTPException(400, "nothing to reset")
+        shutil.copyfile(orig, job_path(jid, "words.json"))
+        open(job_path(jid, "lyrics.ass"), "w").write(make_ass(load_lines(orig), job.get("offset", 0.0)))
+        job["edited"] = None
+        if job.get("published"):
+            job["unpublished_changes"] = True
+        save(jid, job)
+    return {"ok": True}
 
 
 @app.post("/api/jobs/{jid}/retry")
@@ -422,7 +502,7 @@ async def publish(jid: str, req: Request):
                 if os.path.isfile(stem + ext):
                     os.remove(stem + ext)
             removed.append(name)
-        job.update(status="done", published=time.time(), published_as=base)
+        job.update(status="done", published=time.time(), published_as=base, unpublished_changes=False)
         job.setdefault("log", []).append(f"published as '{base}'" + (f"; removed {len(removed)} old version(s)" if removed else ""))
         save(jid, job)
     msg = pk_rescan()

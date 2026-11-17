@@ -1,6 +1,27 @@
-"""Karaoke .ass from word timings (shared by the pipeline and the studio's timing slider)."""
+"""Karaoke .ass from word timings, and the words.json format (shared by the pipeline, the timing slider and
+the lyric editor).
 
-HEADER = """[Script Info]
+words.json, version 2: {"version": 2, "lines": [{"words": [[start, end, "word"], ...], "orig": "原文"}, ...]}
+  times in seconds on the video's clock *before* the job's timing offset; "orig" is optional (the original
+  Japanese line shown above the romaji). Version 1 (older jobs) was just the list of word lists.
+"""
+import json, os
+
+STYLE_FORMAT = ("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, "
+                "Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, "
+                "MarginL, MarginR, MarginV, Encoding")
+# gold fill sweeping over white, two alternating rows so the next line is readable before it's sung
+LATIN_STYLES = """Style: RowA,Arial,72,&H0000D7FF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,2,2,60,60,170,1
+Style: RowB,Arial,72,&H0000D7FF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,2,2,60,60,70,1"""
+# with the original (Japanese) line above each romaji line: four rows from the bottom up
+DUAL_STYLES = """Style: RowA,Arial,66,&H0000D7FF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,2,2,60,60,232,1
+Style: RowB,Arial,66,&H0000D7FF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,2,2,60,60,58,1
+Style: OrigA,Droid Sans Fallback,52,&H00F0F0F0,&H00F0F0F0,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,2,2,60,60,312,1
+Style: OrigB,Droid Sans Fallback,52,&H00F0F0F0,&H00F0F0F0,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,2,2,60,60,138,1"""
+
+
+def header(styles):
+    return f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: 1920
 PlayResY: 1080
@@ -8,13 +29,36 @@ WrapStyle: 0
 ScaledBorderAndShadow: yes
 
 [V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: RowA,Arial,72,&H0000D7FF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,2,2,60,60,170,1
-Style: RowB,Arial,72,&H0000D7FF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,2,2,60,60,70,1
+{STYLE_FORMAT}
+{styles}
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
+
+
+def normalize(data):
+    """Accept words.json v1 (list of word lists) or v2; return a list of {"words": [...], "orig": str|None}."""
+    lines = data["lines"] if isinstance(data, dict) else data
+    out = []
+    for l in lines:
+        if isinstance(l, dict):
+            out.append({"words": [list(w) for w in l.get("words", [])], "orig": l.get("orig") or None})
+        else:
+            out.append({"words": [list(w) for w in l], "orig": None})
+    return [l for l in out if l["words"]]
+
+
+def load_lines(path):
+    return normalize(json.load(open(path)))
+
+
+def save_lines(path, lines):
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump({"version": 2, "lines": [{"words": l["words"], **({"orig": l["orig"]} if l.get("orig") else {})}
+                                           for l in lines]}, f, ensure_ascii=False)
+    os.replace(tmp, path)
 
 
 def ts(t):
@@ -28,9 +72,11 @@ def clean(text):
     return text.replace("{", "(").replace("}", ")").replace("\\", "/")
 
 
-def make_ass(lines, offset=0.0):
-    """lines: [[[start, end, word], ...], ...] in seconds. offset shifts everything (+ = later)."""
-    segs = [[(a + offset, b + offset, w) for a, b, w in l] for l in lines if l]
+def make_ass(lines, offset=0.0, show_orig=True):
+    """lines: words.json content (v1 or v2). offset shifts everything (+ = later)."""
+    lines = normalize(lines)
+    dual = show_orig and any(l["orig"] for l in lines)
+    segs = [[(a + offset, b + offset, w) for a, b, w in l["words"]] for l in lines]
     events, hide = [], []
     for i, words in enumerate(segs):
         start, end = words[0][0], words[-1][1]
@@ -46,5 +92,8 @@ def make_ass(lines, offset=0.0):
         for j, (a, b, w) in enumerate(words):
             nxt = words[j + 1][0] if j + 1 < len(words) else b
             parts.append(f"{{\\kf{max(1, round((nxt - a) * 100))}}}{clean(w)}{' ' if j + 1 < len(words) else ''}")
-        events.append(f"Dialogue: 0,{ts(show)},{ts(h)},{'RowA' if i % 2 == 0 else 'RowB'},,0,0,0,,{''.join(parts)}")
-    return HEADER + "\n".join(events) + "\n"
+        row = "A" if i % 2 == 0 else "B"
+        events.append(f"Dialogue: 0,{ts(show)},{ts(h)},Row{row},,0,0,0,,{''.join(parts)}")
+        if dual and lines[i]["orig"]:
+            events.append(f"Dialogue: 0,{ts(show)},{ts(h)},Orig{row},,0,0,0,,{clean(lines[i]['orig'])}")
+    return header(DUAL_STYLES if dual else LATIN_STYLES) + "\n".join(events) + "\n"
