@@ -695,6 +695,7 @@ off_first = off_last = off  # the offset at the song's start and end (they diffe
 cur_fit = fit_words[pick]  # word fit of the timing in use; later methods must beat it
 scenes = []  # video times where a part with a later offset starts (the song was stopped for a scene before it)
 talk_times = []  # video times of heard words that aren't lyrics (set by the transcription matching below)
+_raw = None  # each line's own heard shift (set by the transcription matching)
 TRANSCRIPT_FOUND = 0.0  # share of the lyric lines found in the transcription (0: no transcription to compare with)
 
 # The album map (if one was found): each line goes where the album says, plus one small shift for how LRCLIB's
@@ -921,6 +922,8 @@ if heard_words and (not any(origs) or mixed or listen_other) and len(synced) >= 
     _hw = [(t, _tw(x)) for t, x in heard_words]
     _hw = [x for x in _hw if x[1]]
     _lw = [(_i, k, _tw(y)) for _i, (t, text) in enumerate(synced) if not (origs[_i] and mixed) for k, y in enumerate(text.split()) if _tw(y)]
+    if os.environ.get("KARAOKE_DEBUG_FIT"):
+        json.dump({"heard": _hw, "lyrics": _lw}, open(f"{job_dir}/hearddebug.json", "w"))
     if len(_hw) >= 10 and len(_lw) >= 10:
         _voc = {w: _n for _n, w in enumerate({x for _, _, x in _lw} | {x for _, x in _hw})}
         _la = np.array([_voc[x] for _, _, x in _lw]); _ha = np.array([_voc[x] for _, x in _hw])
@@ -1074,6 +1077,76 @@ if heard_words and (not any(origs) or mixed or listen_other) and len(synced) >= 
                         off_first, off_last = float(_new[0]), float(_new[-1])
                         scenes = [_starts[i_] + _new[i_] for i_ in range(1, n_l) if _new[i_] - _new[i_ - 1] >= 2.0]
                         say("info", "moved them to where they were heard")
+
+
+_SPEECH = None
+# Talking found by sound: an AudioSet classifier (AST) scores "Speech" every second on the video's own audio. A skit
+# scores ~0.3, singing ~0.03 (The Kill), in any language, so this also works when Whisper can't follow the words.
+def speech_spans():
+    global _SPEECH
+    if _SPEECH is not None:
+        return _SPEECH
+    _SPEECH = []
+    try:
+        from transformers import ASTFeatureExtractor, ASTForAudioClassification
+        name, cache = "MIT/ast-finetuned-audioset-10-10-0.4593", os.path.join(MODELS, "hf")
+        fe_ = ASTFeatureExtractor.from_pretrained(name, token=False, cache_dir=cache)
+        m_ = ASTForAudioClassification.from_pretrained(name, token=False, cache_dir=cache).eval().to("cuda")
+        sp_i = {v: k for k, v in m_.config.id2label.items()}["Speech"]
+        y_ = np.frombuffer(subprocess.run(["ffmpeg", "-v", "error", "-i", f"{w}.mp4", "-map", "0:a:0", "-ac", "1", "-ar", "16000",
+                                           "-f", "f32le", "-"], capture_output=True, check=True).stdout, dtype=np.float32)
+        st_ = list(range(0, max(1, len(y_) - 32000), 16000))
+        out_ = []
+        for b0 in range(0, len(st_), 32):
+            x_ = fe_([y_[s0:s0 + 32000] for s0 in st_[b0:b0 + 32]], sampling_rate=16000, return_tensors="pt").to("cuda")
+            with torch.inference_mode():
+                out_ += torch.sigmoid(m_(**x_).logits)[:, sp_i].float().cpu().tolist()
+        del m_; gc.collect(); torch.cuda.empty_cache()
+        spans_, cur_ = [], None
+        for s0, p_ in zip(st_, out_):
+            t_ = s0 / 16000 + 1.0  # window centre
+            if p_ >= 0.15:
+                cur_ = [t_ - 0.5, t_ + 0.5] if cur_ is None else [cur_[0], t_ + 0.5]
+            elif cur_:
+                spans_.append(cur_); cur_ = None
+        if cur_:
+            spans_.append(cur_)
+        _SPEECH = [(a_, b_) for a_, b_ in spans_ if b_ - a_ >= 3.0]
+        return _SPEECH
+    except Exception as e:
+        say("info", f"couldn't check the video's sound for talking ({str(e)[:60]})")
+        return []
+
+
+
+# Lines nobody heard, placed on top of talking: a video often stops the song for one more scene before its last lines.
+# Unheard lines take their neighbour's shift, which then puts them inside that scene (Dance, Dance: its last four short
+# lines landed 9 s early, over dialogue, on most runs). If the lines at the end weren't found in the transcription and
+# they sit on a stretch that sounds like talking, they start when that talking ends.
+if _raw is not None and out_lines and len(out_lines) == len(synced):
+    _tl = []
+    while len(_tl) < len(synced) - 1 and np.isnan(_raw[len(synced) - 1 - len(_tl)]):
+        _tl.insert(0, len(synced) - 1 - len(_tl))
+    if 1 <= len(_tl) <= 8:
+        _t0 = out_lines[_tl[0]]["words"][0][0]
+        _te = out_lines[_tl[-1]]["words"][-1][1]
+        _prev_end = out_lines[_tl[0] - 1]["words"][-1][1]
+        for a_, b_ in reversed(speech_spans()):  # the last stretch of talking that these lines sit on
+            d_ = b_ + 0.2 - _t0
+            if min(b_, _te) - max(a_, _t0) >= min(3.0, b_ - a_) and a_ >= _prev_end - 1.0 and d_ >= 2.0 and _te + d_ < end_all - 0.5:
+                # only these lines are aligned again, each from where it started plus the move (word fit can't judge
+                # this: a couple of repeated words fit about equally well in several places)
+                _offs = np.array([l["words"][0][0] - synced[l["_i"]][0] for l in out_lines])
+                _offs[_tl] += d_
+                _tk = align_at(_offs, only=set(_tl))[0]
+                if len(_tk) == len(_tl) and all(l["_i"] == k_ for l, k_ in zip(_tk, _tl)):
+                    for l_ in _tk:
+                        l_["_guess"] = "wasn't heard, and sat on talking: moved to where the talking ends (a guess)"
+                    out_lines[_tl[0]:] = _tk
+                    off_last = float(_offs[-1])
+                    say("info", f"the last {len(_tl)} line{'s' if len(_tl) != 1 else ''} weren't heard and sat on talking: "
+                                f"moved {d_:.1f}s later, to where the talking ends")
+                break
 
 
 def _fa_words(a, b, texts):
@@ -1240,14 +1313,41 @@ if heard_words:
             ws = [w for t, w in heard_words if s0 <= t <= s1]
             text = "".join(ws) if l.get("orig") else " ".join(w.strip() for w in ws)
             l["heard"] = re.sub(r"\s+", " ", text).strip()[:200] or None
-# lines that fit the vocals far worse than the rest of the song are probably misplaced: the editor points them out
+# How sure is each line? The best evidence is the transcription: a line heard where it was placed is right even when
+# the aligner's word fit is poor (measured on 10 songs: fit alone marked 57 lines, 47 of them fine, and missed 23 of
+# the 33 that were more than 1.5 s off). So:
+#   sure      heard within 1.2 s of where it sits
+#   check     heard somewhere else; or not heard and its words fit badly; or put there by a guess
+#   unsure    not heard, fit acceptable (not marked, but not counted as sure)
+# Without a transcription to compare with, only the word fit is left (the old rule).
 _fits = [l.get("fit", 0.0) for l in out_lines if l.get("fit")]
-if _fits:
-    _med = float(np.median(_fits))
-    for l in out_lines:
-        l["weak"] = bool(l.get("fit") is not None and l["fit"] < 0.5 * _med)
-    if any(l["weak"] for l in out_lines):
-        say("info", f"{sum(l['weak'] for l in out_lines)} lines to check: their words fit the singing much worse than the rest")
+_med = float(np.median(_fits)) if _fits else 0.0
+_n_sure = _n_check = 0
+for l in out_lines:
+    if l.get("backing"):
+        continue
+    i_ = l.get("_i")
+    low_ = bool(_fits and l.get("fit") is not None and l["fit"] < 0.5 * _med)
+    hd_ = None
+    if _raw is not None and i_ is not None and not np.isnan(_raw[i_]):
+        hd_ = l["words"][0][0] - (synced[i_][0] + float(_raw[i_]))
+    why_ = None
+    if l.get("_guess"):
+        why_ = l["_guess"]
+    elif hd_ is not None and abs(hd_) > 1.2:
+        why_ = f"heard about {abs(hd_):.0f} s {'earlier' if hd_ > 0 else 'later'} than where it sits"
+    elif hd_ is None and low_:
+        why_ = "not heard here, and its words fit the singing poorly" if _raw is not None else "its words fit the singing poorly"
+    l["weak"] = bool(why_)
+    l["why"] = why_
+    _n_check += bool(why_)
+    _n_sure += bool(hd_ is not None and not why_)
+_n_lead = sum(1 for l in out_lines if not l.get("backing"))
+CONF = {"lines": _n_lead, "check": _n_check, "sure": _n_sure if _raw is not None else None}
+if _n_check:
+    say("info", f"{_n_check} line{'s' if _n_check != 1 else ''} to check" + (f"; {_n_sure} of {_n_lead} heard right where they sit" if _raw is not None else ""))
+elif _raw is not None:
+    say("info", f"{_n_sure} of {_n_lead} lines heard right where they sit; none marked to check")
 save_lines(f"{job_dir}/words.json", out_lines)
 vw, vh = (int(x) for x in vinfo.split(",")[1:3])
 open(f"{job_dir}/lyrics.ass", "w").write(make_ass(out_lines, video_size=(vw, vh)))
@@ -1280,39 +1380,6 @@ for v in scenes:
 # them, unless they overlap the singing. Works for every song, including pasted lyrics, which have no album timing.
 if os.environ.get("KARAOKE_DEBUG_FIT"):
     say("info", f"debug talk words: {len(talk_times)}: " + " ".join(f"{t_:.1f}" for t_ in sorted(talk_times)[:40]))
-# Talking found by sound: an AudioSet classifier (AST) scores "Speech" every second on the video's own audio. A skit
-# scores ~0.3, singing ~0.03 (The Kill), in any language, so this also works when Whisper can't follow the words.
-def speech_spans():
-    try:
-        from transformers import ASTFeatureExtractor, ASTForAudioClassification
-        name, cache = "MIT/ast-finetuned-audioset-10-10-0.4593", os.path.join(MODELS, "hf")
-        fe_ = ASTFeatureExtractor.from_pretrained(name, token=False, cache_dir=cache)
-        m_ = ASTForAudioClassification.from_pretrained(name, token=False, cache_dir=cache).eval().to("cuda")
-        sp_i = {v: k for k, v in m_.config.id2label.items()}["Speech"]
-        y_ = np.frombuffer(subprocess.run(["ffmpeg", "-v", "error", "-i", f"{w}.mp4", "-map", "0:a:0", "-ac", "1", "-ar", "16000",
-                                           "-f", "f32le", "-"], capture_output=True, check=True).stdout, dtype=np.float32)
-        st_ = list(range(0, max(1, len(y_) - 32000), 16000))
-        out_ = []
-        for b0 in range(0, len(st_), 32):
-            x_ = fe_([y_[s0:s0 + 32000] for s0 in st_[b0:b0 + 32]], sampling_rate=16000, return_tensors="pt").to("cuda")
-            with torch.inference_mode():
-                out_ += torch.sigmoid(m_(**x_).logits)[:, sp_i].float().cpu().tolist()
-        del m_; gc.collect(); torch.cuda.empty_cache()
-        spans_, cur_ = [], None
-        for s0, p_ in zip(st_, out_):
-            t_ = s0 / 16000 + 1.0  # window centre
-            if p_ >= 0.15:
-                cur_ = [t_ - 0.5, t_ + 0.5] if cur_ is None else [cur_[0], t_ + 0.5]
-            elif cur_:
-                spans_.append(cur_); cur_ = None
-        if cur_:
-            spans_.append(cur_)
-        return [(a_, b_) for a_, b_ in spans_ if b_ - a_ >= 3.0]
-    except Exception as e:
-        say("info", f"couldn't check the video's sound for talking ({str(e)[:60]})")
-        return []
-
-
 if out_lines:
     _sp2 = sorted((l["words"][0][0], l["words"][-1][1]) for l in out_lines)
     _added = 0
@@ -1397,5 +1464,5 @@ json.dump({"offset": round(off, 2), "lines": len(out_lines), "skipped": skipped,
            "lang": lang, "script": SCRIPT, "rtl": is_rtl(SCRIPT), "romaji": ("hand" if len(hand_romaji) >= 0.8 * sum(1 for o in origs if o) else "automatic") if any(origs)
            else ("kara.moe" if source == "karamoe" else None),
            "duration": round(duration, 1), "seconds": round(time.time() - t0), "encoded": "x264",
-           "pipeline": versions.VERSION}, open(f"{job_dir}/result.json", "w"))
+           "confidence": CONF, "pipeline": versions.VERSION}, open(f"{job_dir}/result.json", "w"))
 say("step", "done")

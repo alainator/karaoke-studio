@@ -99,7 +99,8 @@ def normalize(data):
             out.append({"words": words, "orig": l.get("orig") or None,
                         "singer": sg if sg in (1, 2, 3) else None, "heard": l.get("heard") or None,
                         "members": sorted(set(mem)) or None, "wwho": ww if ww and any(ww) else None,
-                        "weak": bool(l.get("weak")), "backing": bool(l.get("backing"))})
+                        "weak": bool(l.get("weak")), "why": (l.get("why") or None) if l.get("weak") else None,
+                        "backing": bool(l.get("backing"))})
         else:
             out.append({"words": [list(w) for w in l], "orig": None, "singer": None, "heard": None, "members": None, "wwho": None})
     return [l for l in out if l["words"]]
@@ -132,6 +133,7 @@ def save_lines(path, lines, cast=_KEEP):
                               **({"members": l["members"]} if l.get("members") else {}),
                               **({"wwho": l["wwho"]} if l.get("wwho") and len(l["wwho"]) == len(l["words"]) else {}),
                               **({"weak": True} if l.get("weak") else {}),
+                              **({"why": str(l["why"])[:160]} if l.get("weak") and l.get("why") else {}),
                               **({"backing": True} if l.get("backing") else {}),
                               **({"heard": l["heard"]} if l.get("heard") else {})}
                              for l in lines]}, f, ensure_ascii=False)

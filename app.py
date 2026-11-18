@@ -353,8 +353,26 @@ async def create_job(req: Request):
     return {"id": jid}
 
 
+_CHECK = {}  # job id -> (words.json mtime, lines still marked to check)
+
+
+def to_check(jid):
+    """How many lines of a finished song are still marked ⚠ (marks go away as the user edits or clears them)."""
+    try:
+        path = job_path(jid, "words.json")
+        mt = os.path.getmtime(path)
+        if _CHECK.get(jid, (None,))[0] != mt:
+            data = json.load(open(path))
+            lines = data["lines"] if isinstance(data, dict) else []
+            _CHECK[jid] = (mt, sum(1 for l in lines if isinstance(l, dict) and l.get("weak")))
+        return _CHECK[jid][1]
+    except Exception:
+        return None
+
+
 def summary(job):
     out = _summary(job)
+    out["to_check"] = to_check(job["id"]) if job.get("status") == "done" else None
     out["updates"] = versions.missing(job) if job.get("status") == "done" else []
     out["can_undo_remake"] = bool(job.get("remade")) and not job.get("remake_undone") and job.get("status") == "done" \
         and os.path.exists(job_path(job["id"], "words.before-remake.json"))
@@ -471,7 +489,9 @@ def _valid_lines(raw, duration):
         out.append({"words": clean, "orig": orig.strip()[:300] if isinstance(orig, str) and orig.strip() else None,
                     "singer": sg if sg in (1, 2, 3) else None, "members": mem or None,
                     "heard": heard.strip()[:200] if isinstance(heard, str) and heard.strip() else None,
-                    "wwho": wwho if any(wwho) else None, "weak": bool(l.get("weak")), "backing": bool(l.get("backing"))})
+                    "wwho": wwho if any(wwho) else None, "weak": bool(l.get("weak")),
+                    "why": l["why"].strip()[:160] if l.get("weak") and isinstance(l.get("why"), str) and l["why"].strip() else None,
+                    "backing": bool(l.get("backing"))})
     if not out:
         raise HTTPException(400, "no lines left")
     out.sort(key=lambda l: l["words"][0][0])
@@ -1284,7 +1304,7 @@ def merge_remake(jid):
         if _ltext(l) != _ltext(old_auto[a]):  # the user fixed words: keep their text on the new timing
             words = remap_words(n["words"], " ".join(w[2] for w in l["words"]))
         ww = l.get("wwho") if l.get("wwho") and len(l["wwho"]) == len(words) else None
-        out.append(dict(l, words=words, wwho=ww, weak=n.get("weak")))
+        out.append(dict(l, words=words, wwho=ww, weak=n.get("weak"), why=n.get("why")))
         changed += 1
     # lines the remake found that the old version didn't have at all (the user deleting a line is respected)
     paired_new = set(a2n.values())

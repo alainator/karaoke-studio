@@ -25,6 +25,8 @@ IMPROVEMENTS = [  # (when it landed, unix time; songs it matters for; what a rem
     (1795013581, "all", "talking is also found by its sound, in any language, and keeps the video's own sound"),
     (1795013581, "all", "held last notes end where the sung pitch stops, not where the track gets quiet"),
     (1795013581, "all", "songs whose words can't be followed by ear: repeated sections are checked against where their melody repeats"),
+    (1795021577, "all", "lines to check are picked by ear: marked when heard somewhere else, with the reason shown (far fewer false marks)"),
+    (1795021577, "all", "last lines that weren't heard and sat on talking move to where the talking ends"),
 ]
 VERSION = len(IMPROVEMENTS)
 

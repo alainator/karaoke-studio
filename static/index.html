@@ -84,7 +84,7 @@ td.n { text-align: right; font-variant-numeric: tabular-nums; }
 .edtab tr.cur td { background: rgba(255,201,77,.08); }
 .edtab tr.cur input.tx { border-color: var(--gold); }
 .edtab tr.sel td { background: rgba(60,180,255,.12); }
-.weakmark { color: #ffb020; margin-left: 4px; cursor: help; }
+.weakmark { color: #ffb020; margin-left: 4px; cursor: pointer; }
 .speeds button { padding: 5px 10px; font-size: 13px; }
 #specbtn.on, #snapbtn.on { color: #17121c; background: var(--gold); border-color: var(--gold); }
 .speeds button.on, #loopbtn.on { color: #17121c; background: var(--gold); border-color: var(--gold); }
@@ -391,12 +391,23 @@ function stepBar(j) {
   const k = j.status === "done" ? 99 : j.step === "romaji" ? order.length - 1 : order.indexOf(j.step);
   return `<div class="steps">${order.map((s, i) => `<i class="${i < k ? "d" : i === k && j.status === "running" ? "a" : ""}"></i>`).join("")}</div>`;
 }
+// How sure the studio is about a finished song's timing: lines still marked to check, or the share of lines that
+// were heard right where they sit.
+function confTag(j) {
+  if (j.status !== "done") return "";
+  const c = (j.result || {}).confidence;
+  if (j.to_check) return ` <span class="tag" style="color:#ffb020" title="${j.to_check} line${j.to_check === 1 ? " is" : "s are"} marked ⚠ in the editor: the studio isn't sure about ${j.to_check === 1 ? "its" : "their"} timing">⚠ ${j.to_check} to check</span>`;
+  if (c && c.sure != null && c.lines && c.sure < 0.5 * c.lines) return ` <span class="tag" style="color:#ffb020" title="Only ${c.sure} of ${c.lines} lines could be heard where they were placed (hard singing to follow by ear), so the studio can't vouch for the rest: play it through">◔ ${Math.round(100 * c.sure / c.lines)}% heard in place</span>`;
+  if (c && c.sure != null && c.lines) return ` <span class="tag" title="${c.sure} of ${c.lines} lines were heard right where they were placed; none are marked to check">✓ ${Math.round(100 * c.sure / c.lines)}% heard in place</span>`;
+  return "";
+}
+
 function jobLine(j) {
   const st = j.status === "running" ? (STEP_NAMES[j.step] || j.step) + (j.gpu ? ` · ${j.gpu}` : "") : j.status === "queued" ? (j.waiting || "Waiting") : j.status === "failed" ? "Failed" : j.published ? "Published" : "Ready to preview";
   return `<div class="card" data-j="${esc(j.id)}">
     <img src="https://i.ytimg.com/vi/${esc(j.yt)}/mqdefault.jpg" alt="">
     <div style="flex:1"><div class="t">${esc(j.artist)} – ${esc(j.title)}</div>
-    <div class="status ${esc(j.status)}">${esc(st)}${j.updates && j.updates.length ? ` <span class="tag" title="Made with an older version: ${esc(j.updates.join("; "))}">↻ ${j.updates.length} improvement${j.updates.length === 1 ? "" : "s"} since</span>` : ""}</div>${j.status === "running" || j.status === "queued" ? stepBar(j) : ""}</div></div>`;
+    <div class="status ${esc(j.status)}">${esc(st)}${j.updates && j.updates.length ? ` <span class="tag" title="Made with an older version: ${esc(j.updates.join("; "))}">↻ ${j.updates.length} improvement${j.updates.length === 1 ? "" : "s"} since</span>` : ""}${confTag(j)}</div>${j.status === "running" || j.status === "queued" ? stepBar(j) : ""}</div></div>`;
 }
 async function loadJobs() {
   clearTimeout(jobsTimer);
@@ -829,7 +840,7 @@ function renderEditor() {
       ${ed.skipped.map((s, i) => `<button class="chip" data-sk="${i}" title="Not sung in this video according to the aligner">+ ${esc(s)}</button>`).join("")}</div>
     <div class="edwrap"><table class="edtab"><tbody>${ed.lines.map((l, i) => `
       <tr data-i="${i}" class="${ed.sel === i ? "sel" : ""}">
-        <td><button class="ib" data-act="play" title="Play from just before this line">▶</button>${l.weak ? '<span class="weakmark" title="The aligner is unsure about this line (its words fit the singing much worse than the rest); check its timing">⚠</span>' : ""}</td>
+        <td><button class="ib" data-act="play" title="Play from just before this line">▶</button>${l.weak ? `<span class="weakmark" data-act="okline" title="${esc(l.why ? "Check this line: " + l.why : "The studio is unsure about this line's timing")}. Click if it's fine as it is.">⚠</span>` : ""}</td>
         <td><input class="tm" data-act="time" value="${fmtT(l.words[0][0] + off)}" title="Line start (m:ss.cc)"></td>
         <td class="nowrap"><button class="ib" data-act="m" title="0.1 s earlier">−</button><button class="ib" data-act="p" title="0.1 s later">+</button><button class="ib" data-act="now" title="Start this line at the current playback time">⏱</button></td>
         <td class="nowrap">${l.unsure ? '<span class="unsure" title="Detect 2 singers wasn\'t sure about this line">?</span>' : ""}${ed.cast.length ? memberSelect(l) : `<select class="sg" data-act="singer" title="Who sings this line">${[["", "–"], [1, "1"], [2, "2"], [3, "Both"]].map(([v, t]) => `<option value="${v}" ${(l.singer || "") == v ? "selected" : ""}>${t}</option>`).join("")}</select>`}</td>
@@ -852,6 +863,7 @@ function renderEditor() {
     const from = ed.sel != null ? ed.sel : -1;
     let i = ed.lines.findIndex((l, k) => k > from && l.weak); if (i < 0) i = ed.lines.findIndex(l => l.weak); if (i < 0) return;
     ed.sel = i; renderEditor(); keepVisible(i);
+    if (ed.lines[i].why) toast("Line " + (i + 1) + ": " + ed.lines[i].why, 6000);
     const v = $("#pv"); v.currentTime = Math.max(0, ed.lines[i].words[0][0] + curOff() - 1.5); v.play();
   };
   $("#ripple").onchange = e => { ed.ripple = e.target.checked; try { localStorage.setItem("ks-ripple", ed.ripple ? "1" : "0"); } catch (x) {} };
@@ -894,6 +906,8 @@ function renderEditor() {
     const br = e.target.closest(".brush");
     if (br) { ed.brush = whoCycle()[+br.dataset.b]; return renderEditor(); }
     if (e.target.closest(".wchip[data-j]")) return;  // painting happens on pointerdown/over (below)
+    const okm = e.target.closest(".weakmark");  // "this line is fine": clear its mark
+    if (okm) { ed.lines[+okm.closest("tr").dataset.i].weak = false; return changed(); }
     const b = e.target.closest("button"); if (!b) return;
     const i = +b.closest("tr").dataset.i, l = ed.lines[i], v = $("#pv");
     if (b.dataset.act === "play") { v.currentTime = Math.max(0, l.words[0][0] + curOff() - 1.5); v.play(); return; }
