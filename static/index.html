@@ -85,7 +85,10 @@ td.n { text-align: right; font-variant-numeric: tabular-nums; }
 .edtab tr.cur input.tx { border-color: var(--gold); }
 .edtab tr.sel td { background: rgba(60,180,255,.12); }
 .wchips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
-.wchip { border: 1px solid; border-radius: 6px; padding: 1px 6px; font-size: 13px; cursor: pointer; user-select: none; background: rgba(0,0,0,.25); }
+.wchip { border: 1px solid; border-radius: 6px; padding: 1px 6px; font-size: 13px; cursor: pointer; user-select: none; background: rgba(0,0,0,.25); touch-action: none; }
+.wchips { align-items: center; }
+.brush { border: 1px solid var(--c); color: var(--c); border-radius: 999px; padding: 1px 9px; font-size: 12px; cursor: pointer; user-select: none; }
+.brush.on { background: var(--c); color: #17121c; font-weight: 600; }
 .ib.on { color: var(--gold); border-color: var(--gold); }
 .edtab tr.sel td:first-child { box-shadow: inset 3px 0 0 #3cb4ff; }
 label.ripple { display: inline-flex; gap: 6px; align-items: center; font-size: 13px; color: var(--muted, #aaa); white-space: nowrap; }
@@ -464,17 +467,16 @@ function whoName(w) {
   if (w.members) return w.members.length === 1 ? ed.cast[w.members[0]] : "Together";
   return w.singer === 3 ? "Both" : "Singer " + w.singer;
 }
-// a word was clicked in a split line: it and the rest of the line go to the next singer in the cycle
-function splitAt(l, j) {
-  const cyc = whoCycle(), cur = wordWho(l, j) || cyc[0], k = Math.max(0, cyc.findIndex(w => sameWho(w, cur)));
-  const next = cyc[(k + 1) % cyc.length];
-  // a word opening a bracket ("(Don't you dare close your eyes)", the other singer's reply) switches only up to the
-  // closing bracket; any other word switches the rest of the line
-  let end = l.words.length - 1;
+// painting a shared line: press on a word, drag over others, release (one listener for the whole page)
+let painting = null;
+document.addEventListener("pointerup", () => { if (painting != null && ed && ed.afterPaint) { painting = null; ed.afterPaint(); } painting = null; });
+// paint words of a shared line with one singer (the brush); a word opening brackets paints the whole bracketed reply
+function paintWords(l, j, brush) {
+  let end = j;
   if (/^\(/.test(l.words[j][2])) { const c = l.words.findIndex((w, m) => m >= j && /\)[^\w]*$/.test(w[2])); if (c >= 0) end = c; }
-  // an unset line counts as the first singer, so the first click visibly hands the rest to the second one
-  l.wwho = l.words.map((_, m) => m >= j && m <= end ? next : (l.wwho && l.wwho[m]) || lineWho(l) || cyc[0]);
-  if (l.wwho.every(w => sameWho(w, l.wwho[0]))) {  // the whole line is one singer again: store it on the line
+  const base = lineWho(l) || whoCycle()[0];  // an unset line counts as the first singer
+  l.wwho = l.words.map((_, m) => m >= j && m <= end ? brush : (l.wwho && l.wwho[m]) || base);
+  if (l.wwho.every(w => sameWho(w, l.wwho[0]))) {  // one singer for the whole line again: store it on the line
     const w = l.wwho[0]; l.wwho = null;
     if (w && w.members) { l.members = w.members; l.singer = null; } else { l.singer = w ? w.singer : null; l.members = null; }
   }
@@ -652,7 +654,9 @@ function renderEditor() {
         <td class="nowrap"><button class="ib" data-act="m" title="0.1 s earlier">−</button><button class="ib" data-act="p" title="0.1 s later">+</button><button class="ib" data-act="now" title="Start this line at the current playback time">⏱</button></td>
         <td class="nowrap">${l.unsure ? '<span class="unsure" title="Detect 2 singers wasn\'t sure about this line">?</span>' : ""}${ed.cast.length ? memberSelect(l) : `<select class="sg" data-act="singer" title="Who sings this line">${[["", "–"], [1, "1"], [2, "2"], [3, "Both"]].map(([v, t]) => `<option value="${v}" ${(l.singer || "") == v ? "selected" : ""}>${t}</option>`).join("")}</select>`}</td>
         <td class="txc"><input class="tx" data-act="text" value="${esc(lineText(l))}">${l.orig ? `<div class="hint">${esc(l.orig)}</div>` : ""}
-          ${ed.splitFor === l || l.wwho ? `<div class="wchips" title="Click the word where the next singer takes over: it and the rest of the line switch (a word opening brackets switches just the bracketed part); click again for the next singer">${l.words.map((w, j) =>
+          ${ed.splitFor === l || l.wwho ? `<div class="wchips"><span class="hint" style="margin-right:2px">Paint with</span>${whoCycle().map((w, k) =>
+              `<span class="brush ${sameWho(w, ed.brush || whoCycle()[1]) ? "on" : ""}" data-b="${k}" style="--c:${whoColour(w)}">${esc(whoName(w))}</span>`).join("")}
+            <span class="hint" style="margin:0 2px 0 6px">then click or drag over words:</span>${l.words.map((w, j) =>
             `<span class="wchip" data-j="${j}" style="border-color:${whoColour(wordWho(l, j))};color:${whoColour(wordWho(l, j))}" title="${esc(whoName(wordWho(l, j)))}">${esc(w[2])}</span>`).join("")}</div>` : ""}</td>
         <td><button class="ib ${l.wwho ? "on" : ""}" data-act="split" title="Shared line: give part of it to another singer">◐</button></td>
         <td><button class="ib danger" data-act="del" title="Delete this line">✕</button></td>
@@ -660,6 +664,26 @@ function renderEditor() {
   const changed = () => { const keep = ed.lines[ed.sel]; ed.dirty = true; renderEditor(); if (keep) { ed.sel = ed.lines.indexOf(keep); renderEditor(); } markCurrent(); };
   ed.changed = changed;
   $("#ripple").onchange = e => { ed.ripple = e.target.checked; try { localStorage.setItem("ks-ripple", ed.ripple ? "1" : "0"); } catch (x) {} };
+  // painting a shared line: press on a word and drag across others; each gets the brush's singer
+  const paint = chip => {
+    const i = +chip.closest("tr").dataset.i, l = ed.lines[i], j = +chip.dataset.j, brush = ed.brush || whoCycle()[1];
+    // a fast drag can skip words: paint everything between the last painted word and this one
+    const from = ed.lastPaint != null ? Math.min(ed.lastPaint, j) : j, to = ed.lastPaint != null ? Math.max(ed.lastPaint, j) : j;
+    for (let k = from; k <= to; k++) if (k === j || !/^\(/.test(l.words[k][2])) paintWords(l, k, brush);
+    if (from !== to) paintWords(l, j, brush);
+    ed.lastPaint = j;
+    chip.closest(".wchips").querySelectorAll(".wchip").forEach(c => { const w = wordWho(l, +c.dataset.j); c.style.color = c.style.borderColor = whoColour(w); c.title = whoName(w); });
+    ed.dirty = true; drawWave();
+  };
+  $(".edtab").addEventListener("pointerdown", e => {
+    const chip = e.target.closest(".wchip"); if (!chip) return;
+    e.preventDefault(); painting = +chip.closest("tr").dataset.i; ed.sel = painting; ed.splitFor = ed.lines[painting]; ed.lastPaint = null; paint(chip);
+    ed.afterPaint = changed;
+  });
+  $(".edtab").addEventListener("pointerover", e => {
+    const chip = e.target.closest(".wchip");
+    if (chip && painting != null && e.buttons && +chip.closest("tr").dataset.i === painting) paint(chip);
+  });
   // clicking anywhere on a row selects it (for S and the arrow keys)
   $(".edtab").addEventListener("pointerdown", e => {
     const tr = e.target.closest("tr"); if (!tr) return;
@@ -668,8 +692,9 @@ function renderEditor() {
   });
   initWave();
   $(".edtab").onclick = e => {
-    const chip = e.target.closest(".wchip");
-    if (chip) { const i = +chip.closest("tr").dataset.i; ed.sel = i; splitAt(ed.lines[i], +chip.dataset.j); ed.splitFor = ed.lines[i]; return changed(); }
+    const br = e.target.closest(".brush");
+    if (br) { ed.brush = whoCycle()[+br.dataset.b]; return renderEditor(); }
+    if (e.target.closest(".wchip")) return;  // painting happens on pointerdown/over (below)
     const b = e.target.closest("button"); if (!b) return;
     const i = +b.closest("tr").dataset.i, l = ed.lines[i], v = $("#pv");
     if (b.dataset.act === "play") { v.currentTime = Math.max(0, l.words[0][0] + curOff() - 1.5); v.play(); return; }
