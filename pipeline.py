@@ -600,6 +600,11 @@ say("step", "render")
 # Music videos often add scenes before or after the song (a skit, dialogue). The album recording starts at `off` in
 # the video and lasts album_dur; outside it, keep the video's own sound (with its talking) instead of the
 # instrumental, crossfading over a second. Only when the extra part is clear: >3 s, and no lyric line inside it.
+# The video is re-encoded, not copied: YouTube's H.264 as downloaded plays in ffmpeg, but Chrome-based browsers
+# (Chrome, Brave, Edge) hit a decode error after jumping backwards in it and the picture freezes for good (The Kill:
+# frozen at 148 s on the first jump). x264 with a keyframe every 2 s fixes that, makes jumping fast, and costs
+# ~15 s for a 5-minute 1080p video.
+VENC = C.VENC
 FADE = 1.0
 first_t = min(l["words"][0][0] for l in out_lines)
 last_t = max(l["words"][-1][1] for l in out_lines)
@@ -626,9 +631,9 @@ if pre or post or mids:
            f"[1:a:0]aformat=sample_rates=44100:channel_layouts=stereo,volume='1-{g}':eval=frame[i];"
            "[o][i]amix=inputs=2:duration=shortest:normalize=0[a]")
     run("ffmpeg", "-v", "error", "-y", "-i", f"{w}.mp4", "-i", inst, "-filter_complex", mix, "-map", "0:v:0", "-map", "[a]",
-        "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", f"{job_dir}/out.tmp.mp4")
+        *VENC, "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", f"{job_dir}/out.tmp.mp4")
 else:
-    run("ffmpeg", "-v", "error", "-y", "-i", f"{w}.mp4", "-i", inst, "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy",
+    run("ffmpeg", "-v", "error", "-y", "-i", f"{w}.mp4", "-i", inst, "-map", "0:v:0", "-map", "1:a:0", *VENC,
         "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", f"{job_dir}/out.tmp.mp4")
 os.replace(f"{job_dir}/out.tmp.mp4", f"{job_dir}/out.mp4")
 run("ffmpeg", "-v", "error", "-y", "-i", vocals, "-c:a", "aac", "-b:a", "128k", f"{job_dir}/vocals.tmp.m4a")
@@ -636,5 +641,5 @@ os.replace(f"{job_dir}/vocals.tmp.m4a", f"{job_dir}/vocals.m4a")
 json.dump({"offset": round(off, 2), "lines": len(out_lines), "skipped": skipped, "video": vinfo, "width": vw, "height": vh,
            "lang": lang, "romaji": ("hand" if len(hand_romaji) >= 0.8 * sum(1 for o in origs if o) else "automatic") if any(origs)
            else ("kara.moe" if source == "karamoe" else None),
-           "duration": round(duration, 1), "seconds": round(time.time() - t0)}, open(f"{job_dir}/result.json", "w"))
+           "duration": round(duration, 1), "seconds": round(time.time() - t0), "encoded": "x264"}, open(f"{job_dir}/result.json", "w"))
 say("step", "done")

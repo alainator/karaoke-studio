@@ -327,7 +327,7 @@ async function openJob(id) {
     <div class="row" style="justify-content:space-between;margin:6px 0 10px"><h2 style="margin:0">${esc(j.artist)} – ${esc(j.title)}</h2>
       <span class="row"><input id="rn-artist" class="rn" value="${esc(j.artist)}" placeholder="Artist" title="Artist (sets the song's name in PiKaraoke)">
       <input id="rn-title" class="rn" value="${esc(j.title)}" placeholder="Title"><button class="ghost" id="rnbtn" style="padding:6px 10px;font-size:13px">Rename</button></span></div>
-    <div class="player"><video id="pv" data-id="${esc(id)}" controls playsinline preload="auto" src="/api/jobs/${esc(id)}/file/video.mp4?v=${Math.round(j.finished || 0)}"></video></div>
+    <div class="player"><video id="pv" data-id="${esc(id)}" controls playsinline preload="auto" src="/api/jobs/${esc(id)}/file/video.mp4?v=${Math.round(j.video_v || j.finished || 0)}"></video></div>
     <div class="controls">
       <div class="ctl"><label><span>Guide vocals</span><span id="voxv">off</span></label><input type="range" id="voxr" min="0" max="100" value="0"></div>
       <div class="ctl"><label><span>Lyrics timing</span><span id="offv">${j.offset >= 0 ? "+" : ""}${(j.offset || 0).toFixed(2)} s</span></label>
@@ -342,7 +342,7 @@ async function openJob(id) {
   const v = $("#pv");
   await statusReady;
   if (window.SubtitlesOctopus) octopus = new SubtitlesOctopus({video: v, subUrl: `/api/jobs/${id}/file/lyrics.ass?o=${j.offset}`, fonts: FONTS, workerUrl: "/static/octopus/subtitles-octopus-worker.js"});
-  vox = new Audio(`/api/jobs/${id}/file/vocals.m4a?v=${Math.round(j.finished || 0)}`); vox.preload = "auto"; vox.volume = 0;
+  vox = new Audio(`/api/jobs/${id}/file/vocals.m4a?v=${Math.round(j.video_v || j.finished || 0)}`); vox.preload = "auto"; vox.volume = 0;
   // the vocals guide only follows the video while it's audible (a muted one re-seeking 4x a second made jumping around heavy)
   const sync = () => { if (!vox || !vox.volume) return; if (Math.abs(vox.currentTime - v.currentTime) > 0.12) vox.currentTime = v.currentTime; };
   v.addEventListener("play", () => { sync(); if (vox && vox.volume > 0) vox.play().catch(() => {}); });

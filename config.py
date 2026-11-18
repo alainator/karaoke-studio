@@ -47,6 +47,11 @@ USE_LOCAL_GPU = env("USE_LOCAL_GPU", "1") != "0"   # 0 = send every job to the h
 USER_AGENT = env("STUDIO_USER_AGENT", "karaoke-studio/0.1 (+https://github.com/alainator/karaoke-studio)")
 
 
+# how the karaoke video is encoded (see pipeline.py, render): re-encoded, never copied from YouTube, because
+# Chrome-based browsers freeze on YouTube's stream after jumping backwards
+VENC = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-g", "48", "-pix_fmt", "yuv420p"]
+
+
 def code_version():
     """Fingerprint of the code that makes songs; the studio only sends jobs to a helper running the same."""
     import hashlib
