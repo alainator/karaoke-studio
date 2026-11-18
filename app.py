@@ -341,7 +341,10 @@ def job_file(jid: str, name: str):
     p = job_path(jid, fn)
     if not os.path.exists(p):
         raise HTTPException(404, "not made yet")
-    return FileResponse(p, media_type=ctype, headers={"Cache-Control": "no-store"})
+    # video and vocals never change once made (pages ask for them with ?v=<finished time>), so the browser may keep
+    # what it already downloaded and jump around without fetching it again; the lyrics change on every Save
+    cache = "no-store" if name == "lyrics.ass" else "private, max-age=604800"
+    return FileResponse(p, media_type=ctype, headers={"Cache-Control": cache})
 
 
 @app.post("/api/jobs/{jid}/offset")
