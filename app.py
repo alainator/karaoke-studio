@@ -359,15 +359,8 @@ def lyrics_preview(source: str, id: str):
                 url = "https://kara.moe/downloads/lyrics/" + urllib.parse.quote(info["filename"])
                 with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=20) as r:
                     text = r.read().decode("utf-8-sig")
-                lines = []
-                for x in text.splitlines():
-                    if x.startswith("Dialogue:"):
-                        f = x.split(",", 9)
-                        h, m_, sec = f[1].split(":")
-                        words = re.sub(r"\s+", " ", re.sub(r"\{[^}]*\}", "", f[9]).replace("\\N", " ")).strip()
-                        if words:
-                            lines.append([int(h) * 3600 + int(m_) * 60 + float(sec), words])
-                lines.sort(key=lambda z: z[0])
+                import karamoe
+                lines = [[t_, w_] for t_, w_ in karamoe.parse(text)]
             else:
                 raise HTTPException(400, "unknown lyrics entry")
         except HTTPException:
@@ -405,16 +398,12 @@ async def create_job(req: Request):
                "created": time.time(), "offset": 0.0, "log": []})
     log.info("queued %s | video %s | lyrics %s:%s | gpu %s%s", jid, yt, source, lrc_id if source != "pasted" else f"{len(pasted)} chars",
              b.get("gpu") or "auto", f" | replaces {b.get('replace')}" if b.get("replace") else "")
-    # "Change video or lyrics" on an existing song: the new one takes its place (only the studio's copy is removed;
-    # a published file stays in PiKaraoke until the new song is published over it)
+    # "Change video or lyrics" on an existing song: the new one takes its place once it has been made (if it fails,
+    # the old song is still there). Only the studio's copy is removed; a published file stays in PiKaraoke until the
+    # new song is published over it.
     old = str(b.get("replace") or "")
     if ID_RE.match(old) and old != jid and os.path.exists(job_path(old, "job.json")):
-        with lock:
-            try:
-                if load(old).get("status") != "running":
-                    shutil.rmtree(job_path(old))
-            except Exception:
-                pass
+        set_job(jid, replaces=old)
     wake.set()
     return {"id": jid}
 
@@ -1141,24 +1130,34 @@ async def chinese_reading(jid: str, req: Request):
         job = load(jid)
         if job["status"] != "done" or (job.get("result") or {}).get("script", "zh") != "zh":
             raise HTTPException(400, "only for finished Chinese songs")
-        path = job_path(jid, "words.json")
+        path, orig_p = job_path(jid, "words.json"), job_path(jid, "words.orig.json")
         lines, cast = load_lines(path), load_cast(path)
-        if not os.path.exists(job_path(jid, "words.orig.json")):
-            shutil.copyfile(path, job_path(jid, "words.orig.json"))
-        n = 0
-        for l in lines:
-            if not l.get("orig"):
-                continue
-            toks = []
-            for t in re.sub(r"\s+", " ", conv(l["orig"])).split():  # punctuation rides with the word before it, as when made
-                if not re.search(r"[A-Za-z]", t) and toks:
-                    toks[-1] += " " + t
-                else:
-                    toks.append(t)
-            l["words"] = [[w[0], w[1], t] for w, t in zip(l["words"], toks)] if len(toks) == len(l["words"]) \
-                else remap_words(l["words"], " ".join(toks))
-            n += 1
+
+        def convert(ls):
+            n_ = 0
+            for l in ls:
+                if not l.get("orig"):
+                    continue
+                toks = []
+                for t in re.sub(r"\s+", " ", conv(l["orig"])).split():  # punctuation rides with the word before it, as when made
+                    if not re.search(r"[A-Za-z]", t) and toks:
+                        toks[-1] += " " + t
+                    else:
+                        toks.append(t)
+                l["words"] = [[w[0], w[1], t] for w, t in zip(l["words"], toks)] if len(toks) == len(l["words"]) \
+                    else remap_words(l["words"], " ".join(toks))
+                n_ += 1
+            return n_
+        n = convert(lines)
+        # the automatic version ("Undo all edits", and what a remake compares the user's edits with) switches too, so
+        # its lines still pair with these
+        if os.path.exists(orig_p):
+            o_lines, o_cast = load_lines(orig_p), load_cast(orig_p)
+            convert(o_lines)
+            save_lines(orig_p, o_lines, o_cast)
         save_lines(path, lines, cast)
+        if not os.path.exists(orig_p):
+            shutil.copyfile(path, orig_p)
         open(job_path(jid, "lyrics.ass"), "w").write(make_ass(lines, job.get("offset", 0.0), video_size=vsize(job), cast=cast))
         job["result"] = dict(job.get("result") or {}, lang=to)
         job["lang"] = to  # a remake keeps the choice
@@ -1211,7 +1210,19 @@ def local_gpu_name():
 
 
 LOCAL_GPU = local_gpu_name()
-CODE_VERSION = C.code_version()
+_CV = {}
+
+
+def code_version():
+    """Fingerprint of the song-making code as it is on disk now (it can change under a running studio after a
+    merge): the helper must run the same, or the two cards make songs with different code."""
+    try:
+        key = tuple(os.path.getmtime(os.path.join(HERE, f)) for f in C.CODE_FILES)
+    except OSError:
+        key = None
+    if key is None or _CV.get("key") != key:
+        _CV.update(key=key, v=C.code_version())
+    return _CV["v"]
 
 
 def helper_call(path, method="GET", body=None, timeout=10, raw=False):
@@ -1241,7 +1252,7 @@ def ask_helper_update():
 
     def go():
         try:
-            r = helper_call("/update", "POST", {"want": CODE_VERSION}, timeout=1900)
+            r = helper_call("/update", "POST", {"want": code_version()}, timeout=1900)
             print(f"helper update: {r}", flush=True)
         except Exception as e:
             print(f"helper update failed: {e!r}", flush=True)
@@ -1293,7 +1304,7 @@ def schedule_once():
             continue
         if use_remote and slots["remote"] is None:
             h = helper_health()
-            if h and h.get("version") != CODE_VERSION:
+            if h and h.get("version") != code_version():
                 helper_seen["stale"] = True
                 ask_helper_update()
                 h = None  # the helper runs different code: don't use it until it's updated
@@ -1330,6 +1341,14 @@ def finish(jid, rc, err, oom, where):
             job["result"]["gpu"] = job.get("gpu")
             if job.get("published"):  # a remade song: PiKaraoke still has the old one until it's published again
                 job["unpublished_changes"] = True
+            old = job.pop("replaces", None)  # made to replace another song: that one goes now
+            if old and ID_RE.match(old) and old != jid and os.path.exists(job_path(old, "job.json")):
+                try:
+                    if load(old).get("status") not in ("running", "queued"):
+                        shutil.rmtree(job_path(old))
+                        log.info("replaced %s with %s", old, jid)
+                except Exception:
+                    log.exception("couldn't remove the replaced song %s", old)
             if job.get("remade") and job.get("remake_merge"):
                 try:
                     r = merge_remake(jid)
@@ -1414,6 +1433,8 @@ def merge_remake(jid):
     out, changed, marks = [], 0, 0
     def remark(l, weak, why):
         nonlocal marks
+        if l.get("ok"):
+            weak, why = False, None  # the user said this line is fine
         if bool(l.get("weak")) == bool(weak) and (l.get("why") or None) == (why or None if weak else None):
             return l
         marks += 1
@@ -1695,7 +1716,7 @@ def status():
                      "helper": C.GPU_HELPER_NAME if C.GPU_HELPER_URL else None,
                      "helper_online": bool(helper_seen["health"]) if C.GPU_HELPER_URL else None,
                      "helper_busy": slots["remote"] is not None, "helper_outdated": bool(helper_seen.get("stale")),
-                     "code_version": CODE_VERSION},
+                     "code_version": code_version()},
             "renderer": os.path.exists(f"{HERE}/static/octopus/subtitles-octopus.js"),
             "fonts": sorted(f"/static/octopus/{f}" for f in os.listdir(f"{HERE}/static/octopus")
                             if f.lower().endswith((".ttf", ".otf")))

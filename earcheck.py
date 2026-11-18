@@ -62,8 +62,11 @@ def check_job(job_dir, save=True):
     heard = json.load(open(hp))
     job = json.load(open(os.path.join(job_dir, "job.json")))
     lines = normalize(json.load(open(wp)))
-    for l in lines:  # old marks came from word fit alone: keep that doubt only as a hint for unheard lines
-        l["_lowfit"] = bool(l.get("weak")) and not l.get("why")
+    for l in lines:  # what the earlier marks knew that hearing alone can't tell: a poor word fit, a placed-by-guess line
+        why = l.get("why") or ""
+        l["_lowfit"] = bool(l.get("weak")) and (not why or "fit the singing poorly" in why)
+        if "(a guess)" in why:
+            l["_guess"] = why
     conf = mark(lines, heard["words"], heard.get("lang"), float(job.get("offset") or 0.0))
     if save:
         save_lines(wp, lines, load_cast(wp))

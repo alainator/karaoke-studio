@@ -67,29 +67,8 @@ def karamoe_lines(kid):
         fail("this kara.moe entry has no lyrics")
     url = "https://kara.moe/downloads/lyrics/" + urllib.parse.quote(info["filename"])
     text = urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=30).read().decode("utf-8-sig")
-    out = []
-    for l in text.splitlines():
-        if not l.startswith("Dialogue:"):
-            continue
-        f = l.split(",", 9)
-        h, m_, sec = f[1].split(":")
-        start = int(h) * 3600 + int(m_) * 60 + float(sec)
-        body = f[9]
-        # leading \k before the first syllable is lead-in time, not singing
-        lead, pending = 0.0, None
-        for tag, txt in re.findall(r"(\{[^}]*\})|([^{]+)", body):
-            if tag:
-                ks = re.findall(r"\\[kK][fo]?(\d+)", tag)
-                if ks:
-                    if pending is not None:
-                        lead += pending
-                    pending = sum(int(x) for x in ks) / 100
-            elif txt.strip():
-                break
-        words = re.sub(r"\{[^}]*\}", "", body).replace("\\N", " ").strip()
-        if words:
-            out.append((start + lead, re.sub(r"\s+", " ", words)))
-    return sorted(out)
+    import karamoe
+    return karamoe.parse(text)
 
 
 def lrc_lines(text):
@@ -425,6 +404,7 @@ say("step", "align")
 import numpy as np, stable_whisper  # noqa: E402
 model = stable_whisper.load_model(C.WHISPER_MODEL, device="cuda")
 audio = stable_whisper.audio.load_audio(vocals)  # 16 kHz mono
+SUNG = None  # the language Whisper hears in the singing (set when the lyrics' script leaves it open)
 _txt = " ".join(t for _, t in synced)
 _accented = sum(1 for c in _txt if c.isalpha() and not c.isascii()) / max(1, sum(c.isalpha() for c in _txt))
 if SCRIPT == "zh" or SCRIPT in SCRIPTS or (SCRIPT == "latin" and (_en(_txt) < 0.05 or _accented > 0.03)):
@@ -460,7 +440,7 @@ if SCRIPT == "zh" or SCRIPT in SCRIPTS or (SCRIPT == "latin" and (_en(_txt) < 0.
         # writes the same characters either way), and neither can the aligner. So: Cantonese when the job says so
         # (the song page has a Pinyin/Jyutping switch) or when the lyrics are written in spoken Cantonese.
         _txt_zh = "".join(o for o in origs if o)
-        det = "yue" if job.get("lang") == "yue" or sum(_txt_zh.count(c_) for c_ in "係唔嘅咗冇喺佢哋啲嚟咁乜嘢") >= 3 else "zh"
+        det = "yue" if job.get("lang") == "yue" or job.get("lang") != "zh" and sum(_txt_zh.count(c_) for c_ in "唔嘅咗冇喺佢哋啲嚟乜嘢") >= 3 else "zh"
     if SCRIPT == "zh" and det == "yue":
         # the aligner was trained on uroman spellings, which are Mandarin-style for Chinese characters in any dialect:
         # it keeps hearing the lines as pinyin, while the screen shows jyutping
@@ -476,12 +456,19 @@ if SCRIPT == "zh" or SCRIPT in SCRIPTS or (SCRIPT == "latin" and (_en(_txt) < 0.
     if SCRIPT == "latin" and det and det not in ("ja", "ko", "zh", "yue"):
         lang = det
     say("info", f"sung language: {det or 'unknown'}")
+    SUNG = det
 # Mostly-English songs with a Japanese/Korean/Chinese chorus (Fear, and Loathing in Las Vegas: 48 English lines, 5
 # Japanese): Whisper listens in English. Told "Japanese", it hears nothing in the English verses, so they got no help
 # from listening and drifted. The native lines keep their romaji and their original line on screen.
 mixed = (lang in ("ja", "ko", "zh", "yue") or (SCRIPT in SCRIPTS and not is_rtl(SCRIPT))) and any(origs) \
     and sum(1 for o in origs if o) < 0.4 * len(origs)
 wlang = "en" if mixed else lang
+# Romanized lyrics of a song sung in Japanese, Korean or Chinese (romaji from LRCLIB, no original lines): told
+# "English", Whisper writes nonsense for the whole song, and the check by ear then compares the lines with nonsense
+# (a clean song showed 12 of 63 lines heard). So it listens in the language that is sung; linecheck romanizes what
+# it hears the same way the lyrics are written. The word-by-word steps (lyrics check, transcription-first) are
+# skipped for these songs: native-script words can't be matched word for word against romanized ones.
+hear_lang = SUNG if (SCRIPT == "latin" and not any(origs) and SUNG in ("ja", "ko", "zh")) else wlang
 if mixed:
     say("info", f"mostly English with {sum(1 for o in origs if o)} "
                 f"{dict(ja='Japanese', ko='Korean', zh='Chinese', yue='Cantonese').get(lang) or SCRIPTS[SCRIPT][1]} lines: listening in English")
@@ -498,14 +485,18 @@ if True:  # every song is transcribed: the lyrics checks use it where they apply
     try:
         # no voice-activity filter: it drops everything after a long non-singing scene (The Kill's video stopped being
         # transcribed at 224 s); each stretch is transcribed on its own so silence can't make it loop
-        tr = model.transcribe(audio, language=wlang, word_timestamps=True, vad=False, verbose=None,
+        tr = model.transcribe(audio, language=hear_lang, word_timestamps=True, vad=False, verbose=None,
                               condition_on_previous_text=False)
         heard_words = [((w.start + w.end) / 2, w.word) for sg in tr.segments for w in sg.words]
         heard_spans = [[round(w.start, 2), round(w.end, 2), w.word] for sg in tr.segments for w in sg.words]
+        if hear_lang != wlang:
+            say("info", f"romanized lyrics, sung in {hear_lang}: listened in that language for the check by ear ({len(heard_spans)} words heard)")
+            heard_words = []
         if listen_other and not is_rtl(SCRIPT):  # heard in the script: romanized the way the lyrics were (Thai split into words)
             heard_words = [(t_, pc_) for t_, w_ in heard_words
                            for pc_ in (romanize_generic(w_, SCRIPT).split() if SCRIPT_RE[SCRIPT].search(w_) else [w_])]
-        say("info", f"listened to the vocals for the lyrics check ({len(heard_words)} words heard)")
+        if heard_words:
+            say("info", f"listened to the vocals for the lyrics check ({len(heard_words)} words heard)")
     except Exception as e:
         say("info", f"couldn't transcribe the vocals ({str(e)[:60]})")
 del model; gc.collect(); torch.cuda.empty_cache()
@@ -1163,10 +1154,36 @@ if _raw is not None and out_lines and len(out_lines) == len(synced):
 # heard and its words aligned again; the move is kept only if a second check then hears the line in place and the
 # lines stay in order. (Dance, Dance: its last four lines were heard 8-10 s later than placed, and the earlier
 # steps, which work on runs of lines, sometimes let that through.)
+# First the whole song: when most of the lines that were heard are heard the same distance away (2 s or more), the
+# offset between the lyrics and the video is wrong, not the lines. Everything moves by that much and is aligned again;
+# kept only if the lines are then heard in place. (A song whose offset search went wrong sat 28 s late like this.)
+if heard_spans and out_lines and all(l.get("_i") is not None for l in out_lines):
+    _ho = linecheck.heard_offsets(out_lines, heard_spans, hear_lang)
+    _hv = [x_ for x_ in _ho if x_ is not None]
+    if len(_hv) >= max(6, 0.3 * len(out_lines)):
+        _gm = float(np.median(_hv))
+        if abs(_gm) >= 2.0 and float(np.mean([abs(x_ - _gm) <= 1.5 for x_ in _hv])) >= 0.7:
+            _goff = np.full(len(synced), np.nan)
+            for l_ in out_lines:
+                _goff[l_["_i"]] = l_["words"][0][0] - synced[l_["_i"]][0]
+            _gk = np.where(~np.isnan(_goff))[0]
+            for i_ in range(len(synced)):  # lines that were left out: their nearest neighbour's offset
+                if np.isnan(_goff[i_]):
+                    _goff[i_] = _goff[_gk[np.argmin(np.abs(_gk - i_))]]
+            _gt = align_at(_goff + _gm)
+            _gh = linecheck.heard_offsets(_gt[0], heard_spans, hear_lang) if _gt[0] else []
+            _before = sum(1 for x_ in _hv if abs(x_) <= 1.0)
+            _after = sum(1 for x_ in _gh if x_ is not None and abs(x_) <= 1.0)
+            if _after >= max(_before + 3, 0.6 * len(_hv)):
+                out_lines, skipped = _gt[0], _gt[1]
+                off, off_first, off_last = off + _gm, off_first + _gm, off_last + _gm
+                scenes = [v_ + _gm for v_ in scenes]
+                say("info", f"checked by ear: the whole song sat {abs(_gm):.1f}s {'early' if _gm > 0 else 'late'}; "
+                            f"moved it ({_after} of {len(_gt[0])} lines now heard in place, {_before} before)")
 if heard_spans and out_lines and len(out_lines) == len(synced) and all(l.get("_i") == k_ for k_, l in enumerate(out_lines)):
     _fixed = 0
     for _pass in range(2):
-        _ho = linecheck.heard_offsets(out_lines, heard_spans, wlang)
+        _ho = linecheck.heard_offsets(out_lines, heard_spans, hear_lang)
         _st = [l["words"][0][0] for l in out_lines]
         _mv = {}
         for k_, x_ in enumerate(_ho):
@@ -1199,11 +1216,12 @@ if heard_spans and out_lines and len(out_lines) == len(synced) and all(l.get("_i
         _cand = list(out_lines)
         for l_ in align_at(_offs, only=set(_mv))[0]:
             _cand[l_["_i"]] = dict(l_, **{g_: out_lines[l_["_i"]][g_] for g_ in ("_guess",) if g_ in out_lines[l_["_i"]]})
-        _h2 = linecheck.heard_offsets(_cand, heard_spans, wlang)
+        _h2 = linecheck.heard_offsets(_cand, heard_spans, hear_lang)
         if os.environ.get("KARAOKE_DEBUG_FIT"):
             say("info", f"debug ear pass {_pass}: tail offsets {[None if x is None else round(x, 1) for x in _ho[-6:]]} move {dict((k, round(v, 1)) for k, v in _mv.items())} "
                         f"followers {_fol} realigned {[k for k in _mv if _cand[k] is not out_lines[k]]} after {[(k, None if _h2[k] is None else round(_h2[k], 1)) for k in _mv]} "
                         f"new starts {[round(_cand[k]['words'][0][0], 1) for k in sorted(_mv)]}")
+        _prev_lines = list(out_lines)
         _ok = [k_ for k_ in _mv if k_ not in _fol and _cand[k_] is not out_lines[k_] and _h2[k_] is not None and abs(_h2[k_]) <= 1.0]
         for k_ in _ok:
             out_lines[k_] = _cand[k_]
@@ -1212,6 +1230,11 @@ if heard_spans and out_lines and len(out_lines) == len(synced) and all(l.get("_i
             if nb_ in _ok and k_ in _mv and _cand[k_] is not out_lines[k_]:
                 out_lines[k_] = dict(_cand[k_], _guess="wasn't heard: moved along with the line next to it (a guess)")
                 _ok.append(k_)
+        for k_ in sorted(_ok):  # any accepted move that ended up out of order with its neighbours is undone
+            st_ = out_lines[k_]["words"][0][0]
+            if (k_ > 0 and st_ <= out_lines[k_ - 1]["words"][0][0]) or (k_ + 1 < len(out_lines) and st_ >= out_lines[k_ + 1]["words"][0][0]):
+                out_lines[k_] = _prev_lines[k_]
+                _ok.remove(k_)
         _fixed += len(_ok)
         if not _ok:
             break
@@ -1393,10 +1416,10 @@ _med = float(np.median(_fits)) if _fits else 0.0
 for l in out_lines:
     l["_lowfit"] = bool(_fits and l.get("fit") is not None and l["fit"] < 0.5 * _med)
 if heard_spans:
-    json.dump({"lang": wlang, "words": heard_spans}, open(f"{job_dir}/heard.json", "w"), ensure_ascii=False)
+    json.dump({"lang": hear_lang, "words": heard_spans}, open(f"{job_dir}/heard.json", "w"), ensure_ascii=False)
 elif os.path.exists(f"{job_dir}/heard.json"):
     os.remove(f"{job_dir}/heard.json")
-CONF = earcheck.mark(out_lines, heard_spans, wlang)
+CONF = earcheck.mark(out_lines, heard_spans, hear_lang)
 if CONF["check"]:
     say("info", f"{CONF['check']} line{'s' if CONF['check'] != 1 else ''} to check"
                 + (f"; {CONF['sure']} of {CONF['lines']} heard right where they sit" if CONF["sure"] is not None else ""))

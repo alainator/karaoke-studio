@@ -52,11 +52,14 @@ USER_AGENT = env("STUDIO_USER_AGENT", "karaoke-studio/0.1 (+https://github.com/a
 VENC = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-g", "48", "-pix_fmt", "yuv420p"]
 
 
+CODE_FILES = ("pipeline.py", "assgen.py", "config.py", "romanize.py", "versions.py", "albumsync.py", "fonts.py", "earcheck.py", "linecheck.py", "karamoe.py")  # the modules that make songs (pipeline.py imports these)
+
+
 def code_version():
     """Fingerprint of the code that makes songs; the studio only sends jobs to a helper running the same."""
     import hashlib
     h = hashlib.sha256()
-    for f in ("pipeline.py", "assgen.py", "config.py", "romanize.py", "versions.py", "albumsync.py", "fonts.py", "earcheck.py", "linecheck.py"):
+    for f in CODE_FILES:
         h.update(open(os.path.join(HERE, f), "rb").read())
     return h.hexdigest()[:12]
 

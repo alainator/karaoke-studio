@@ -9,7 +9,7 @@ letters (the lyric lines as shown, the heard words romanized the same way) and a
 """
 import functools
 import numpy as np
-from romanize import sound_key, romanize_korean, romanize_mandarin, romanize_generic, script_of, SCRIPTS, is_rtl
+from romanize import sound_key, romanize_korean, romanize_mandarin, romanize_cantonese, romanize_generic, script_of, SCRIPTS, is_rtl
 
 
 @functools.lru_cache(maxsize=1)
@@ -26,7 +26,9 @@ def _letters(text, lang=None):
                 text = _cutlet().romaji(text)
             elif lang == "ko":
                 text = romanize_korean(text)
-            elif lang in ("zh", "yue"):
+            elif lang == "yue":  # Cantonese lines are shown in jyutping
+                text = romanize_cantonese(text)
+            elif lang == "zh":
                 text = romanize_mandarin(text)
         except Exception:
             pass
@@ -54,12 +56,15 @@ def heard_offsets(lines, heard, lang=None):
     if len(L) < 20 or len(H) < 20:
         return out
     la, ha = np.array([c for _, c in L]), np.array(H)
+    hta = np.array(ht)
     n, m = len(la), len(ha)
     S = np.zeros(m + 1)
     ptr = np.zeros((n + 1, m + 1), dtype=np.int8)  # 1 diagonal, 2 lyric letter unheard, 3 heard letter skipped
     ix = np.arange(m + 1)
     for i in range(1, n + 1):
-        dg = S[:-1] + np.where(ha == la[i - 1], 1.0, -1.0)
+        # a match counts a little less the further it is in time from where the line sits, so of two copies of the
+        # same words (a repeated chorus, one copy not heard) the nearer one wins; far matches still count
+        dg = S[:-1] + np.where(ha == la[i - 1], 1.0 - 0.02 * np.minimum(np.abs(hta - own[i - 1]), 20.0), -1.0)
         up = S - 0.5
         A = np.empty(m + 1); A[0] = up[0]; A[1:] = np.maximum(dg, up[1:])
         src = np.empty(m + 1, dtype=np.int8); src[0] = 2; src[1:] = np.where(dg >= up[1:], 1, 2)
@@ -88,8 +93,9 @@ def heard_offsets(lines, heard, lang=None):
             out[li] = float(np.median(d))
     # Whisper's word times run a constant few tenths early or late against the aligner's: measure from the song's
     # own typical offset, so only lines that differ from the rest stand out.
+    # (At most 0.6 s: more than that is the song being off, which must show, not be measured away.)
     near = [x for x in out if x is not None and abs(x) < 2.0]
-    bias = float(np.median(near)) if len(near) >= 5 else 0.0
+    bias = float(np.clip(np.median(near), -0.6, 0.6)) if len(near) >= 5 else 0.0
     out = [None if x is None else x - bias for x in out]
     # A lone line "heard" far away between neighbours that are fine matched the same words somewhere else
     # (a repeated phrase, talking): that says nothing about this line.

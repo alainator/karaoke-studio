@@ -92,6 +92,7 @@ The helper only accepts the studio server, and only with the secret. It updates 
 - You're responsible for what you download and how you use it. This is meant for karaoke at home.
 - LRCLIB is a free community service; please keep `STUDIO_USER_AGENT` meaningful.
 - Not affiliated with PiKaraoke. The lyric renderer is [JavascriptSubtitlesOctopus](https://github.com/libass/JavascriptSubtitlesOctopus).
+- Lyrics come from [LRCLIB](https://lrclib.net) and [kara.moe](https://kara.moe) (Karaoke Mugen). Romanization uses [uroman](https://github.com/isi-nlp/uroman), [cutlet](https://github.com/polm/cutlet), [PyThaiNLP](https://github.com/PyThaiNLP/pythainlp) and [ToJyutping](https://github.com/CanCLID/ToJyutping). Scripts the TV can't draw use [Noto](https://notofonts.github.io) fonts (SIL Open Font License), embedded in the subtitle file.
 
 ## License
 

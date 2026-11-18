@@ -215,7 +215,7 @@ let pick = {video: null, lyr: null, data: null};
 let PENDING_REPLACE = null;  // set by "Change video or lyrics" on a song: the next search is for replacing it
 function changePicks(j) {
   if (!leaveOk()) return;
-  PENDING_REPLACE = {id: j.id, name: `${j.artist} – ${j.title}`, yt: j.yt, lyr: `${j.lyrics_source || "lrclib"}:${j.lrc_id}`};
+  PENDING_REPLACE = {id: j.id, name: `${j.artist} – ${j.title}`, artist: j.artist, title: j.title, yt: j.yt, lyr: `${j.lyrics_source || "lrclib"}:${j.lrc_id}`};
   ed = null; location.hash = "make";
   $("#q").value = `${j.artist} - ${j.title}`;
   $("#sform").requestSubmit();
@@ -225,9 +225,9 @@ $("#sform").onsubmit = async e => {
   const q = $("#q").value.trim(); if (!q) return;
   $("#sbtn").disabled = true;
   $("#results").innerHTML = `<p class="hint"><span class="spinner"></span> Searching YouTube and LRCLIB…</p>`;
-  const replaces = PENDING_REPLACE; PENDING_REPLACE = null;
+  const replaces = PENDING_REPLACE || (pick && pick.replaces) || null; PENDING_REPLACE = null;
   try { pick = {video: null, lyr: null, replaces, data: await api("/api/search?q=" + encodeURIComponent(q))}; renderResults(); }
-  catch (err) { $("#results").innerHTML = `<div class="empty">${esc(err.message)}</div>`; }
+  catch (err) { $("#results").innerHTML = `<div class="empty">${esc(err.message)}</div>`; if (replaces) pick = {video: null, lyr: null, data: null, replaces}; }
   $("#sbtn").disabled = false;
 };
 // timed lyrics, or plain ones (placed by listening), or pasted ones
@@ -309,6 +309,7 @@ function renderResults() {
         <div class="row" style="margin-top:6px"><button class="primary" id="mkuse">Use these lyrics</button></div>` : ""}</div>
     </div>`;
   const canMake = pick.video && pick.lyr && usable(pick.lyr);
+  if (pick.replaces && !pick.names) pick.names = {artist: pick.replaces.artist || "", title: pick.replaces.title || "", edited: true, from: "the song"};
   if (!pick.names || !pick.names.edited) pick.names = autoNames(d);
   const notes = (d.notes || []).map(n => `<div class="empty" style="padding:10px;margin-top:10px">${esc(n)}</div>`).join("");
   const repl = pick.replaces ? `<div class="aibox" style="margin-bottom:10px;border-color:#ffb020"><b>Changing “${esc(pick.replaces.name)}”.</b> Pick the video and lyrics again; when you press Make, the new song replaces it. <button class="ghost" id="unreplace" style="padding:3px 8px;font-size:12px">Keep it and make a separate song</button></div>` : "";

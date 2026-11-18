@@ -29,6 +29,9 @@ IMPROVEMENTS = [  # (when it landed, unix time; songs it matters for; what a rem
     (1795021577, "all", "last lines that weren't heard and sat on talking move to where the talking ends"),
     (1795023674, "all", "lines come up to 2 s early and stay up to 2 s after their last word when there's room, so they're easier to sing"),
     (1795026367, "all", "a final check by ear moves lines that are clearly heard somewhere else, and confirms each move"),
+    (1795042180, "all", "kara.moe lyrics files with title cards or effect lines are read correctly"),
+    (1795042180, "all", "a song sitting off by a fixed amount is moved as a whole when heard that way; repeated lines are matched to the nearer copy"),
+    (1795042180, "latin", "romaji lyrics of songs sung in Japanese, Korean or Chinese are checked by ear in that language"),
 ]
 VERSION = len(IMPROVEMENTS)
 
