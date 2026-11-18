@@ -85,6 +85,8 @@ td.n { text-align: right; font-variant-numeric: tabular-nums; }
 .edtab tr.cur input.tx { border-color: var(--gold); }
 .edtab tr.sel td { background: rgba(60,180,255,.12); }
 .weakmark { color: #ffb020; margin-left: 4px; cursor: pointer; }
+.lyrview { margin-top: 6px; max-height: 260px; overflow: auto; font-size: 13px; line-height: 1.45; padding: 8px 10px; border-radius: 8px; background: rgba(127,127,127,.12); cursor: text; user-select: text; }
+.lyrview .lt { display: inline-block; width: 3.2em; opacity: .55; font-variant-numeric: tabular-nums; }
 .speeds button { padding: 5px 10px; font-size: 13px; }
 #specbtn.on, #snapbtn.on { color: #17121c; background: var(--gold); border-color: var(--gold); }
 .speeds button.on, #loopbtn.on { color: #17121c; background: var(--gold); border-color: var(--gold); }
@@ -210,12 +212,21 @@ const statusReady = status(); setInterval(async () => {
 
 // ---------- search ----------
 let pick = {video: null, lyr: null, data: null};
+let PENDING_REPLACE = null;  // set by "Change video or lyrics" on a song: the next search is for replacing it
+function changePicks(j) {
+  if (!leaveOk()) return;
+  PENDING_REPLACE = {id: j.id, name: `${j.artist} – ${j.title}`, yt: j.yt, lyr: `${j.lyrics_source || "lrclib"}:${j.lrc_id}`};
+  ed = null; location.hash = "make";
+  $("#q").value = `${j.artist} - ${j.title}`;
+  $("#sform").requestSubmit();
+}
 $("#sform").onsubmit = async e => {
   e.preventDefault();
   const q = $("#q").value.trim(); if (!q) return;
   $("#sbtn").disabled = true;
   $("#results").innerHTML = `<p class="hint"><span class="spinner"></span> Searching YouTube and LRCLIB…</p>`;
-  try { pick = {video: null, lyr: null, data: await api("/api/search?q=" + encodeURIComponent(q))}; renderResults(); }
+  const replaces = PENDING_REPLACE; PENDING_REPLACE = null;
+  try { pick = {video: null, lyr: null, replaces, data: await api("/api/search?q=" + encodeURIComponent(q))}; renderResults(); }
   catch (err) { $("#results").innerHTML = `<div class="empty">${esc(err.message)}</div>`; }
   $("#sbtn").disabled = false;
 };
@@ -245,8 +256,22 @@ function bestLyrics(d, video) {
 }
 // in a Japanese song, sources that have only romaji (kara.moe, romaji typed on LRCLIB) can't show the Japanese line
 const romajiOnly = l => pick.data && pick.data.lyrics.some(x => x.native && x.name_match) && !l.native && !l.english && (l.source === "karamoe" || l.latin);
+// the full text of a lyrics entry, loaded when "read" is clicked
+const LYRTEXT = {};
+function lyrText(l) {
+  const t = LYRTEXT[lkey(l)];
+  if (!t) return `<span class="hint"><span class="spinner"></span> loading…</span>`;
+  if (t.error) return `<span class="hint">${esc(t.error)}</span>`;
+  return `<div class="hint" style="margin-bottom:4px">${t.lines.length} lines${t.lines[0] && t.lines[0][0] != null ? `, first at ${fmt(Math.round(t.lines[0][0]))}, last at ${fmt(Math.round(t.lines[t.lines.length - 1][0]))}` : " (no timing)"}</div>` +
+    t.lines.map(([at, x]) => `<div>${at != null ? `<span class="lt">${fmt(Math.round(at))}</span>` : ""}${esc(x)}</div>`).join("");
+}
 function renderResults() {
   const d = pick.data;
+  if (!pick.video && pick.replaces && pick.replaces.yt) {  // changing a song: start from what it was made with
+    pick.video = d.videos.find(v => v.id === pick.replaces.yt) || null;
+    if (!pick.lyr) pick.lyr = d.lyrics.find(l => lkey(l) === pick.replaces.lyr) || null;
+    pick.replaces.yt = null;
+  }
   if (!pick.video) {
     // prefer an unflagged video whose length matches some timed lyrics (skips short/TV versions)
     const fits = v => d.lyrics.some(l => usable(l) && l.duration && Math.abs(l.duration - v.duration) <= 6);
@@ -269,7 +294,9 @@ function renderResults() {
       <div><div class="t">${esc(l.artist)} – ${esc(l.title)}</div>
       <div class="m">${esc(l.album || "")} · ${fmt(l.duration)}${dur && l.duration ? ` (${l.duration - dur > 0 ? "+" : ""}${Math.round(l.duration - dur)}s vs video)` : ""}</div>
       <div>${romajiOnly(l) ? '<span class="tag">romaji only · no Japanese line</span>' : ""}${l.source === "karamoe" ? '<span class="tag good">hand-timed romaji · kara.moe</span>' : l.timed ? `<span class="tag good">timed · ${l.lines} lines</span>` : l.plain ? '<span class="tag">not timed · placed by listening</span>' : '<span class="tag warn">no lyrics text</span>'}${l.mismatch ? '<span class="tag warn">doesn\'t match the Japanese lyrics</span>' : ""}${l.artist_match === false ? '<span class="tag warn">other artist</span>' : ""}${l.script === "ko" ? '<span class="tag">Korean → romanized</span>' : l.script === "zh" ? '<span class="tag">Chinese → pinyin or jyutping</span>' : l.japanese ? '<span class="tag">Japanese → automatic romaji</span>' : SCRIPT_LABEL[l.script] ? `<span class="tag">${SCRIPT_LABEL[l.script]}</span>` : l.english ? '<span class="tag">English</span>' : l.latin ? "" : '<span class="tag warn">script not supported</span>'}</div>
-      ${l.first ? `<div class="m">“${esc(l.first)}…”</div>` : ""}</div>
+      ${l.first ? `<div class="m">“${esc(l.first)}…”</div>` : ""}
+      <a class="tag" data-lview="${esc(lkey(l))}" href="#" title="Read these lyrics before picking them">${pick.lview === lkey(l) ? "hide ▴" : "read ▾"}</a>
+      ${pick.lview === lkey(l) ? `<div class="lyrview">${lyrText(l)}</div>` : ""}</div>
     </div>`).join("") || `<div class="empty">No lyrics found on LRCLIB: paste them below</div>`;
   const pasted = pick.lyr && pick.lyr.source === "pasted";
   if (!d.lyrics.some(usable) && !pasted && pick.pasteOpen === undefined) pick.pasteOpen = true;
@@ -284,7 +311,8 @@ function renderResults() {
   const canMake = pick.video && pick.lyr && usable(pick.lyr);
   if (!pick.names || !pick.names.edited) pick.names = autoNames(d);
   const notes = (d.notes || []).map(n => `<div class="empty" style="padding:10px;margin-top:10px">${esc(n)}</div>`).join("");
-  $("#results").innerHTML = `${notes}
+  const repl = pick.replaces ? `<div class="aibox" style="margin-bottom:10px;border-color:#ffb020"><b>Changing “${esc(pick.replaces.name)}”.</b> Pick the video and lyrics again; when you press Make, the new song replaces it. <button class="ghost" id="unreplace" style="padding:3px 8px;font-size:12px">Keep it and make a separate song</button></div>` : "";
+  $("#results").innerHTML = `${notes}${repl}
     <div class="cols">
       <div><h2>Music video</h2><div class="list">${vids}</div></div>
       <div><h2>Lyrics</h2><div class="list">${lyrsAll}</div></div>
@@ -315,6 +343,18 @@ function renderResults() {
     renderResults();
   };
   document.querySelectorAll("[data-l]").forEach(c => c.onclick = () => { pick.lyr = d.lyrics.find(l => lkey(l) === c.dataset.l); renderResults(); });
+  document.querySelectorAll("[data-lview]").forEach(a => a.onclick = async e => {
+    e.preventDefault(); e.stopPropagation();
+    const k = a.dataset.lview, l = d.lyrics.find(x => lkey(x) === k);
+    pick.lview = pick.lview === k ? null : k; renderResults();
+    if (pick.lview && !LYRTEXT[k]) {
+      try { LYRTEXT[k] = await api(`/api/lyrics?source=${encodeURIComponent(l.source)}&id=${encodeURIComponent(l.id)}`); }
+      catch (err) { LYRTEXT[k] = {error: err.message}; }
+      if (pick.data === d && pick.lview === k) renderResults();
+    }
+  });
+  document.querySelectorAll(".lyrview").forEach(v => v.onclick = e => e.stopPropagation());
+  if ($("#unreplace")) $("#unreplace").onclick = () => { pick.replaces = null; renderResults(); };
   $("#make").onclick = makeJob;
 }
 function gpuMenu(id = "gpupick") {
@@ -376,7 +416,7 @@ async function makeJob() {
   if (!artist || !title) return toast("Fill in artist and title");
   $("#make").disabled = true;
   try {
-    const r = await api("/api/jobs", {method: "POST", body: JSON.stringify({yt: pick.video.id, lrc_id: pick.lyr.id, lyrics_source: pick.lyr.source, ...(pick.lyr.source === "pasted" ? {lyrics_text: pick.lyr.text} : {}), artist, title, video_title: pick.video.title, gpu: $("#gpupick") ? $("#gpupick").value : "auto"})});
+    const r = await api("/api/jobs", {method: "POST", body: JSON.stringify({yt: pick.video.id, lrc_id: pick.lyr.id, lyrics_source: pick.lyr.source, ...(pick.lyr.source === "pasted" ? {lyrics_text: pick.lyr.text} : {}), artist, title, video_title: pick.video.title, gpu: $("#gpupick") ? $("#gpupick").value : "auto", ...(pick.replaces ? {replace: pick.replaces.id} : {})})});
     // the search is done with: start the Make tab fresh next time
     $("#q").value = ""; $("#results").innerHTML = ""; pick = {video: null, lyr: null, data: null};
     location.hash = "jobs/" + r.id;
@@ -449,7 +489,8 @@ async function openJob(id) {
     $("#jobdetail").innerHTML = `${backLink()}<h2>${esc(j.artist)} – ${esc(j.title)}</h2>
       <div class="ctl"><div class="status ${esc(j.status)}">${j.status === "failed" ? "Failed: " + esc(j.error) : esc(j.status === "queued" ? (j.waiting || "Waiting for its turn") : STEP_NAMES[j.step] || j.step)}</div>
       ${stepBar(j)}<div class="m hint" style="margin-top:8px">${j.log.map(esc).join("<br>")}</div>
-      ${j.status === "failed" ? `<div class="row" style="margin-top:10px"><button class="ghost" id="retry">Try again</button><button class="ghost danger" id="del">Delete</button></div>` : ""}</div>`;
+      ${j.status === "failed" ? `<div class="row" style="margin-top:10px"><button class="ghost" id="retry">Try again</button><button class="ghost" id="chpicks2" title="Go back to the search for this song, pick a different video or lyrics, and make it again in place of this one">← Change video or lyrics</button><button class="ghost danger" id="del">Delete</button></div>` : j.status === "queued" ? `<div class="row" style="margin-top:10px"><button class="ghost" id="chpicks2" title="Go back to the search for this song, pick again, and make it in place of this one">← Change video or lyrics</button></div>` : ""}</div>`;
+    if ($("#chpicks2")) $("#chpicks2").onclick = () => changePicks(j);
     if (j.status === "failed") { $("#retry").onclick = async () => { await api(`/api/jobs/${id}/retry`, {method: "POST"}); openJob(id); loadJobs(); }; $("#del").onclick = () => delJob(id); }
     else detailTimer = setTimeout(() => { openJob(id); loadJobs(); }, 2500);
     return;
@@ -459,7 +500,7 @@ async function openJob(id) {
   $("#jobdetail").innerHTML = `${backLink()}
     <div class="row" style="justify-content:space-between;margin:6px 0 10px"><h2 style="margin:0">${esc(j.artist)} – ${esc(j.title)}</h2>
       <span class="row"><input id="rn-artist" class="rn" value="${esc(j.artist)}" placeholder="Artist" title="Artist (sets the song's name in PiKaraoke)">
-      <input id="rn-title" class="rn" value="${esc(j.title)}" placeholder="Title"><button class="ghost" id="rnbtn" style="padding:6px 10px;font-size:13px">Rename</button>${r.script === "zh" || r.lang === "zh" || r.lang === "yue" ? `<button class="ghost" id="zhread" style="padding:6px 10px;font-size:13px" title="Whisper can't tell Mandarin from Cantonese singing. Switch the romanization here; the timing stays.">${r.lang === "yue" ? "Jyutping → Pinyin (Mandarin)" : "Pinyin → Jyutping (Cantonese)"}</button>` : ""}</span></div>
+      <input id="rn-title" class="rn" value="${esc(j.title)}" placeholder="Title"><button class="ghost" id="rnbtn" style="padding:6px 10px;font-size:13px">Rename</button>${j.status !== "running" ? `<button class="ghost" id="chpicks" style="padding:6px 10px;font-size:13px" title="Wrong video or wrong lyrics? Go back to the search for this song, pick again, and make it again in place of this one">← Change video or lyrics</button>` : ""}${r.script === "zh" || r.lang === "zh" || r.lang === "yue" ? `<button class="ghost" id="zhread" style="padding:6px 10px;font-size:13px" title="Whisper can't tell Mandarin from Cantonese singing. Switch the romanization here; the timing stays.">${r.lang === "yue" ? "Jyutping → Pinyin (Mandarin)" : "Pinyin → Jyutping (Cantonese)"}</button>` : ""}</span></div>
     ${j.updates && j.updates.length ? `<div class="aibox" style="margin-bottom:12px"><div class="row" style="justify-content:space-between">
       <b>Made with an older version: remaking it now would add</b>
       <span class="row">${gpuMenu("gpupick2")}<button class="primary" id="remake">↻ Remake with the latest version</button></span></div>
@@ -523,6 +564,7 @@ async function openJob(id) {
     try { await api(`/api/jobs/${id}/chinese-reading`, {method: "POST", body: JSON.stringify({to: r.lang === "yue" ? "zh" : "yue"})}); closePlayer(); ed = null; openJob(id); }
     catch (e) { toast(e.message); }
   };
+  if ($("#chpicks")) $("#chpicks").onclick = () => changePicks(j);
   $("#rnbtn").onclick = async () => {
     try {
       const r = await api(`/api/jobs/${id}/rename`, {method: "POST", body: JSON.stringify({artist: $("#rn-artist").value, title: $("#rn-title").value})});

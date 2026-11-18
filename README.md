@@ -10,7 +10,7 @@ Type `Artist - Title`. The studio finds the music video on YouTube and the lyric
 
 ## What it does
 
-- **Finds the right video and lyrics.** Official music videos are preferred over lyric videos, live versions, covers and dance practices. No lyrics online? Paste them from any site; if LRCLIB has a timed version, your words get its timing.
+- **Finds the right video and lyrics.** Official music videos are preferred over lyric videos, live versions, covers and dance practices. Each suggestion can be opened first: watch the video, read the lyrics. No lyrics online? Paste them from any site; if LRCLIB has a timed version, your words get its timing.
 - **Times the lyrics by listening.** It finds the album recording and matches it against the video's music, so skits, scenes in the middle and cuts are found exactly. Talking keeps its sound; only the singing is removed. Backing vocals in brackets get their own line, so they can overlap the lead.
 - **Fixes lyric mistakes.** An optional local AI (via [Ollama](https://ollama.com)) catches dropped or swapped words and wrong Japanese readings, and keeps a change only if it fits the singing better.
 - **Lets you edit easily.** A waveform or spectrogram of the vocals with a block per line: drag, stretch, or tap **S** as each line is sung, and starts snap to where notes begin. Slow playback to 0.5×, loop a line, split or join lines.

@@ -326,6 +326,50 @@ def search(q: str):
 
 
 # ---------------- jobs ----------------
+_LYR_PREVIEW = {}
+
+
+@app.get("/api/lyrics")
+def lyrics_preview(source: str, id: str):
+    """The text of one lyrics entry from the search, so it can be read before it's picked (like watching a video)."""
+    key = f"{source}:{id}"
+    if key not in _LYR_PREVIEW:
+        try:
+            if source == "lrclib" and id.isdigit():
+                d = http_json(f"https://lrclib.net/api/get/{int(id)}")
+                lines = [[int(m.group(1)) * 60 + float(m.group(2)), m.group(3).strip()] for m in
+                         (re.match(r"\[(\d+):(\d+(?:\.\d+)?)\]\s*(.*)", x.strip()) for x in (d.get("syncedLyrics") or "").splitlines()) if m and m.group(3).strip()]
+                if len(lines) < 4:
+                    lines = [[None, x.strip()] for x in (d.get("plainLyrics") or "").splitlines() if x.strip()]
+            elif source == "karamoe" and re.fullmatch(r"[0-9a-f-]{36}", id):
+                k = http_json(f"https://kara.moe/api/karas/{id}")
+                info = next((l for l in k.get("lyrics_infos") or [] if l.get("default")), (k.get("lyrics_infos") or [None])[0])
+                if not info:
+                    raise HTTPException(404, "this kara.moe entry has no lyrics")
+                url = "https://kara.moe/downloads/lyrics/" + urllib.parse.quote(info["filename"])
+                with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=20) as r:
+                    text = r.read().decode("utf-8-sig")
+                lines = []
+                for x in text.splitlines():
+                    if x.startswith("Dialogue:"):
+                        f = x.split(",", 9)
+                        h, m_, sec = f[1].split(":")
+                        words = re.sub(r"\s+", " ", re.sub(r"\{[^}]*\}", "", f[9]).replace("\\N", " ")).strip()
+                        if words:
+                            lines.append([int(h) * 3600 + int(m_) * 60 + float(sec), words])
+                lines.sort(key=lambda z: z[0])
+            else:
+                raise HTTPException(400, "unknown lyrics entry")
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(502, f"couldn't load these lyrics ({str(e)[:60]})")
+        if len(_LYR_PREVIEW) > 200:
+            _LYR_PREVIEW.clear()
+        _LYR_PREVIEW[key] = lines[:400]
+    return {"lines": _LYR_PREVIEW[key]}
+
+
 @app.post("/api/jobs")
 async def create_job(req: Request):
     check_origin(req)
@@ -349,6 +393,16 @@ async def create_job(req: Request):
                "gpu_pref": b.get("gpu") if b.get("gpu") in ("local", "remote") else "auto",
                **({"lyrics_text": pasted} if source == "pasted" else {}),
                "created": time.time(), "offset": 0.0, "log": []})
+    # "Change video or lyrics" on an existing song: the new one takes its place (only the studio's copy is removed;
+    # a published file stays in PiKaraoke until the new song is published over it)
+    old = str(b.get("replace") or "")
+    if ID_RE.match(old) and old != jid and os.path.exists(job_path(old, "job.json")):
+        with lock:
+            try:
+                if load(old).get("status") != "running":
+                    shutil.rmtree(job_path(old))
+            except Exception:
+                pass
     wake.set()
     return {"id": jid}
 
@@ -382,7 +436,7 @@ def summary(job):
 
 def _summary(job):
     keys = ("id", "artist", "title", "yt", "status", "step", "created", "finished", "error", "offset",
-            "published", "published_as", "video_title", "result", "waiting", "edited", "unpublished_changes", "lang", "gpu", "ai_romaji", "video_v", "gpu_pref", "reviewed")
+            "published", "published_as", "video_title", "result", "waiting", "edited", "unpublished_changes", "lang", "gpu", "ai_romaji", "video_v", "gpu_pref", "reviewed", "lrc_id", "lyrics_source")
     return {k: job.get(k) for k in keys}
 
 
