@@ -507,19 +507,19 @@ for gain, o, mine in sorted(props, reverse=True):
 say("info", "timing candidates " + ", ".join(f"{o:+.1f}s" for o in cands_o))
 if len(cands_o) > 1:
     runs = {o: (tried[pick] if o == off else align_at(o)) for o in cands_o[:MAX_C]}
-    C = list(runs)
-    F = np.array([runs[o][3] for o in C]).T  # lines x candidates: word fit of each line at each offset
+    CO = list(runs)
+    F = np.array([runs[o][3] for o in CO]).T  # lines x candidates: word fit of each line at each offset
     if os.environ.get("KARAOKE_DEBUG_FIT"):
-        json.dump({"C": C, "F": F.tolist(), "starts": _starts.tolist()}, open(f"{job_dir}/fitdebug.json", "w"))
+        json.dump({"CO": CO, "F": F.tolist(), "starts": _starts.tolist()}, open(f"{job_dir}/fitdebug.json", "w"))
     # cost of a jump, in this song's own scale: rough vocals give every line a low fit (The Kill ~0.15), clean ones high
     WP = 2.5 * float(np.median(F.max(1)))
-    dp2, back2 = F[0].copy(), np.zeros((n_l, len(C)), dtype=int)
+    dp2, back2 = F[0].copy(), np.zeros((n_l, len(CO)), dtype=int)
     for i in range(1, n_l):
-        new, bk = np.zeros(len(C)), np.zeros(len(C), dtype=int)
-        for c in range(len(C)):
+        new, bk = np.zeros(len(CO)), np.zeros(len(CO), dtype=int)
+        for c in range(len(CO)):
             best_v, best_k = dp2[c], c
-            for k in range(len(C)):
-                ok = _starts[i] + C[c] > _starts[i - 1] + C[k] + 0.3  # lines stay in order
+            for k in range(len(CO)):
+                ok = _starts[i] + CO[c] > _starts[i - 1] + CO[k] + 0.3  # lines stay in order
                 if k != c and ok and dp2[k] - WP > best_v:
                     best_v, best_k = dp2[k] - WP, k
             new[c], bk[c] = F[i, c] + best_v, best_k
@@ -533,9 +533,9 @@ if len(cands_o) > 1:
         if parts and p2[i - 1] == c:
             parts[-1][1] = i
         else:
-            parts.append([i, i, C[c]])
+            parts.append([i, i, CO[c]])
     if len(parts) > 1 and all(b - a + 1 >= 4 for a, b, _ in parts):
-        offs = np.array([C[c] for c in p2])
+        offs = np.array([CO[c] for c in p2])
         pw = align_at(offs)
         desc = " | ".join(f"lines {a + 1}-{b + 1} {o:+.1f}s" for a, b, o in parts)
         if pw[2] > fit_words[pick] + 0.005:
