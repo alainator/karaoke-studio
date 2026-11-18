@@ -49,6 +49,7 @@ h2 { font-size: 15px; margin: 26px 0 10px; color: var(--dim); font-weight: 600; 
 .tag.warn { background: rgba(255,122,133,.14); color: var(--bad); }
 .makebar { position: sticky; bottom: 0; margin-top: 18px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .makebar input { flex: 1 1 160px; padding: 9px 12px; font-size: 15px; }
+.makebar select { padding: 9px 10px; font: inherit; font-size: 14px; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 8px; max-width: 100%; }
 .jobs .card { cursor: pointer; }
 .steps { display: flex; gap: 3px; margin-top: 6px; }
 .steps i { height: 4px; flex: 1; border-radius: 4px; background: var(--line); }
@@ -187,7 +188,11 @@ async function status() {
     if (s.renderer === false) toast("Lyrics preview needs the renderer: run  python get_renderer.py  on the server", 15000);
   } catch {}
 }
-const statusReady = status(); setInterval(status, 30000);
+const statusReady = status(); setInterval(async () => {
+  await status();
+  const m = $("#gpupick");  // keep the card states in the Make menu current, and the user's choice
+  if (m) { const v = m.value; m.outerHTML = gpuMenu(); $("#gpupick").value = v; }
+}, 30000);
 
 // ---------- search ----------
 let pick = {video: null, lyr: null, data: null};
@@ -253,6 +258,7 @@ function renderResults() {
     <div class="makebar">
       <input type="text" id="artist" value="${esc(d.artist || "")}" placeholder="Artist">
       <input type="text" id="title" value="${esc(d.title || "")}" placeholder="Title">
+      ${gpuMenu()}
       <button class="primary" id="make" ${canMake ? "" : "disabled"}>Make karaoke</button>
       <span class="hint">${canMake ? "about 1–2 minutes" : "pick a video and timed lyrics"}</span>
     </div>`;
@@ -260,12 +266,23 @@ function renderResults() {
   document.querySelectorAll("[data-l]").forEach(c => c.onclick = () => { pick.lyr = d.lyrics.find(l => lkey(l) === c.dataset.l); renderResults(); });
   $("#make").onclick = makeJob;
 }
+function gpuMenu() {
+  // which graphics card makes the song: Auto (whichever is free) or one you pick
+  const g = STATUS.gpus || {};
+  if (!g.helper) return "";  // only one card: nothing to choose
+  const local = `${esc(g.local || "this server")} (this server) — ${g.local_busy ? "making a song" : (STATUS.gpu_free_gb != null ? STATUS.gpu_free_gb + " GB free" : "")}`;
+  const helper = `${esc(STATUS.helper_gpu || "GPU")} (${esc(g.helper)}) — ${!g.helper_online ? "off or unreachable" : g.helper_busy ? "making a song" : g.helper_outdated ? "updating" : (STATUS.helper_free_gb != null ? STATUS.helper_free_gb + " GB free" : "on")}`;
+  return `<select id="gpupick" title="Which graphics card makes this song">
+    <option value="auto">GPU: Auto (whichever is free)</option>
+    <option value="local">${local}</option>
+    <option value="remote">${helper}</option></select>`;
+}
 async function makeJob() {
   const artist = $("#artist").value.trim(), title = $("#title").value.trim();
   if (!artist || !title) return toast("Fill in artist and title");
   $("#make").disabled = true;
   try {
-    const r = await api("/api/jobs", {method: "POST", body: JSON.stringify({yt: pick.video.id, lrc_id: pick.lyr.id, lyrics_source: pick.lyr.source, artist, title, video_title: pick.video.title})});
+    const r = await api("/api/jobs", {method: "POST", body: JSON.stringify({yt: pick.video.id, lrc_id: pick.lyr.id, lyrics_source: pick.lyr.source, artist, title, video_title: pick.video.title, gpu: $("#gpupick") ? $("#gpupick").value : "auto"})});
     // the search is done with: start the Make tab fresh next time
     $("#q").value = ""; $("#results").innerHTML = ""; pick = {video: null, lyr: null, data: null};
     location.hash = "jobs/" + r.id;

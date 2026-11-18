@@ -52,7 +52,7 @@ The first job downloads the separation model (about 610 MB) into `KARAOKE_MODELS
 
 ## GPU helper (a second PC)
 
-If another Linux PC on your network has an NVIDIA card, it can make songs while the main GPU is busy, for example with a big LLM loaded. The studio sends a queued job to the helper only when its own GPU lacks room and the helper is online with room. Both can run at once. If the PC shuts down or sleeps mid-song, the job goes back in the queue. Each song page shows which GPU made it.
+If another Linux PC on your network has an NVIDIA card, it can make songs while the main GPU is busy, for example with a big LLM loaded. The studio sends a queued job to the helper only when its own GPU lacks room and the helper is online with room. Both can run at once. If the PC shuts down or sleeps mid-song, the job goes back in the queue. With a helper set up, the Make page has a **GPU** menu: *Auto* (the default: whichever card has room) or one particular card, each shown with its current state (free memory, busy, off). A song waiting for the card you picked doesn't hold up later songs that can use the other one. Each song page shows which GPU made it.
 
 On the PC (Arch/CachyOS; it asks for your password for pacman and the firewall):
 ```sh

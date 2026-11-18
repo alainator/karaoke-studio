@@ -297,6 +297,7 @@ async def create_job(req: Request):
     os.makedirs(f"{JOBS}/{jid}")
     save(jid, {"id": jid, "yt": yt, "lrc_id": lrc_id, "lyrics_source": source, "artist": artist, "title": title,
                "video_title": str(b.get("video_title", ""))[:200], "status": "queued", "step": "queued",
+               "gpu_pref": b.get("gpu") if b.get("gpu") in ("local", "remote") else "auto",
                "created": time.time(), "offset": 0.0, "log": []})
     wake.set()
     return {"id": jid}
@@ -304,7 +305,7 @@ async def create_job(req: Request):
 
 def summary(job):
     keys = ("id", "artist", "title", "yt", "status", "step", "created", "finished", "error", "offset",
-            "published", "published_as", "video_title", "result", "waiting", "edited", "unpublished_changes", "lang", "gpu", "ai_romaji", "video_v")
+            "published", "published_as", "video_title", "result", "waiting", "edited", "unpublished_changes", "lang", "gpu", "ai_romaji", "video_v", "gpu_pref")
     return {k: job.get(k) for k in keys}
 
 
@@ -890,12 +891,15 @@ def schedule_once():
     queued = sorted((j for j in list_jobs() if j["status"] == "queued"), key=lambda j: j["created"])
     for j in queued:
         jid = j["id"]
+        pref = load(jid).get("gpu_pref", "auto")  # "auto": whichever card is free; "local"/"remote": only that one
+        use_local = pref in ("auto", "local") and C.USE_LOCAL_GPU
+        use_remote = pref in ("auto", "remote") and bool(C.GPU_HELPER_URL)
         free = gpu_free_mib()
-        if C.USE_LOCAL_GPU and slots["local"] is None and free >= NEED_GPU_MIB:
+        if use_local and slots["local"] is None and free >= NEED_GPU_MIB:
             if claim(jid, "local", LOCAL_GPU):
                 threading.Thread(target=run_local, args=(jid,), daemon=True).start()
             continue
-        if slots["remote"] is None:
+        if use_remote and slots["remote"] is None:
             h = helper_health()
             if h and h.get("version") != CODE_VERSION:
                 helper_seen["stale"] = True
@@ -907,14 +911,21 @@ def schedule_once():
                 if claim(jid, "remote", h.get("gpu", "helper").replace("NVIDIA GeForce ", "") + " (" + C.GPU_HELPER_NAME + ")"):
                     threading.Thread(target=run_remote, args=(jid,), daemon=True).start()
                 continue
-        why = (f"waiting for the graphics card ({free // 1024} GB free, needs {NEED_GPU_MIB // 1024})"
-               if slots["local"] is None else "waiting: the graphics card is making another song")
-        if C.GPU_HELPER_URL and slots["remote"] is None:
-            why += f"; {C.GPU_HELPER_NAME} " + ("is updating to the new studio code (if this stays, update it: on that PC run deploy/install-helper.sh again)"
-                                               if helper_seen.get("stale") else "is busy" if helper_seen["health"] else "is off or unreachable")
+        parts = []
+        if use_local:
+            parts.append(f"{LOCAL_GPU}: " + (f"{free // 1024} GB free, needs {NEED_GPU_MIB // 1024}" if slots["local"] is None
+                                              else "making another song"))
+        if use_remote:
+            parts.append(f"{C.GPU_HELPER_NAME}: " + ("making another song" if slots["remote"] is not None else
+                         "updating to the new studio code (if this stays, update it: on that PC run deploy/install-helper.sh again)"
+                         if helper_seen.get("stale") else "busy" if helper_seen["health"] else "off or unreachable"))
+        why = ("waiting for " + ("the card you picked" if pref != "auto" else "a graphics card") + " (" + "; ".join(parts) + ")"
+               if parts else "waiting: the card you picked isn't set up in this studio")
         if j.get("waiting") != why:
             set_job(jid, waiting=why)
-        break  # first come, first served
+        if pref == "auto":
+            break  # first come, first served: later songs can't use a card this one couldn't
+        # a song waiting for one particular card doesn't hold up songs that can use the other one
 
 
 def finish(jid, rc, err, oom, where):
@@ -1166,7 +1177,10 @@ def library():
 
 @app.get("/api/status")
 def status():
-    return {"gpu_free_gb": round(gpu_free_mib() / 1024, 1), "need_gb": NEED_GPU_MIB // 1024,
+    if C.GPU_HELPER_URL and time.time() - helper_seen["at"] > 20:
+        helper_health()  # the Make page shows each card's state
+    hh = helper_seen["health"] or {}
+    return {"helper_free_gb": round(hh.get("free_mib", 0) / 1024, 1) if hh else None, "helper_gpu": (hh.get("gpu") or "").replace("NVIDIA GeForce ", "") or None,"gpu_free_gb": round(gpu_free_mib() / 1024, 1), "need_gb": NEED_GPU_MIB // 1024,
             "pikaraoke_password": bool(C.PIKARAOKE_PASSWORD), "romaji_ai": bool(C.OLLAMA_URL),
             "gpus": {"local": LOCAL_GPU, "local_busy": slots["local"] is not None,
                      "helper": C.GPU_HELPER_NAME if C.GPU_HELPER_URL else None,
