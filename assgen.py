@@ -91,7 +91,8 @@ def normalize(data):
             ww = [who_of(x) for x in ww] if isinstance(ww, list) and len(ww) == len(words) else None
             out.append({"words": words, "orig": l.get("orig") or None,
                         "singer": sg if sg in (1, 2, 3) else None, "heard": l.get("heard") or None,
-                        "members": sorted(set(mem)) or None, "wwho": ww if ww and any(ww) else None})
+                        "members": sorted(set(mem)) or None, "wwho": ww if ww and any(ww) else None,
+                        "weak": bool(l.get("weak"))})
         else:
             out.append({"words": [list(w) for w in l], "orig": None, "singer": None, "heard": None, "members": None, "wwho": None})
     return [l for l in out if l["words"]]
@@ -123,6 +124,7 @@ def save_lines(path, lines, cast=_KEEP):
                               **({"singer": l["singer"]} if l.get("singer") in (1, 2, 3) else {}),
                               **({"members": l["members"]} if l.get("members") else {}),
                               **({"wwho": l["wwho"]} if l.get("wwho") and len(l["wwho"]) == len(l["words"]) else {}),
+                              **({"weak": True} if l.get("weak") else {}),
                               **({"heard": l["heard"]} if l.get("heard") else {})}
                              for l in lines]}, f, ensure_ascii=False)
     os.replace(tmp, path)

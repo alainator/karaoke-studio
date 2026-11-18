@@ -426,7 +426,7 @@ def _valid_lines(raw, duration):
         out.append({"words": clean, "orig": orig.strip()[:300] if isinstance(orig, str) and orig.strip() else None,
                     "singer": sg if sg in (1, 2, 3) else None, "members": mem or None,
                     "heard": heard.strip()[:200] if isinstance(heard, str) and heard.strip() else None,
-                    "wwho": wwho if any(wwho) else None})
+                    "wwho": wwho if any(wwho) else None, "weak": bool(l.get("weak"))})
     if not out:
         raise HTTPException(400, "no lines left")
     out.sort(key=lambda l: l["words"][0][0])

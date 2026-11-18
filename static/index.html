@@ -84,6 +84,7 @@ td.n { text-align: right; font-variant-numeric: tabular-nums; }
 .edtab tr.cur td { background: rgba(255,201,77,.08); }
 .edtab tr.cur input.tx { border-color: var(--gold); }
 .edtab tr.sel td { background: rgba(60,180,255,.12); }
+.weakmark { color: #ffb020; margin-left: 4px; cursor: help; }
 .wchips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
 .wchip { border: 1px solid; border-radius: 6px; padding: 1px 6px; font-size: 13px; cursor: pointer; user-select: none; background: rgba(0,0,0,.25); touch-action: none; }
 .wchips { align-items: center; }
@@ -447,11 +448,11 @@ function spread(texts, start, end) {
 function shiftLine(l, delta) { l.words = l.words.map(([a, b, w]) => [+Math.max(0, a + delta).toFixed(3), +Math.max(0, b + delta).toFixed(3), w]); }
 // move line i by delta; with "move the lines after it too" on, every later line moves the same amount
 function moveLine(i, delta) {
-  shiftLine(ed.lines[i], delta);
+  shiftLine(ed.lines[i], delta); ed.lines[i].weak = false;
   if (ed.ripple) ed.lines.slice(i + 1).forEach(x => shiftLine(x, delta));
 }
-let rippleDefault = true;
-try { rippleDefault = localStorage.getItem("ks-ripple") !== "0"; } catch (e) {}
+let rippleDefault = false;  // off by default: lines are usually off by different amounts
+try { rippleDefault = localStorage.getItem("ks-ripple") === "1"; } catch (e) {}
 async function initEditor(id, j) {
   let d; try { d = await api(`/api/jobs/${id}/lines`); } catch (e) { $("#editor").textContent = e.message; return; }
   if (currentJob !== id) return;
@@ -526,6 +527,7 @@ function initWave() {
     const l = ed.lines[waveDrag.i], dt = (x - waveDrag.x0) / c.clientWidth * ed.view.span;
     l.words = JSON.parse(JSON.stringify(waveDrag.orig));
     const [a, b] = [l.words[0][0], l.words[l.words.length - 1][1]];
+    l.weak = false;
     if (waveDrag.mode === "move") shiftLine(l, dt);
     else if (waveDrag.mode === "left") scaleLine(l, Math.min(a + dt, b - 0.2), b);
     else scaleLine(l, a, Math.max(b + dt, a + 0.2));
@@ -573,6 +575,7 @@ function drawWave() {
       const wa = X(w[0] + curOff()), wb = j + 1 < l.words.length ? X(l.words[j + 1][0] + curOff()) : x1;
       g.fillStyle = whoColour(wordWho(l, j)) + (cur ? "" : "88"); g.fillRect(Math.max(x0, wa), y0, Math.max(1, Math.min(x1, wb) - Math.max(x0, wa)), y1 - y0);
     });
+    if (l.weak) { g.save(); g.setLineDash([5, 3]); g.strokeStyle = "#ffb020"; g.lineWidth = 2; g.strokeRect(x0 + 1, y0 + 1, x1 - x0 - 2, y1 - y0 - 2); g.restore(); }
     if (l.unsure) { g.save(); g.setLineDash([4, 3]); g.strokeStyle = "#ff7a85"; g.lineWidth = 2; g.strokeRect(x0 + 1, y0 + 1, x1 - x0 - 2, y1 - y0 - 2); g.restore(); }
     g.fillStyle = "rgba(0,0,0,.45)"; l.words.slice(1).forEach(w => g.fillRect(X(w[0] + curOff()), y0 + 3, 1, y1 - y0 - 6));
     g.save(); g.beginPath(); g.rect(x0 + 3, y0, x1 - x0 - 6, y1 - y0); g.clip();
@@ -665,12 +668,12 @@ function renderEditor() {
       ${ed.cast.length ? "" : '<button class="ghost" id="detect" style="padding:5px 10px;font-size:12px;opacity:.75" title="Experimental: guesses two voices from the vocals; often needs fixing">Detect 2 singers (experimental)</button>'}
       <button class="ib" id="zout" title="Zoom out">−</button><button class="ib" id="zin" title="Zoom in">+</button></span></div>
       <canvas id="wave"></canvas></div>
-    <div class="edbar"><label class="ripple" title="When you move a line (S, arrows, −/+, ⏱, typing a time, dragging its block), every later line moves by the same amount: one fix repairs a whole section that's off"><input type="checkbox" id="ripple" ${ed.ripple ? "checked" : ""}> Move the lines after it too</label>
+    <div class="edbar">${ed.lines.some(l => l.weak) ? `<button class="ghost" id="nextweak" title="Select the next line the aligner is unsure about and play from just before it">⚠ Next line to check (${ed.lines.filter(l => l.weak).length})</button>` : ""}<label class="ripple" title="When you move a line (S, arrows, −/+, ⏱, typing a time, dragging its block), every later line moves by the same amount: one fix repairs a whole section that's off"><input type="checkbox" id="ripple" ${ed.ripple ? "checked" : ""}> Move the lines after it too</label>
       <input id="newline" placeholder="Missing line? Type it, play to where it's sung, then Add"><button class="ghost" id="addline">Add at playback time</button>
       ${ed.skipped.map((s, i) => `<button class="chip" data-sk="${i}" title="Not sung in this video according to the aligner">+ ${esc(s)}</button>`).join("")}</div>
     <div class="edwrap"><table class="edtab"><tbody>${ed.lines.map((l, i) => `
       <tr data-i="${i}" class="${ed.sel === i ? "sel" : ""}">
-        <td><button class="ib" data-act="play" title="Play from just before this line">▶</button></td>
+        <td><button class="ib" data-act="play" title="Play from just before this line">▶</button>${l.weak ? '<span class="weakmark" title="The aligner is unsure about this line (its words fit the singing much worse than the rest); check its timing">⚠</span>' : ""}</td>
         <td><input class="tm" data-act="time" value="${fmtT(l.words[0][0] + off)}" title="Line start (m:ss.cc)"></td>
         <td class="nowrap"><button class="ib" data-act="m" title="0.1 s earlier">−</button><button class="ib" data-act="p" title="0.1 s later">+</button><button class="ib" data-act="now" title="Start this line at the current playback time">⏱</button></td>
         <td class="nowrap">${l.unsure ? '<span class="unsure" title="Detect 2 singers wasn\'t sure about this line">?</span>' : ""}${ed.cast.length ? memberSelect(l) : `<select class="sg" data-act="singer" title="Who sings this line">${[["", "–"], [1, "1"], [2, "2"], [3, "Both"]].map(([v, t]) => `<option value="${v}" ${(l.singer || "") == v ? "selected" : ""}>${t}</option>`).join("")}</select>`}</td>
@@ -688,6 +691,12 @@ function renderEditor() {
   ["pointerdown", "wheel", "keydown", "touchstart"].forEach(ev => $(".edwrap").addEventListener(ev, () => { ed.touched = Date.now(); }, {passive: true}));
   const changed = () => { const keep = ed.lines[ed.sel]; ed.dirty = true; renderEditor(); if (keep) { ed.sel = ed.lines.indexOf(keep); renderEditor(); } markCurrent(); };
   ed.changed = changed;
+  if ($("#nextweak")) $("#nextweak").onclick = () => {
+    const from = ed.sel != null ? ed.sel : -1;
+    let i = ed.lines.findIndex((l, k) => k > from && l.weak); if (i < 0) i = ed.lines.findIndex(l => l.weak); if (i < 0) return;
+    ed.sel = i; renderEditor(); keepVisible(i);
+    const v = $("#pv"); v.currentTime = Math.max(0, ed.lines[i].words[0][0] + curOff() - 1.5); v.play();
+  };
   $("#ripple").onchange = e => { ed.ripple = e.target.checked; try { localStorage.setItem("ks-ripple", ed.ripple ? "1" : "0"); } catch (x) {} };
   // painting a shared line: press on a word and drag across others; each gets the brush's singer
   const paint = chip => {

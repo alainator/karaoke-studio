@@ -14,6 +14,8 @@ IMPROVEMENTS = [  # (when it landed, unix time; songs it matters for; what a rem
     (1794962987, "all", "better at finding where a music video's timing jumps"),
     (1794963662, "all", "the video is re-encoded so jumping backwards in the editor doesn't freeze it"),
     (1794972339, "latin", "transcription first: the lyrics are matched to what is actually sung before timing"),
+    (1794975439, "all", "lines whose timing the aligner is unsure about are marked for checking in the editor"),
+    (1794975439, "ja", "mostly-English songs with a Japanese chorus are listened to in English"),
 ]
 VERSION = len(IMPROVEMENTS)
 

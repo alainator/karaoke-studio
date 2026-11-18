@@ -270,18 +270,26 @@ if SCRIPT == "zh" or (SCRIPT == "latin" and (_en(_txt) < 0.05 or _accented > 0.0
     if SCRIPT == "latin" and det and det not in ("ja", "ko", "zh", "yue"):
         lang = det
     say("info", f"sung language: {det or 'unknown'}")
-res = model.align(audio, "\n".join(align_text), language=lang, original_split=True)
+# Mostly-English songs with a Japanese/Korean/Chinese chorus (Fear, and Loathing in Las Vegas: 48 English lines, 5
+# Japanese): Whisper listens in English. Told "Japanese", it hears nothing in the English verses, so they got no help
+# from listening and drifted. The native lines keep their romaji and their original line on screen.
+mixed = lang in ("ja", "ko", "zh") and any(origs) and sum(1 for o in origs if o) < 0.4 * len(origs)
+wlang = "en" if mixed else lang
+if mixed:
+    say("info", f"mostly English with {sum(1 for o in origs if o)} {dict(ja='Japanese', ko='Korean', zh='Chinese')[lang]} "
+                f"lines: listening in English")
+res = model.align(audio, "\n".join(align_text), language=wlang, original_split=True)
 wsegs = [[(x.start, x.end) for x in s.words if x.word.strip()] for s in res.segments if s.words]
 heard_words = []
-listen_ja = lang == "ja" and any(origs) and len(hand_romaji) < 0.8 * sum(1 for o in origs if o)
-listen_latin = SCRIPT == "latin" and not any(origs)
+listen_ja = lang == "ja" and not mixed and any(origs) and len(hand_romaji) < 0.8 * sum(1 for o in origs if o)
+listen_latin = (SCRIPT == "latin" and not any(origs)) or mixed
 if listen_ja or listen_latin:
     # what the singer actually sings. Japanese lyrics often write one word and sing another (幻 sung "yume");
     # crowd-sourced lyrics of any language drop or swap words. The AI checks compare this with the written line.
     try:
         # no voice-activity filter: it drops everything after a long non-singing scene (The Kill's video stopped being
         # transcribed at 224 s); each stretch is transcribed on its own so silence can't make it loop
-        tr = model.transcribe(audio, language=lang, word_timestamps=True, vad=False, verbose=None,
+        tr = model.transcribe(audio, language=wlang, word_timestamps=True, vad=False, verbose=None,
                               condition_on_previous_text=False)
         heard_words = [((w.start + w.end) / 2, w.word) for sg in tr.segments for w in sg.words]
         say("info", f"listened to the vocals for the lyrics check ({len(heard_words)} words heard)")
@@ -416,7 +424,7 @@ def align_at(off):
             if len(loud):
                 end = words[-1][0] + (loud[-1] + 1) * fr / SR
                 words[-1][1] = max(words[-1][1], min(end, words[-1][1] + 5.0))
-        out_lines.append({"words": [[round(x, 3), round(y, 3), z] for x, y, z in words], "orig": origs[i]})
+        out_lines.append({"words": [[round(x, 3), round(y, 3), z] for x, y, z in words], "orig": origs[i], "fit": per[-1]})
     return out_lines, skipped, total / len(synced), per
 
 
@@ -491,7 +499,7 @@ for g in dict.fromkeys(path):
     path_c.append(float(fine[int(np.argmax([np.mean([_line_act(i, x) for i in mine]) for x in fine]))]))
 # the most direct evidence: find the lyric lines in the free transcription of the vocals (Latin and Japanese songs)
 # and see how far each sits from its album time; shifts several lines agree on become candidates too
-if heard_words and not any(origs):
+if heard_words and (not any(origs) or mixed):
     import difflib
     hw = [(t, re.sub(r"[^a-z']", "", x.lower())) for t, x in heard_words]
     hw = [x for x in hw if x[1]]
@@ -592,10 +600,10 @@ def _tw(x):
     return re.sub(r"[^a-z']", "", unicodedata.normalize("NFKD", x.replace("đ", "d").replace("Đ", "D")).lower())
 
 
-if heard_words and not any(origs) and len(synced) >= 4:
+if heard_words and (not any(origs) or mixed) and len(synced) >= 4:
     _hw = [(t, _tw(x)) for t, x in heard_words]
     _hw = [x for x in _hw if x[1]]
-    _lw = [(_i, k, _tw(y)) for _i, (t, text) in enumerate(synced) for k, y in enumerate(text.split()) if _tw(y)]
+    _lw = [(_i, k, _tw(y)) for _i, (t, text) in enumerate(synced) if not origs[_i] for k, y in enumerate(text.split()) if _tw(y)]
     if len(_hw) >= 10 and len(_lw) >= 10:
         _voc = {w: _n for _n, w in enumerate({x for _, _, x in _lw} | {x for _, x in _hw})}
         _la = np.array([_voc[x] for _, _, x in _lw]); _ha = np.array([_voc[x] for _, x in _hw])
@@ -707,11 +715,19 @@ if moved:
 del fa_model; gc.collect(); torch.cuda.empty_cache()
 if heard_words:
     for l in out_lines:
-        if l.get("orig") or listen_latin:
+        if (l.get("orig") and listen_ja) or (not l.get("orig") and listen_latin):
             s0, s1 = l["words"][0][0] - 0.3, l["words"][-1][1] + 0.3
             ws = [w for t, w in heard_words if s0 <= t <= s1]
             text = "".join(ws) if l.get("orig") else " ".join(w.strip() for w in ws)
             l["heard"] = re.sub(r"\s+", " ", text).strip()[:200] or None
+# lines that fit the vocals far worse than the rest of the song are probably misplaced: the editor points them out
+_fits = [l.get("fit", 0.0) for l in out_lines if l.get("fit")]
+if _fits:
+    _med = float(np.median(_fits))
+    for l in out_lines:
+        l["weak"] = bool(l.get("fit") is not None and l["fit"] < 0.5 * _med)
+    if any(l["weak"] for l in out_lines):
+        say("info", f"{sum(l['weak'] for l in out_lines)} lines to check: their words fit the singing much worse than the rest")
 save_lines(f"{job_dir}/words.json", out_lines)
 vw, vh = (int(x) for x in vinfo.split(",")[1:3])
 open(f"{job_dir}/lyrics.ass", "w").write(make_ass(out_lines, video_size=(vw, vh)))
