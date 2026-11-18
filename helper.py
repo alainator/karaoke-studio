@@ -8,7 +8,8 @@ must carry the shared secret (HELPER_TOKEN, header X-Helper-Token); HELPER_ALLOW
 connect (the studio's). The helper downloads the video itself, so the PC needs internet access, ffmpeg and node.
 
     GET    /health                 -> {"ok", "gpu", "free_mib", "busy"}
-    POST   /jobs                   -> {"id"}   body: the studio's job (yt, lrc_id, lyrics_source, artist, title, lang)
+    POST   /jobs                   -> {"id"}   body: the studio's job (yt, lrc_id, lyrics_source, artist, title, lang,
+                                              lyrics_text when the lyrics were pasted)
     GET    /jobs/<id>              -> {"status": running|done|failed, "step", "log", "error"}
     GET    /jobs/<id>/files/<name> -> out.mp4, vocals.m4a, words.json, lyrics.ass, result.json
     DELETE /jobs/<id>
@@ -106,7 +107,9 @@ async def create(req: Request):
         d = os.path.join(JOBS, jid)
         shutil.rmtree(d, ignore_errors=True)
         os.makedirs(d)
-        spec = {k: b.get(k) for k in ("yt", "lrc_id", "lyrics_source", "artist", "title", "lang")}
+        spec = {k: b.get(k) for k in ("yt", "lrc_id", "lyrics_source", "artist", "title", "lang", "lyrics_text")}
+        if spec.get("lyrics_text") is not None:
+            spec["lyrics_text"] = str(spec["lyrics_text"])[:20000]
         json.dump(spec, open(os.path.join(d, "job.json"), "w"))
         jobs[jid] = {"status": "running", "step": "lyrics", "log": [], "error": None, "started": time.time()}
         state["busy"] = jid

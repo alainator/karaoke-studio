@@ -183,9 +183,11 @@ def lrc_search(artist, title, extra_titles=()):
         sample = " ".join(re.sub(r"^\[[^\]]*\]\s*", "", l) for l in synced.splitlines()[:14])
         out.append({"source": "lrclib", "id": h["id"], "artist": h.get("artistName"), "title": h.get("trackName"), "_sample": sample,
                     "album": h.get("albumName"), "duration": h.get("duration"), "timed": bool(synced.strip()),
+                    "plain": bool((h.get("plainLyrics") or "").strip()),
                     "latin": latin, "japanese": japanese, "native": native, "script": script, "english": english,
                     "romaji": "automatic" if native else None,
-                    "lines": sum(1 for l in synced.splitlines() if l.strip()), "first": first[:80],
+                    "lines": sum(1 for l in (synced or h.get("plainLyrics") or "").splitlines() if l.strip()),
+                    "first": (first or next((l.strip() for l in (h.get("plainLyrics") or "").splitlines() if l.strip()), ""))[:80],
                     "artist_match": artist_ok,
                     # a native-script title (月亮代表我的心) that matches counts even if the artist is typed in English
                     "name_match": native_title or (artist_ok and (by_title or (bool(norm(title)) and norm(title) in norm(h.get("trackName") or ""))))})
@@ -288,16 +290,21 @@ async def create_job(req: Request):
     yt, lrc_id = str(b.get("yt", "")), b.get("lrc_id")
     source = b.get("lyrics_source") or "lrclib"
     artist, title = str(b.get("artist", "")).strip(), str(b.get("title", "")).strip()
+    pasted = str(b.get("lyrics_text") or "").strip()[:20000]
+    if source == "pasted":
+        lrc_id = None
     ok_lyrics = (source == "lrclib" and isinstance(lrc_id, int)) or \
-                (source == "karamoe" and isinstance(lrc_id, str) and re.fullmatch(r"[0-9a-f-]{36}", lrc_id))
+                (source == "karamoe" and isinstance(lrc_id, str) and re.fullmatch(r"[0-9a-f-]{36}", lrc_id)) or \
+                (source == "pasted" and sum(1 for l in pasted.splitlines() if l.strip()) >= 4)
     if not re.fullmatch(r"[A-Za-z0-9_-]{11}", yt) or not ok_lyrics or not artist or not title:
-        raise HTTPException(400, "pick a video and timed lyrics, and give artist and title")
+        raise HTTPException(400, "pick a video and lyrics (or paste at least 4 lines), and give artist and title")
     slug = re.sub(r"[^a-z0-9]+", "-", norm(f"{artist} {title}"))[:60].strip("-") or "song"
     jid = time.strftime("%Y%m%d-%H%M%S") + "-" + slug
     os.makedirs(f"{JOBS}/{jid}")
     save(jid, {"id": jid, "yt": yt, "lrc_id": lrc_id, "lyrics_source": source, "artist": artist, "title": title,
                "video_title": str(b.get("video_title", ""))[:200], "status": "queued", "step": "queued",
                "gpu_pref": b.get("gpu") if b.get("gpu") in ("local", "remote") else "auto",
+               **({"lyrics_text": pasted} if source == "pasted" else {}),
                "created": time.time(), "offset": 0.0, "log": []})
     wake.set()
     return {"id": jid}
@@ -997,7 +1004,7 @@ def run_remote(jid):
     """Run the job on the GPU helper, mirror its progress, then copy the finished files here."""
     try:
         job = load(jid)
-        helper_call("/jobs", "POST", {"id": jid, **{k: job.get(k) for k in ("yt", "lrc_id", "lyrics_source", "artist", "title", "lang")}})
+        helper_call("/jobs", "POST", {"id": jid, **{k: job.get(k) for k in ("yt", "lrc_id", "lyrics_source", "artist", "title", "lang", "lyrics_text")}})
         misses = 0
         while True:
             time.sleep(2)

@@ -88,20 +88,41 @@ def karamoe_lines(kid):
     return sorted(out)
 
 
+def lrc_lines(text):
+    """[mm:ss.xx] timed lines of an LRC text."""
+    out = []
+    for l in (text or "").splitlines():
+        m = re.match(r"\[(\d+):(\d+(?:\.\d+)?)\]\s*(.*)", l.strip())
+        if m and m.group(3).strip():
+            out.append((int(m.group(1)) * 60 + float(m.group(2)), m.group(3).strip()))
+    return out
+
+
+def plain_lines(text):
+    """Lyrics without timing (pasted, or LRCLIB's plain lyrics): one line each, section headers like [Chorus: X] and
+    lyrics-site leftovers dropped. Placeholder times 4 s apart; the real ones come from listening (below)."""
+    keep = [l.strip() for l in (text or "").splitlines()]
+    keep = [l for l in keep if l and not re.fullmatch(r"\[[^\]]*\]", l) and not re.fullmatch(r"\d*\s*Embed|You might also like|See .* Live", l)]
+    return [(4.0 * k, l) for k, l in enumerate(keep)]
+
+
 album_dur = 0.0  # the album recording's length (LRCLIB gives it): the music video's extra scenes lie outside it
+untimed = False   # lyrics without timestamps: each line is placed by listening
 if source == "karamoe":
     synced = karamoe_lines(lrc_id)
+elif source == "pasted":
+    synced = lrc_lines(job.get("lyrics_text"))
+    if len(synced) < 4:
+        synced, untimed = plain_lines(job.get("lyrics_text")), True
 else:
     req = urllib.request.Request(f"https://lrclib.net/api/get/{int(lrc_id)}", headers=UA)
     lyr = json.load(urllib.request.urlopen(req, timeout=30))
     album_dur = float(lyr.get("duration") or 0)
-    synced = []
-    for l in (lyr.get("syncedLyrics") or "").splitlines():
-        m = re.match(r"\[(\d+):(\d+(?:\.\d+)?)\]\s*(.*)", l)
-        if m and m.group(3).strip():
-            synced.append((int(m.group(1)) * 60 + float(m.group(2)), m.group(3).strip()))
+    synced = lrc_lines(lyr.get("syncedLyrics"))
+    if len(synced) < 4 and (lyr.get("plainLyrics") or "").strip():
+        synced, untimed = plain_lines(lyr["plainLyrics"]), True
 if len(synced) < 4:
-    fail("these lyrics have no line timings; pick a lyrics entry marked 'timed'")
+    fail("these lyrics are empty or too short (fewer than 4 lines)")
 # Some uploads give every line two or three times at (almost) the same moment: Japanese, romaji, and/or an English
 # translation, often marked with arrows (↓ original, → romaji, ↑ translation). Group lines that start within
 # 0.15 s, keep the Japanese, use a human romaji if there is one, drop translations.
@@ -202,7 +223,7 @@ if _romanized and _en(" ".join(re.sub(r"\([^)]*\)", " ", t) for _, t in synced))
 letters = [c for _, t in synced for c in t if c.isalpha()]
 if letters and sum(unicodedata.name(c, "").startswith("LATIN") for c in letters) / len(letters) < 0.85:
     fail("these lyrics are in a script the studio can't romanise yet (Latin-alphabet, Japanese, Korean and Mandarin work)")
-say("info", f"{len(synced)} timed lines")
+say("info", f"{len(synced)} lines" + (" (no timing: they'll be placed by listening)" if untimed else " with timing"))
 
 # 2. video (H.264 so PiKaraoke can pass it through untouched)
 say("step", "download")
@@ -271,6 +292,19 @@ del model; gc.collect(); torch.cuda.empty_cache()
 #  - vocal activity: slide all line starts over the vocal stem; best match of "singing right after a line
 #    start, silence just before one that follows a pause"
 # Each candidate is scored on the vocal stem; Whisper's is kept unless activity is clearly better.
+if untimed:
+    # no timestamps: Whisper's placement of each line on the vocals becomes the line's time (offset ~0); everything
+    # after (word timing, the transcription check, timing jumps) works from there as for timed lyrics
+    if len(wsegs) == len(synced):
+        times = [sg[0][0] for sg in wsegs]
+    else:  # shouldn't happen (one segment per line); spread the lines over the sung part instead
+        t_a = wsegs[0][0][0] if wsegs else 0.0
+        t_b = wsegs[-1][-1][1] if wsegs else len(audio) / SR
+        times = [t_a + (t_b - t_a) * k / len(synced) for k in range(len(synced))]
+    for k in range(1, len(times)):  # keep lines in order
+        times[k] = max(times[k], times[k - 1] + 0.3)
+    synced = [(tk, x) for tk, (_, x) in zip(times, synced)]
+    say("info", f"the lyrics have no timing: placed {len(synced)} lines by listening")
 if len(wsegs) == len(synced):
     diffs = np.array([s[0][0] - t for s, (t, _) in zip(wsegs, synced)])
 else:
