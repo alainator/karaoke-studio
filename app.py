@@ -382,7 +382,7 @@ def summary(job):
 
 def _summary(job):
     keys = ("id", "artist", "title", "yt", "status", "step", "created", "finished", "error", "offset",
-            "published", "published_as", "video_title", "result", "waiting", "edited", "unpublished_changes", "lang", "gpu", "ai_romaji", "video_v", "gpu_pref")
+            "published", "published_as", "video_title", "result", "waiting", "edited", "unpublished_changes", "lang", "gpu", "ai_romaji", "video_v", "gpu_pref", "reviewed")
     return {k: job.get(k) for k in keys}
 
 
@@ -951,6 +951,21 @@ async def reset_lines(jid: str, req: Request):
     return {"ok": True}
 
 
+@app.post("/api/jobs/{jid}/reviewed")
+async def set_reviewed(jid: str, req: Request):
+    """The user played the song through and it's fine (or takes that back). Shown on the song list in place of the
+    studio's own guess, which matters most for songs it can't follow by ear. A remake clears it."""
+    check_origin(req)
+    b = await req.json()
+    with lock:
+        job = load(jid)
+        if job.get("status") != "done":
+            raise HTTPException(400, "finish making it first")
+        job["reviewed"] = time.time() if b.get("on", True) else None
+        save(jid, job)
+    return {"reviewed": job["reviewed"]}
+
+
 @app.post("/api/jobs/{jid}/rename")
 async def rename(jid: str, req: Request):
     """Change a song's artist/title. If it's published, its files in PiKaraoke are renamed too."""
@@ -999,7 +1014,7 @@ async def remake(jid: str, req: Request):
         if os.path.exists(job_path(jid, "words.orig.json")):
             os.replace(job_path(jid, "words.orig.json"), job_path(jid, "words.before-remake.auto.json"))
         job.update(status="queued", step="queued", error=None, log=[], waiting=None, oom_retries=0, ai_romaji=None,
-                   video_v=time.time(), remade=time.time(), remake_merge=merge, remake_note=None, remake_undone=False,
+                   video_v=time.time(), remade=time.time(), reviewed=None, remake_merge=merge, remake_note=None, remake_undone=False,
                    pre_remake={k: job.get(k) for k in ("edited", "result", "offset")})
         save(jid, job)
     wake.set()

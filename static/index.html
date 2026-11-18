@@ -396,6 +396,7 @@ function stepBar(j) {
 function confTag(j) {
   if (j.status !== "done") return "";
   const c = (j.result || {}).confidence;
+  if (j.reviewed && !j.to_check) return ` <span class="tag" title="You played it through and marked it as good">✓ checked by you</span>`;
   if (!c) return "";  // made before lines were checked by ear: its old marks aren't reliable enough to count
   if (j.to_check) return ` <span class="tag" style="color:#ffb020" title="${j.to_check} line${j.to_check === 1 ? " is" : "s are"} marked ⚠ in the editor: the studio isn't sure about ${j.to_check === 1 ? "its" : "their"} timing">⚠ ${j.to_check} line${j.to_check === 1 ? "" : "s"} to fix</span>`;
   if (c && c.sure != null && c.lines && c.sure < 0.5 * c.lines) return ` <span class="tag" style="color:#ffb020" title="Only ${c.sure} of ${c.lines} lines could be heard where they were placed (hard singing to follow by ear), so the studio can't vouch for the rest: play it through">◔ ${Math.round(100 * c.sure / c.lines)}% heard in place</span>`;
@@ -803,11 +804,14 @@ function markCurrent() {
 function fixBox() {
   const marked = ed.lines.map((l, i) => [l, i]).filter(([l]) => l.weak);
   const c = ((ed.j || {}).result || {}).confidence;
+  if (!marked.length && ed.j && ed.j.reviewed)
+    return `<div class="aibox" style="margin-bottom:10px">✓ <b>Checked by you.</b> <button class="ghost" id="unreview" style="padding:3px 8px;font-size:12px">Undo</button></div>`;
+  const okBtn = `<button class="ghost" id="review" style="padding:3px 8px;font-size:12px;margin-left:6px" title="You played it through and it's fine: the song list will say so">I've checked it: it's good</button>`;
   if (!marked.length) {
-    if (!c || c.sure == null) return "";
+    if (!c || c.sure == null) return `<div class="aibox" style="margin-bottom:10px">Played it through?${okBtn}</div>`;
     const pct = Math.round(100 * c.sure / Math.max(1, c.lines));
-    return pct >= 50 ? `<div class="aibox" style="margin-bottom:10px">✓ <b>Nothing marked to fix.</b> ${c.sure} of ${c.lines} lines were heard right where they sit.</div>`
-      : `<div class="aibox" style="margin-bottom:10px;border-color:#ffb020">◔ <b>The studio couldn't follow this song by ear</b> (only ${c.sure} of ${c.lines} lines heard in place), so it can't say which lines are off. Play it through once.</div>`;
+    return pct >= 50 ? `<div class="aibox" style="margin-bottom:10px">✓ <b>Nothing marked to fix.</b> ${c.sure} of ${c.lines} lines were heard right where they sit.${okBtn}</div>`
+      : `<div class="aibox" style="margin-bottom:10px;border-color:#ffb020">◔ <b>The studio couldn't follow this song by ear</b> (only ${c.sure} of ${c.lines} lines heard in place), so it can't say which lines are off. Play it through once.${okBtn}</div>`;
   }
   return `<div class="aibox" style="margin-bottom:10px;border-color:#ffb020"><b>⚠ ${marked.length} line${marked.length === 1 ? "" : "s"} to fix or confirm</b>
     <span class="hint"> — click one to jump there; move the line if it's off, or click its ⚠ in the list below if it's fine.</span>
@@ -877,6 +881,10 @@ function renderEditor() {
   ["pointerdown", "wheel", "keydown", "touchstart"].forEach(ev => $(".edwrap").addEventListener(ev, () => { ed.touched = Date.now(); }, {passive: true}));
   const changed = () => { const keep = ed.lines[ed.sel]; ed.dirty = true; renderEditor(); if (keep) { ed.sel = ed.lines.indexOf(keep); renderEditor(); } markCurrent(); };
   ed.changed = changed;
+  for (const [sel, on] of [["#review", true], ["#unreview", false]]) if ($(sel)) $(sel).onclick = async () => {
+    try { const r = await api(`/api/jobs/${ed.id}/reviewed`, {method: "POST", body: JSON.stringify({on})}); ed.j.reviewed = r.reviewed; renderEditor(); }
+    catch (e) { toast(e.message); }
+  };
   document.querySelectorAll("[data-fix]").forEach(b => b.onclick = () => {
     const i = +b.dataset.fix; if (!ed.lines[i]) return;
     ed.sel = i; renderEditor(); keepVisible(i);
