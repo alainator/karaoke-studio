@@ -257,7 +257,10 @@ if listen_ja or listen_latin:
     # what the singer actually sings. Japanese lyrics often write one word and sing another (幻 sung "yume");
     # crowd-sourced lyrics of any language drop or swap words. The AI checks compare this with the written line.
     try:
-        tr = model.transcribe(audio, language=lang, word_timestamps=True, vad=True, verbose=None)
+        # no voice-activity filter: it drops everything after a long non-singing scene (The Kill's video stopped being
+        # transcribed at 224 s); each stretch is transcribed on its own so silence can't make it loop
+        tr = model.transcribe(audio, language=lang, word_timestamps=True, vad=False, verbose=None,
+                              condition_on_previous_text=False)
         heard_words = [((w.start + w.end) / 2, w.word) for sg in tr.segments for w in sg.words]
         say("info", f"listened to the vocals for the lyrics check ({len(heard_words)} words heard)")
     except Exception as e:
@@ -449,8 +452,53 @@ for g in dict.fromkeys(path):
         mine = [i for i, h in enumerate(path) if abs(float(grid[h]) - o) < STEP / 2]  # fine-tune on its own lines
         fine = np.arange(o - 0.3, o + 0.3, 0.02)
         cands_o.append(float(fine[int(np.argmax([np.mean([_line_act(i, x) for i in mine]) for x in fine]))]))
+# the most direct evidence: find the lyric lines in the free transcription of the vocals (Latin and Japanese songs)
+# and see how far each sits from its album time; shifts several lines agree on become candidates too
+if heard_words and not any(origs):
+    import difflib
+    hw = [(t, re.sub(r"[^a-z']", "", x.lower())) for t, x in heard_words]
+    hw = [x for x in hw if x[1]]
+    hws = [x for _, x in hw]
+    pairs = []
+    for i, (t, text) in enumerate(synced):
+        lw = [x for x in (re.sub(r"[^a-z']", "", y.lower()) for y in text.split()) if x]
+        if len(lw) < 3:
+            continue
+        for j in range(len(hw) - len(lw) + 1):
+            if difflib.SequenceMatcher(None, lw, hws[j:j + len(lw)]).ratio() >= 0.75:
+                pairs.append((hw[j][0] - 0.2 - t, i))
+    pairs.sort()
+    clusters, k = [], 0
+    while k < len(pairs):
+        m = k
+        while m < len(pairs) and pairs[m][0] - pairs[k][0] <= 1.5:
+            m += 1
+        grp = pairs[k:m]
+        clusters.append((len({i for _, i in grp}), float(np.median([x for x, _ in grp]))))
+        k = m
+    for support, o in sorted(clusters, reverse=True):
+        if len(cands_o) >= 6 or support < 3:
+            break
+        if abs(o - off) <= 120 and all(abs(o - c) >= JUMP for c in cands_o):
+            cands_o.append(o)
+# the path above can overlook a section (a coarse signal, one global trade-off): also let every run of 6 lines
+# propose the offset that suits it best, when that is clearly better for it than every candidate so far
+W = 6
+props = []
+for a0 in range(0, max(1, n_l - W + 1), 2):
+    m = S[a0:a0 + W].mean(0)
+    g = int(np.argmax(m))
+    have = max(m[int(np.argmin(np.abs(grid - c)))] for c in cands_o)
+    props.append((m[g] - have, float(grid[g]), list(range(a0, min(n_l, a0 + W)))))
+for gain, o, mine in sorted(props, reverse=True):
+    if len(cands_o) >= 6 or gain < 0.25:
+        break
+    if all(abs(o - c) >= JUMP for c in cands_o):
+        fine = np.arange(o - 0.3, o + 0.3, 0.02)
+        cands_o.append(float(fine[int(np.argmax([np.mean([_line_act(i, x) for i in mine]) for x in fine]))]))
+say("info", "timing candidates " + ", ".join(f"{o:+.1f}s" for o in cands_o))
 if len(cands_o) > 1:
-    runs = {o: (tried[pick] if o == off else align_at(o)) for o in cands_o[:5]}
+    runs = {o: (tried[pick] if o == off else align_at(o)) for o in cands_o[:6]}
     C = list(runs)
     F = np.array([runs[o][3] for o in C]).T  # lines x candidates: word fit of each line at each offset
     WP = 0.6  # word-fit cost of a jump (a line's fit is ~0.2-0.7)
