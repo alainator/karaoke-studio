@@ -85,7 +85,13 @@ td.n { text-align: right; font-variant-numeric: tabular-nums; }
 .edtab tr.cur input.tx { border-color: var(--gold); }
 .edtab tr.sel td { background: rgba(60,180,255,.12); }
 .weakmark { color: #ffb020; margin-left: 4px; cursor: help; }
+.speeds button { padding: 5px 10px; font-size: 13px; }
+#specbtn.on, #snapbtn.on { color: #17121c; background: var(--gold); border-color: var(--gold); }
+.speeds button.on, #loopbtn.on { color: #17121c; background: var(--gold); border-color: var(--gold); }
+input.tx.backing { font-style: italic; color: var(--muted, #bbb); }
 .wchips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+.cutchip { border-color: var(--line); color: var(--text); }
+.cutchip:hover { border-color: var(--gold); color: var(--gold); }
 .wchip { border: 1px solid; border-radius: 6px; padding: 1px 6px; font-size: 13px; cursor: pointer; user-select: none; background: rgba(0,0,0,.25); touch-action: none; }
 .wchips { align-items: center; }
 .brush { border: 1px solid var(--c); color: var(--c); border-radius: 999px; padding: 1px 9px; font-size: 12px; cursor: pointer; user-select: none; }
@@ -397,6 +403,15 @@ async function loadJobs() {
 
 // ---------- preview ----------
 let octopus = null, vox = null, detailTimer = null;
+// playback speed (Subtitle Edit style): slower makes it easier to hear where a line starts and stops; the guide vocals
+// follow, and the pitch stays natural
+const SPEEDS = [0.5, 0.75, 1];
+let playSpeed = 1;
+function setSpeed(x) {
+  playSpeed = x;
+  for (const m of [$("#pv"), vox]) if (m) { m.preservesPitch = true; m.defaultPlaybackRate = x; m.playbackRate = x; }
+  document.querySelectorAll("[data-speed]").forEach(b => b.classList.toggle("on", +b.dataset.speed === x));
+}
 function closePlayer() {
   clearTimeout(detailTimer);
   if (octopus) { try { octopus.dispose(); } catch {} octopus = null; }
@@ -436,6 +451,9 @@ async function openJob(id) {
     <div class="player"><video id="pv" data-id="${esc(id)}" controls playsinline preload="auto" src="/api/jobs/${esc(id)}/file/video.mp4?v=${Math.round(j.video_v || j.finished || 0)}"></video></div>
     <div class="controls">
       <div class="ctl"><label><span>Guide vocals</span><span id="voxv">off</span></label><input type="range" id="voxr" min="0" max="100" value="0"></div>
+      <div class="ctl"><label><span>Speed</span><span class="hint"><kbd>[</kbd> <kbd>]</kbd></span></label>
+        <div class="row speeds">${SPEEDS.map(x => `<button class="ghost ${x === playSpeed ? "on" : ""}" data-speed="${x}">${x}×</button>`).join("")}</div>
+        <div class="hint">Slow it down to hear where lines start; the guide vocals slow down too.</div></div>
       <div class="ctl"><label><span>Lyrics timing</span><span id="offv">${j.offset >= 0 ? "+" : ""}${(j.offset || 0).toFixed(2)} s</span></label>
         <input type="range" id="offr" min="-2" max="2" step="0.05" value="${j.offset || 0}">
         <div class="hint">Drag right if the words light up too early.</div></div>
@@ -449,6 +467,8 @@ async function openJob(id) {
   await statusReady;
   if (window.SubtitlesOctopus) octopus = new SubtitlesOctopus({video: v, subUrl: `/api/jobs/${id}/file/lyrics.ass?o=${j.offset}`, fonts: FONTS, workerUrl: "/static/octopus/subtitles-octopus-worker.js"});
   vox = new Audio(`/api/jobs/${id}/file/vocals.m4a?v=${Math.round(j.video_v || j.finished || 0)}`); vox.preload = "auto"; vox.volume = 0;
+  setSpeed(playSpeed);
+  document.querySelectorAll("[data-speed]").forEach(b => b.onclick = () => setSpeed(+b.dataset.speed));
   // the vocals guide only follows the video while it's audible (a muted one re-seeking 4x a second made jumping around heavy)
   const sync = () => { if (!vox || !vox.volume) return; if (Math.abs(vox.currentTime - v.currentTime) > 0.12) vox.currentTime = v.currentTime; };
   v.addEventListener("play", () => { sync(); if (vox && vox.volume > 0) vox.play().catch(() => {}); });
@@ -511,8 +531,9 @@ try { rippleDefault = localStorage.getItem("ks-ripple") === "1"; } catch (e) {}
 async function initEditor(id, j) {
   let d; try { d = await api(`/api/jobs/${id}/lines`); } catch (e) { $("#editor").textContent = e.message; return; }
   if (currentJob !== id) return;
-  ed = {id, j, lines: d.lines, cast: d.cast || [], ripple: rippleDefault, sel: null, dirty: false, canReset: d.can_reset, skipped: d.skipped || [], view: {span: 12, start: 0}, peaks: null};
+  ed = {id, j, lines: d.lines, cast: d.cast || [], ripple: rippleDefault, sel: null, dirty: false, spec: lsFlag("ks-spec", false), snap: lsFlag("ks-snap", true), onsets: null, specImg: null, canReset: d.can_reset, skipped: d.skipped || [], view: {span: 12, start: 0}, peaks: null};
   api(`/api/jobs/${id}/peaks`).then(p => { if (ed && ed.id === id) { ed.peaks = p; drawWave(); } }).catch(() => {});
+  api(`/api/jobs/${id}/onsets`).then(o => { if (ed && ed.id === id) { ed.onsets = o.onsets; drawWave(); } }).catch(() => {});
   renderEditor();
   const v = $("#pv");
   v.addEventListener("timeupdate", markCurrent);
@@ -552,6 +573,24 @@ const lineColour = l => l.members && l.members.length ? (l.members.length === 1 
 let waveDrag = null, waveRaf = null;
 function waveTime(x, c) { return ed.view.start + x / c.clientWidth * ed.view.span; }
 function lineSpan(l) { return [l.words[0][0] + curOff(), l.words[l.words.length - 1][1] + curOff()]; }
+const SPEC_PXS = 50;  // the server's spectrogram: pixels per second
+function lsFlag(k, dflt) { try { const v = localStorage.getItem(k); return v == null ? dflt : v === "1"; } catch (e) { return dflt; } }
+function specImage() {
+  if (!ed.specImg) {
+    const im = new Image(); im.onload = () => drawWave();
+    im.src = `/api/jobs/${ed.id}/spectrogram?v=${Math.round((ed.j && (ed.j.video_v || ed.j.finished)) || 0)}`;
+    ed.specImg = im;
+  }
+  return ed.specImg;
+}
+function firstAtOrAfter(arr, t) { let lo = 0, hi = arr.length; while (lo < hi) { const m = (lo + hi) >> 1; if (arr[m] < t) lo = m + 1; else hi = m; } return lo; }
+// the vocal onset nearest to t (video time) within tol seconds, or null
+function snapOnset(t, tol) {
+  const on = ed && ed.onsets; if (!on || !on.length) return null;
+  const k = firstAtOrAfter(on, t); let best = null;
+  for (const j of [k - 1, k]) if (j >= 0 && j < on.length && Math.abs(on[j] - t) <= tol && (best == null || Math.abs(on[j] - t) < Math.abs(best - t))) best = on[j];
+  return best;
+}
 function scaleLine(l, a1, b1) {
   const [a0, b0] = [l.words[0][0], l.words[l.words.length - 1][1]], k = (b1 - a1) / Math.max(0.05, b0 - a0);
   l.words = l.words.map(([a, b, w]) => [+(a1 + (a - a0) * k).toFixed(3), +(a1 + (b - a0) * k).toFixed(3), w]);
@@ -583,15 +622,30 @@ function initWave() {
     l.words = JSON.parse(JSON.stringify(waveDrag.orig));
     const [a, b] = [l.words[0][0], l.words[l.words.length - 1][1]];
     l.weak = false;
-    if (waveDrag.mode === "move") shiftLine(l, dt);
-    else if (waveDrag.mode === "left") scaleLine(l, Math.min(a + dt, b - 0.2), b);
+    let dts = dt;
+    if (waveDrag.mode !== "right" && ed.snap && !e.altKey) {  // the line start clicks onto a vocal onset nearby
+      const want = a + dt + curOff(), got = snapOnset(want, 8 / c.clientWidth * ed.view.span);
+      if (got != null) dts = dt + (got - want);
+    }
+    if (waveDrag.mode === "move") shiftLine(l, dts);
+    else if (waveDrag.mode === "left") scaleLine(l, Math.min(a + dts, b - 0.2), b);
     else scaleLine(l, a, Math.max(b + dt, a + 0.2));
-    if (waveDrag.mode === "move") waveDrag.after.forEach((w, k) => { const x = ed.lines[waveDrag.i + 1 + k]; x.words = JSON.parse(JSON.stringify(w)); shiftLine(x, dt); });
+    if (waveDrag.mode === "move") waveDrag.after.forEach((w, k) => { const x = ed.lines[waveDrag.i + 1 + k]; x.words = JSON.parse(JSON.stringify(w)); shiftLine(x, dts); });
     drawWave();
   };
   c.onpointerup = () => { if (waveDrag) { waveDrag = null; ed.dirty = true; renderEditor(); markCurrent(); } };
   c.onwheel = e => { e.preventDefault(); if (e.ctrlKey || e.metaKey) ed.view.span = Math.min(120, Math.max(3, ed.view.span * (e.deltaY > 0 ? 1.2 : 0.83))); else ed.view.start = Math.max(0, ed.view.start + (e.deltaY + e.deltaX) / c.clientWidth * ed.view.span); ed.view.pinned = Date.now(); drawWave(); };
-  const loop = () => { if (!ed || !$("#wave")) { waveRaf = null; return; } if (!v.paused) drawWave(); waveRaf = requestAnimationFrame(loop); };
+  const loop = () => {
+    if (!ed || !$("#wave")) { waveRaf = null; return; }
+    if (!v.paused) {
+      if (ed.loop && ed.sel != null && ed.lines[ed.sel]) {  // repeat the selected line while you work on it
+        const l = ed.lines[ed.sel], a = Math.max(0, l.words[0][0] + curOff() - 1.0), b = l.words[l.words.length - 1][1] + curOff() + 0.6;
+        if (v.currentTime > b || v.currentTime < a - 0.5) v.currentTime = a;
+      }
+      drawWave();
+    }
+    waveRaf = requestAnimationFrame(loop);
+  };
   if (!waveRaf) waveRaf = requestAnimationFrame(loop);
   drawWave();
 }
@@ -604,8 +658,12 @@ function drawWave() {
   // follow the playhead unless the user scrolled in the last few seconds or is dragging
   if (!waveDrag && !(view.pinned && Date.now() - view.pinned < 4000) && (now < view.start + view.span * 0.1 || now > view.start + view.span * 0.75)) view.start = Math.max(0, now - view.span * 0.25);
   const X = t => (t - view.start) / view.span * W, WH = 78;
-  // waveform of the vocal stem
-  if (ed.peaks) {
+  // the vocal stem: spectrogram (voices as bright stripes) or loudness waveform
+  const spec = ed.spec && specImage();
+  if (spec && spec.complete && spec.naturalWidth) {
+    const sx = view.start * SPEC_PXS, sw = view.span * SPEC_PXS, avail = Math.min(sw, spec.naturalWidth - sx);
+    if (avail > 0) g.drawImage(spec, sx, 0, avail, spec.naturalHeight, 0, 0, W * avail / sw, WH);
+  } else if (ed.peaks) {
     const pk = ed.peaks.peaks, rate = ed.peaks.rate;
     g.fillStyle = "rgba(163,157,175,.55)";
     for (let x = 0; x < W; x++) {
@@ -614,6 +672,12 @@ function drawWave() {
       const h = m / 255 * (WH - 6); g.fillRect(x, WH / 2 - h / 2, 1, Math.max(1, h));
     }
   } else { g.fillStyle = "#a39daf"; g.font = "12px system-ui"; g.fillText("loading vocals…", 8, 20); }
+  // vocal onsets (where notes and syllables start): small ticks; line starts snap to them
+  if (ed.onsets) {
+    g.fillStyle = "rgba(120,230,120,.85)";
+    const on = ed.onsets; let k = firstAtOrAfter(on, view.start);
+    for (; k < on.length && on[k] <= view.start + view.span; k++) g.fillRect(X(on[k]), WH - 6, 1, 6);
+  }
   // second ticks
   g.fillStyle = "rgba(255,255,255,.35)"; g.font = "10px system-ui";
   const step = view.span > 40 ? 10 : view.span > 15 ? 5 : 1;
@@ -621,9 +685,12 @@ function drawWave() {
   // one block per lyric line, on two lanes so neighbours never hide each other
   ed._blocks = [];
   const t0 = now - curOff();
+  // lead lines alternate between two lanes; backing vocals get a third lane of their own, so overlaps stay grabbable
+  let leadN = -1;
+  const lanes = ed.lines.map(l => l.backing ? 2 : (++leadN) % 2);
   ed.lines.forEach((l, i) => {
     const [a, b] = lineSpan(l); if (b < view.start || a > view.start + view.span) return;
-    const x0 = X(a), x1 = Math.max(X(b), x0 + 4), y0 = WH + 18 + (i % 2) * 26, y1 = y0 + 22;
+    const x0 = X(a), x1 = Math.max(X(b), x0 + 4), y0 = WH + 18 + lanes[i] * 26, y1 = y0 + 22;
     const cur = l.words[0][0] <= t0 && t0 <= l.words[l.words.length - 1][1];
     g.fillStyle = lineColour(l) + (cur ? "" : "88"); g.fillRect(x0, y0, x1 - x0, y1 - y0);
     if (l.wwho) l.words.forEach((w, j) => {  // a line shared by two singers: each word in its singer's colour
@@ -647,13 +714,32 @@ document.addEventListener("keydown", e => {
   if (e.code === "KeyS") {
     // tap sync: the selected line (or the first one after the playhead) starts now; then select the next line
     e.preventDefault();
-    const now = v.currentTime - curOff() - 0.15;  // people tap a little after hearing the line start
+    let now = v.currentTime - curOff() - 0.15 * v.playbackRate;  // people tap ~0.15 s (real time) after hearing it
+    if (ed.snap) { const got = snapOnset(now + curOff(), 0.25); if (got != null) now = got - curOff(); }  // onto the onset
     let i = ed.sel != null && ed.lines[ed.sel] ? ed.sel : ed.lines.findIndex(l => l.words[0][0] >= now - 0.5);
     if (i < 0) return;
     const l = ed.lines[i];
     moveLine(i, now - l.words[0][0]);
     ed.dirty = true; renderEditor();
     ed.sel = Math.min(ed.lines.indexOf(l) + 1, ed.lines.length - 1); renderEditor(); markCurrent(); keepVisible(ed.sel);
+    return;
+  }
+  if (e.code === "KeyD") {
+    // the selected line (or the one playing) ends now: its words are stretched or squeezed to fit
+    e.preventDefault();
+    const now = v.currentTime - curOff() - 0.1 * v.playbackRate;
+    let i = ed.sel != null && ed.lines[ed.sel] ? ed.sel : ed.lines.findIndex(l => l.words[0][0] <= now && now <= l.words[l.words.length - 1][1] + 2);
+    if (i < 0) return;
+    const l = ed.lines[i];
+    if (now <= l.words[0][0] + 0.2) return toast("That's before the line starts: press D where the line's singing ends");
+    scaleLine(l, l.words[0][0], now); l.weak = false; ed.sel = i; ed.changed();
+    return;
+  }
+  if (e.code === "KeyL") { e.preventDefault(); ed.loop = !ed.loop; renderEditor(); toast(ed.loop ? "Looping the selected line" : "Loop off"); return; }
+  if (e.code === "BracketLeft" || e.code === "BracketRight") {
+    e.preventDefault();
+    const k = SPEEDS.indexOf(playSpeed) + (e.code === "BracketLeft" ? -1 : 1);
+    if (k >= 0 && k < SPEEDS.length) setSpeed(SPEEDS[k]);
     return;
   }
   if (e.code === "Escape" && ed.sel != null) { ed.sel = null; ed.splitFor = null; renderEditor(); markCurrent(); return; }
@@ -696,7 +782,7 @@ function renderEditor() {
   const keepTop = $(".edwrap") ? $(".edwrap").scrollTop : null, keepPage = window.scrollY;  // rebuilding must not scroll
   $("#editor").innerHTML = `
     <div class="row" style="justify-content:space-between">
-      <div><h3>Lyrics editor</h3><div class="hint">Click a line to select it, play, and press <kbd>S</kbd> the moment it's sung: it moves there and the next line is selected, so keep tapping. <kbd>←</kbd>/<kbd>→</kbd> nudge the selected line 0.1 s (<kbd>Shift</kbd> 1 s); <kbd>Esc</kbd> deselects. Save to update the preview.</div></div>
+      <div><h3>Lyrics editor</h3><div class="hint">Click a line to select it, play, and press <kbd>S</kbd> the moment it's sung: it moves there and the next line is selected, so keep tapping. <kbd>D</kbd> ends it there. <kbd>←</kbd>/<kbd>→</kbd> nudge the selected line 0.1 s (<kbd>Shift</kbd> 1 s), <kbd>L</kbd> loops it, <kbd>[</kbd>/<kbd>]</kbd> slow down or speed up; <kbd>Esc</kbd> deselects. Save to update the preview.</div></div>
       <div class="row">${ed.dirty ? '<span class="dirty">unsaved changes</span>' : ""}
         <button class="ghost" id="pastebtn" title="Paste the lyrics from a lyrics site (e.g. Genius): fixes words/readings and, from section headers like [Chorus: Name], colours lines by singer; you review every change">${ed.lines.some(l => l.orig) ? "Paste romaji" : "Paste lyrics"}</button>
         ${STATUS.romaji_ai && (ed.lines.some(l => l.orig && /[\u3040-\u30ff]/.test(l.orig)) || !ed.lines.some(l => l.orig)) ? `<button class="ghost" id="aicheck" title="Compares the lyrics with what's actually sung and suggests fixes; you review every change">${ed.lines.some(l => l.orig) ? "Check romaji with AI" : "Check lyrics with AI"}</button>` : ""}
@@ -721,8 +807,11 @@ function renderEditor() {
         ⇄ <select id="swapb">${singerChoices().map(([v, t], k) => `<option value="${v}" ${k === 1 ? "selected" : ""}>${esc(t)}</option>`).join("")}</select>
         <button class="ghost" id="swap" style="padding:5px 10px;font-size:13px">Swap</button></span>
       ${ed.cast.length ? "" : '<button class="ghost" id="detect" style="padding:5px 10px;font-size:12px;opacity:.75" title="Experimental: guesses two voices from the vocals; often needs fixing">Detect 2 singers (experimental)</button>'}
+      <button class="ghost ${ed.spec ? "on" : ""}" id="specbtn" style="padding:5px 10px;font-size:13px" title="Show the vocals as a spectrogram: voices are bright stripes, so syllable starts and held notes are easy to see">Spectrogram</button>
+      <button class="ghost ${ed.snap ? "on" : ""}" id="snapbtn" style="padding:5px 10px;font-size:13px" title="Line starts click onto vocal onsets (the green ticks) when you drag or tap S; hold Alt while dragging to place freely">Snap</button>
+      <button class="ghost ${ed.loop ? "on" : ""}" id="loopbtn" style="padding:5px 10px;font-size:13px" title="Repeat the selected line while you adjust it (L)">⟲ Loop line</button>
       <button class="ib" id="zout" title="Zoom out">−</button><button class="ib" id="zin" title="Zoom in">+</button></span></div>
-      <canvas id="wave"></canvas></div>
+      <canvas id="wave" style="height:${ed.lines.some(l => l.backing) ? 176 : 150}px"></canvas></div>
     <div class="edbar">${ed.lines.some(l => l.weak) ? `<button class="ghost" id="nextweak" title="Select the next line the aligner is unsure about and play from just before it">⚠ Next line to check (${ed.lines.filter(l => l.weak).length})</button>` : ""}<label class="ripple" title="When you move a line (S, arrows, −/+, ⏱, typing a time, dragging its block), every later line moves by the same amount: one fix repairs a whole section that's off"><input type="checkbox" id="ripple" ${ed.ripple ? "checked" : ""}> Move the lines after it too</label>
       <input id="newline" placeholder="Missing line? Type it, play to where it's sung, then Add"><button class="ghost" id="addline">Add at playback time</button>
       ${ed.skipped.map((s, i) => `<button class="chip" data-sk="${i}" title="Not sung in this video according to the aligner">+ ${esc(s)}</button>`).join("")}</div>
@@ -732,12 +821,13 @@ function renderEditor() {
         <td><input class="tm" data-act="time" value="${fmtT(l.words[0][0] + off)}" title="Line start (m:ss.cc)"></td>
         <td class="nowrap"><button class="ib" data-act="m" title="0.1 s earlier">−</button><button class="ib" data-act="p" title="0.1 s later">+</button><button class="ib" data-act="now" title="Start this line at the current playback time">⏱</button></td>
         <td class="nowrap">${l.unsure ? '<span class="unsure" title="Detect 2 singers wasn\'t sure about this line">?</span>' : ""}${ed.cast.length ? memberSelect(l) : `<select class="sg" data-act="singer" title="Who sings this line">${[["", "–"], [1, "1"], [2, "2"], [3, "Both"]].map(([v, t]) => `<option value="${v}" ${(l.singer || "") == v ? "selected" : ""}>${t}</option>`).join("")}</select>`}</td>
-        <td class="txc"><input class="tx" data-act="text" value="${esc(lineText(l))}">${l.orig ? `<div class="hint">${esc(l.orig)}</div>` : ""}
+        <td class="txc"><input class="tx ${l.backing ? "backing" : ""}" data-act="text" value="${esc(lineText(l))}" ${l.backing ? 'title="Backing vocals: shown on their own row, in italics"' : ""}>${l.orig ? `<div class="hint">${esc(l.orig)}</div>` : ""}
+          ${ed.cutFor === l ? `<div class="wchips"><span class="hint">Split before:</span>${l.words.map((w, j) => j ? `<span class="wchip cutchip" data-cj="${j}">${esc(w[2])}</span>` : `<span class="hint">${esc(w[2])}</span>`).join("")}</div>` : ""}
           ${ed.splitFor === l || l.wwho ? `<div class="wchips"><span class="hint" style="margin-right:2px">Paint with</span>${whoCycle().map((w, k) =>
               `<span class="brush ${sameWho(w, ed.brush || whoCycle()[1]) ? "on" : ""}" data-b="${k}" style="--c:${whoColour(w)}">${esc(whoName(w))}</span>`).join("")}
             <span class="hint" style="margin:0 2px 0 6px">then click or drag over words:</span>${l.words.map((w, j) =>
             `<span class="wchip" data-j="${j}" style="border-color:${whoColour(wordWho(l, j))};color:${whoColour(wordWho(l, j))}" title="${esc(whoName(wordWho(l, j)))}">${esc(w[2])}</span>`).join("")}</div>` : ""}</td>
-        <td><button class="ib ${l.wwho ? "on" : ""}" data-act="split" title="Shared line: give part of it to another singer">◐</button></td>
+        <td class="nowrap"><button class="ib ${ed.cutFor === l ? "on" : ""}" data-act="cut" title="Split this line in two (click the word that starts the new line)">✂</button><button class="ib" data-act="join" title="Join with the next line">⇣</button><button class="ib ${l.wwho ? "on" : ""}" data-act="split" title="Shared line: give part of it to another singer">◐</button>${!l.backing && /\(.*\)/.test(lineText(l)) && l.words.some(w => !/^\(/.test(w[2])) ? '<button class="ib" data-act="splitbr" title="Backing vocals sung over the lead: put the bracketed words on their own line, so the two can overlap">⤓</button>' : ""}</td>
         <td><button class="ib danger" data-act="del" title="Delete this line">✕</button></td>
       </tr>`).join("")}</tbody></table></div>`;
   if (keepTop != null) $(".edwrap").scrollTop = keepTop;
@@ -765,12 +855,12 @@ function renderEditor() {
     ed.dirty = true; drawWave();
   };
   $(".edtab").addEventListener("pointerdown", e => {
-    const chip = e.target.closest(".wchip"); if (!chip) return;
+    const chip = e.target.closest(".wchip[data-j]"); if (!chip) return;
     e.preventDefault(); painting = +chip.closest("tr").dataset.i; ed.sel = painting; ed.splitFor = ed.lines[painting]; ed.lastPaint = null; paint(chip);
     ed.afterPaint = changed;
   });
   $(".edtab").addEventListener("pointerover", e => {
-    const chip = e.target.closest(".wchip");
+    const chip = e.target.closest(".wchip[data-j]");
     if (chip && painting != null && e.buttons && +chip.closest("tr").dataset.i === painting) paint(chip);
   });
   // clicking anywhere on a row selects it (for S and the arrow keys)
@@ -781,14 +871,40 @@ function renderEditor() {
   });
   initWave();
   $(".edtab").onclick = e => {
+    const cc = e.target.closest(".cutchip");
+    if (cc) {  // split the line before this word: two lines, each keeping its words' timing
+      const i = +cc.closest("tr").dataset.i, l = ed.lines[i], j = +cc.dataset.cj;
+      const second = {...l, words: l.words.slice(j), wwho: l.wwho ? l.wwho.slice(j) : null, weak: false};
+      l.words = l.words.slice(0, j); l.wwho = l.wwho ? l.wwho.slice(0, j) : null; l.weak = false;
+      ed.lines.splice(i + 1, 0, second); ed.cutFor = null; ed.sel = i + 1;
+      return changed();
+    }
     const br = e.target.closest(".brush");
     if (br) { ed.brush = whoCycle()[+br.dataset.b]; return renderEditor(); }
-    if (e.target.closest(".wchip")) return;  // painting happens on pointerdown/over (below)
+    if (e.target.closest(".wchip[data-j]")) return;  // painting happens on pointerdown/over (below)
     const b = e.target.closest("button"); if (!b) return;
     const i = +b.closest("tr").dataset.i, l = ed.lines[i], v = $("#pv");
     if (b.dataset.act === "play") { v.currentTime = Math.max(0, l.words[0][0] + curOff() - 1.5); v.play(); return; }
     ed.sel = i;
     if (b.dataset.act === "split") { ed.splitFor = ed.splitFor === l ? null : l; return renderEditor(); }
+    if (b.dataset.act === "cut") { if (l.words.length < 2) return toast("A one-word line can't be split"); ed.cutFor = ed.cutFor === l ? null : l; return renderEditor(); }
+    if (b.dataset.act === "join") {  // this line and the next become one (words in time order)
+      const n = ed.lines[i + 1]; if (!n) return toast("This is the last line");
+      const ww = (l.wwho || n.wwho) ? [...(l.wwho || l.words.map(() => null)), ...(n.wwho || n.words.map(() => null))] : null;
+      const both = [...l.words.map((w, k) => [w, ww ? ww[k] : null]), ...n.words.map((w, k) => [w, ww ? ww[l.words.length + k] : null])].sort((x, y) => x[0][0] - y[0][0]);
+      l.words = both.map(x => x[0]); l.wwho = ww ? both.map(x => x[1]) : null; l.weak = false;
+      ed.lines.splice(i + 1, 1);
+      return changed();
+    }
+    if (b.dataset.act === "splitbr") {  // bracketed words → their own (backing) line; same timing, then drag either one
+      let open = false; const inB = l.words.map(w => { if (/^\(/.test(w[2])) open = true; const r = open; if (/\)[^\w]*$/.test(w[2])) open = false; return r; });
+      const back = l.words.filter((_, k) => inB[k]), lead = l.words.filter((_, k) => !inB[k]);
+      if (!back.length || !lead.length) return toast("This line needs words both inside and outside brackets");
+      l.words = lead; l.wwho = null;
+      ed.lines.push({words: back.map(w => [...w]), orig: null, singer: l.singer, members: l.members, backing: true});
+      toast("The bracketed words are their own line now: drag either block to where it's sung");
+      return changed();
+    }
     if (b.dataset.act === "m") moveLine(i, -0.1);
     if (b.dataset.act === "p") moveLine(i, 0.1);
     if (b.dataset.act === "now") moveLine(i, (v.currentTime - curOff()) - l.words[0][0]);
@@ -854,6 +970,9 @@ function renderEditor() {
       changed();
     } catch (e) { toast(e.message); renderEditor(); }
   };
+  $("#loopbtn").onclick = () => { ed.loop = !ed.loop; renderEditor(); };
+  $("#specbtn").onclick = () => { ed.spec = !ed.spec; try { localStorage.setItem("ks-spec", ed.spec ? "1" : "0"); } catch (x) {} renderEditor(); };
+  $("#snapbtn").onclick = () => { ed.snap = !ed.snap; try { localStorage.setItem("ks-snap", ed.snap ? "1" : "0"); } catch (x) {} renderEditor(); };
   $("#castbtn").onclick = () => {
     const v = prompt("Singers' names, separated by commas (up to 8). Leave empty to go back to Singer 1 / 2.", ed.cast.join(", "));
     if (v === null) return;

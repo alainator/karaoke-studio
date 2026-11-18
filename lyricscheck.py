@@ -58,7 +58,7 @@ lines = json.load(sys.stdin)
 text = lambda l: " ".join(w[2] for w in l["words"])
 items = []
 for i, l in enumerate(lines):
-    if l.get("orig") or not l.get("heard"):
+    if l.get("orig") or not l.get("heard") or l.get("backing"):
         continue
     before, after = text(lines[i - 1]) if i else "", text(lines[i + 1]) if i + 1 < len(lines) else ""
     heard = trim(l["heard"], before, after)
@@ -103,6 +103,12 @@ for it in items:
     old = it["written"]
 
     if not new or key(new) == key(old) or abs(len(new.split()) - len(old.split())) > 3:
+        continue
+    # small fixes only: at most 2 words changed, and no more than a third of the line. A bigger rewrite usually means
+    # the transcription ran into a neighbouring line (fast songs), and the vocals check can be fooled by that.
+    ow, nw = key(old), key(new)
+    changed_words = sum(max(i2 - i1, j2 - j1) for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, ow, nw).get_opcodes() if tag != "equal")
+    if changed_words > 2 or changed_words > len(ow) / 3:
         continue
     # bracketed words are backing vocals: they overlap the lead and are faint in the separated vocals, so the check
     # can't judge them; never drop or change them

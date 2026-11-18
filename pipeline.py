@@ -140,6 +140,95 @@ else:
     synced = lrc_lines(lyr.get("syncedLyrics"))
     if len(synced) < 4 and (lyr.get("plainLyrics") or "").strip():
         synced, untimed = plain_lines(lyr["plainLyrics"]), True
+
+
+def _wkey(x):
+    return re.sub(r"[^a-z0-9']", "", unicodedata.normalize("NFKD", x.replace("đ", "d").replace("Đ", "D")).lower())
+
+
+def align_words(a, b):
+    """Line up two word lists in order (semi-global: extra words at either end are free; a word only in one list
+    costs a little). Returns [(index in a, index in b)] for words that match exactly or share their first 3 letters."""
+    import numpy as _np
+    voc = {w: n for n, w in enumerate(set(a) | set(b))}
+    A_ = _np.array([voc[w] for w in a]); B_ = _np.array([voc[w] for w in b])
+    pa = _np.array([hash(w[:3]) for w in a]); pb = _np.array([hash(w[:3]) for w in b])
+    n, m = len(a), len(b)
+    H = _np.zeros(m + 1); ptr = _np.zeros((n + 1, m + 1), dtype=_np.int8)
+    for i in range(1, n + 1):
+        sim = _np.where(B_ == A_[i - 1], 2.0, _np.where(pb == pa[i - 1], 1.0, -1.0))
+        dg = H[:-1] + sim; up = H - 0.4
+        A0 = _np.empty(m + 1); A0[0] = up[0]; A0[1:] = _np.maximum(dg, up[1:])
+        src = _np.empty(m + 1, dtype=_np.int8); src[0] = 2; src[1:] = _np.where(dg >= up[1:], 1, 2)
+        ix = _np.arange(m + 1)
+        rmax = _np.maximum.accumulate(A0 + 0.4 * ix) - 0.4 * ix
+        left = rmax > A0 + 1e-9
+        H = _np.where(left, rmax, A0); ptr[i] = _np.where(left, 3, src)
+    i, j, out = n, int(_np.argmax(H)), []
+    while i > 0 and j > 0:
+        p_ = ptr[i, j]
+        if p_ == 1:
+            if B_[j - 1] == A_[i - 1] or pb[j - 1] == pa[i - 1]:
+                out.append((i - 1, j - 1))
+            i, j = i - 1, j - 1
+        elif p_ == 2:
+            i -= 1
+        else:
+            j -= 1
+    return out[::-1]
+
+
+def borrow_timing(lines):
+    """Lyrics without timing (pasted, or LRCLIB's plain lyrics): if LRCLIB has timed lyrics for the same song, line the
+    words up with the timed version's words and give each line the time where its first words fall — your words,
+    their timing, whatever the line breaks (lyrics sites merge and split lines differently). Lines with nothing
+    matched go between their neighbours. Returns (timed lines, album length, share of words matched) or None."""
+    try:
+        q = urllib.parse.urlencode({"track_name": job.get("title") or "", "artist_name": job.get("artist") or ""})
+        hits = json.load(urllib.request.urlopen(urllib.request.Request(f"https://lrclib.net/api/search?{q}", headers=UA), timeout=30))
+    except Exception:
+        return None
+    pw = [(li, k, _wkey(w)) for li, (_, x) in enumerate(lines) for k, w in enumerate(x.split()) if _wkey(w)]
+    if len(pw) < 10:
+        return None
+    best = None
+    for h in hits[:15]:
+        lrc = lrc_lines(h.get("syncedLyrics"))
+        if len(lrc) < 4:
+            continue
+        lw = [(j, k, _wkey(w)) for j, (_, x) in enumerate(lrc) for k, w in enumerate(x.split()) if _wkey(w)]
+        pairs = align_words([w for _, _, w in pw], [w for _, _, w in lw])
+        if not best or len(pairs) > len(best[2]):
+            best = (lrc, lw, pairs, float(h.get("duration") or 0))
+    if not best or len(best[2]) < 0.5 * len(pw):
+        return None
+    lrc, lw, pairs, dur = best
+    est = {}  # pasted word -> its time in the timed version (spread evenly inside the timed line)
+    for pi, li in pairs:
+        j, k, _ = lw[li]
+        t0 = lrc[j][0]; t1 = lrc[j + 1][0] if j + 1 < len(lrc) else t0 + 4.0
+        est[pi] = t0 + min(6.0, max(0.5, t1 - t0)) * k / max(1, len(lrc[j][1].split()))
+    times = [None] * len(lines)
+    for pi, (li, k, _) in enumerate(pw):
+        if pi in est and times[li] is None:
+            times[li] = max(0.0, est[pi] - 0.3 * k)  # its first matched word, minus the words sung before it
+    known = [i for i, t in enumerate(times) if t is not None]
+    for i in range(len(times)):
+        if times[i] is None:
+            lo = max([k for k in known if k < i], default=None); hi = min([k for k in known if k > i], default=None)
+            times[i] = (times[lo] + (times[hi] - times[lo]) * (i - lo) / (hi - lo) if lo is not None and hi is not None
+                        else times[lo] + 3.0 * (i - lo) if lo is not None else max(0.0, times[hi] - 3.0 * (hi - i)))
+    for i in range(1, len(times)):
+        times[i] = max(times[i], times[i - 1] + 0.3)
+    return [(t, x) for t, (_, x) in zip(times, lines)], dur, len(pairs) / len(pw)
+
+
+if untimed and len(synced) >= 4:
+    got = borrow_timing(synced)
+    if got:
+        synced, album_dur, share = got
+        untimed = False
+        say("info", f"your lyrics with LRCLIB's timing: {share:.0%} of the words matched a timed version")
 if len(synced) < 4:
     fail("these lyrics are empty or too short (fewer than 4 lines)")
 # Some uploads give every line two or three times at (almost) the same moment: Japanese, romaji, and/or an English
@@ -244,6 +333,32 @@ if letters and sum(unicodedata.name(c, "").startswith("LATIN") for c in letters)
     fail("these lyrics are in a script the studio can't romanise yet (Latin-alphabet, Japanese, Korean and Mandarin work)")
 say("info", f"{len(synced)} lines" + (" (no timing: they'll be placed by listening)" if untimed else " with timing"))
 
+# Backing vocals in brackets, sung over or between the lead: a line that is all brackets ("(What are you waiting for?
+# Bury me, bury me)") or a bracketed phrase of 3+ words inside a line comes out of the lead lines before timing, so
+# the lead is timed on its own words; each phrase is placed by itself afterwards, free to overlap the lead.
+# Short ad-libs ("(yeah)", "(oh)") stay in their line. Lines with an original-script line above are left alone.
+backs = []  # {"lead": index of its lead line in synced, "text": "(...)", "whole": the whole lyric line, "t": its time}
+_ks, _ka, _ko = [], [], []
+for (t_, x_), al_, og_ in zip(synced, align_text, origs):
+    w_ = x_.split()
+    if og_ is None and len(w_) >= 2 and x_.count("(") == 1 and w_[0].startswith("(") \
+            and w_[-1].rstrip(",.!?;:'\"").endswith(")") and _ks:
+        backs.append({"lead": len(_ks) - 1, "text": x_, "whole": True, "t": t_})
+        continue
+    if og_ is None:
+        long_g = [g_ for g_ in re.findall(r"\([^()]*\)", x_) if len(g_.split()) >= 3]
+        lead_ = x_
+        for g_ in long_g:
+            lead_ = lead_.replace(g_, " ")
+        lead_ = re.sub(r"\s+", " ", lead_).strip(" ,")
+        if long_g and len(lead_.split()) >= 2:
+            backs += [{"lead": len(_ks), "text": g_, "whole": False, "t": t_} for g_ in long_g]
+            x_ = al_ = lead_
+    _ks.append((t_, x_)); _ka.append(al_); _ko.append(og_)
+if backs:
+    synced, align_text, origs = _ks, _ka, _ko
+    say("info", f"{len(backs)} backing-vocal phrase{'s' if len(backs) != 1 else ''} in brackets: timed separately from the lead")
+
 # 2. video (H.264 so PiKaraoke can pass it through untouched)
 say("step", "download")
 if not os.path.exists(f"{w}.mp4"):
@@ -270,6 +385,17 @@ import gc, torch  # noqa: E402
 gc.collect(); torch.cuda.empty_cache()
 
 # 4. alignment
+# Meanwhile, in its own process (CPU and network, so it runs alongside Whisper on the GPU): find the album recording
+# and map the video's timeline onto it — skits, scenes and cuts found by matching the music (albumsync.py).
+album_proc = None
+if source != "karamoe" and not untimed and len(synced) >= 4:
+    try:
+        album_proc = subprocess.Popen([sys.executable, "-I", os.path.join(os.path.dirname(os.path.abspath(__file__)), "albumsync.py"),
+                                       f"{w}.mp4", job.get("artist") or "", job.get("title") or "", str(album_dur or 0),
+                                       str(synced[-1][0]), WORK, f"{BIN}/yt-dlp", yt],
+                                      stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, env=C.tool_env())
+    except Exception:
+        album_proc = None
 say("step", "align")
 import numpy as np, stable_whisper  # noqa: E402
 model = stable_whisper.load_model(C.WHISPER_MODEL, device="cuda")
@@ -361,6 +487,18 @@ def _mean_act(a, b):
     return (_cs[b] - _cs[a]) / max(1, b - a)
 
 
+def fit_offs(offs):
+    """fit(), with one offset per line (for a timing that changes along the song)."""
+    sc = 0.0
+    for i, ti in enumerate(_starts):
+        o_ = offs[i]
+        nxt = _starts[i + 1] if i + 1 < len(_starts) else ti + 4
+        sc += _mean_act(ti + o_, ti + o_ + min(2.0, nxt - ti))
+        if i == 0 or ti - _starts[i - 1] > 3.5:
+            sc -= _mean_act(ti + o_ - 0.8, ti + o_ - 0.15)
+    return sc / len(_starts)
+
+
 def fit(o):
     sc = 0.0
     for i, ti in enumerate(_starts):
@@ -390,13 +528,15 @@ end_all = len(audio) / SR
 import unicodedata  # noqa: E402
 
 
-def align_at(off):
+def align_at(off, only=None):
     """Place every line at LRCLIB time + off (one offset, or one per line) and align its words;
     returns (lines, skipped, fit score)."""
     offs = np.broadcast_to(np.asarray(off, dtype=float), (len(synced),))
     out_lines, skipped, total, per = [], [], 0.0, []
     for i, (t, text) in enumerate(synced):
         per.append(0.0)
+        if only is not None and i not in only:  # (a quick look at some lines only, for fine-tuning a part)
+            continue
         a = max(0.0, t + offs[i] - 0.3)
         b = (synced[i + 1][0] + offs[i + 1] - 0.05) if i + 1 < len(synced) else min(end_all, a + 12)
         if a >= end_all - 0.5:
@@ -442,7 +582,7 @@ def align_at(off):
             if len(loud):
                 end = words[-1][0] + (loud[-1] + 1) * fr / SR
                 words[-1][1] = max(words[-1][1], min(end, words[-1][1] + 5.0))
-        out_lines.append({"words": [[round(x, 3), round(y, 3), z] for x, y, z in words], "orig": origs[i], "fit": per[-1]})
+        out_lines.append({"words": [[round(x, 3), round(y, 3), z] for x, y, z in words], "orig": origs[i], "fit": per[-1], "_i": i})
     return out_lines, skipped, total / len(synced), per
 
 
@@ -469,6 +609,62 @@ off_first = off_last = off  # the offset at the song's start and end (they diffe
 cur_fit = fit_words[pick]  # word fit of the timing in use; later methods must beat it
 scenes = []  # video times where a part with a later offset starts (the song was stopped for a scene before it)
 talk_times = []  # video times of heard words that aren't lyrics (set by the transcription matching below)
+
+# The album map (if one was found): each line goes where the album says, plus one small shift for how LRCLIB's
+# timestamps sit against the album recording (they are often a second or so off it). Used unless its words fit the
+# vocals clearly worse than the timing found above; then the timing-jump search below isn't needed.
+album_used = False
+if album_proc is not None:
+    try:
+        _aout, _ = album_proc.communicate(timeout=300)
+    except Exception:
+        album_proc.kill(); _aout = ""
+    _segs = None
+    for _ln in (_aout or "").splitlines():
+        if _ln.startswith("@say "):
+            say("info", _ln[5:])
+        elif _ln.startswith("@segs "):
+            _segs = json.loads(_ln[6:])
+    if _segs:
+        import albumsync  # noqa: E402
+        _aoffs = lambda c_: np.array([c_ + albumsync.seg_off(_segs, t_ + c_) for t_, _ in synced])
+        _byact = sorted(((fit_offs(_aoffs(c_)), c_) for c_ in np.arange(-3.0, 3.01, 0.25)), reverse=True)[:3]
+        _abest = None
+        for _, c_ in _byact:
+            _ar = align_at(_aoffs(c_))
+            if not _abest or _ar[2] > _abest[0][2]:
+                _abest = (_ar, float(c_))
+        _ar, _c = _abest
+        # lines near a part boundary (a scene or cut): try both parts' offsets, keep the one the words fit better
+        _bounds = [s_["a0"] for s_ in _segs[1:]]
+        _o = _aoffs(_c)
+        _fixed = 0
+        for i_, (t_, _) in enumerate(synced):
+            near_ = [b_ for b_ in _bounds if abs(t_ + _c - b_) < 4.0]
+            if not near_:
+                continue
+            k_ = next(k for k, s_ in enumerate(_segs) if abs(s_["a0"] - near_[0]) < 1e-6)
+            alts_ = {_c + _segs[k_ - 1]["off"], _c + _segs[k_]["off"]}
+            fits_ = {}
+            for o_ in alts_:
+                tr_ = _o.copy(); tr_[i_] = o_
+                fits_[o_] = align_at(tr_, only={i_})[3][i_]
+            o_best = max(fits_, key=fits_.get)
+            if abs(o_best - _o[i_]) > 0.01:
+                _o[i_] = o_best; _fixed += 1
+        if _fixed:
+            _ar = align_at(_o)
+            say("info", f"album map: {_fixed} line{'s' if _fixed != 1 else ''} next to a scene or cut moved to the other side")
+        _aoffs_final = _o
+        say("info", f"album map: lyrics sit {_c:+.2f}s off the album; word fit {_ar[2]:.3f} vs {cur_fit:.3f}")
+        if _ar[2] >= cur_fit - 0.01:
+            _o = _aoffs_final
+            out_lines, skipped, cur_fit = _ar[0], _ar[1], _ar[2]
+            off_first, off_last = float(_o[0]), float(_o[-1])
+            album_dur = float(_segs[-1]["a1"])  # the real album length (LRCLIB's can be wrong)
+            scenes = [s_["a0"] + s_["off"] + _c for k_, s_ in enumerate(_segs) if k_ and s_["off"] > _segs[k_ - 1]["off"] + 1.0]
+            album_used = True
+            say("info", "using the album map for the timing" + (f" ({len(_segs)} parts: " + ", ".join(f"{s_['off'] + _c:+.1f}s" for s_ in _segs) + ")" if len(_segs) > 1 else ""))
 STEP, JUMP, PENALTY = 0.25, 2.0, 2.0
 grid = off + np.arange(-60.0, 60.0 + STEP / 2, STEP)
 n_l = len(_starts)
@@ -597,8 +793,23 @@ if len(cands_o) > 1:
             parts[-1][1] = i
         else:
             parts.append([i, i, CO[c]])
-    if len(parts) > 1 and all(b - a + 1 >= 4 for a, b, _ in parts):
+    if len(parts) > 1 and all(b - a + 1 >= 4 for a, b, _ in parts) and not album_used:
         offs = np.array([CO[c] for c in p2])
+        # fine-tune each part's shift by its own lines (the candidates can be a few seconds off: The Kill's last part
+        # needs +88 s, the nearest candidate was +92): within ±5 s, 1 s steps, then 0.25 s around the best
+        for k_, (a_, b_, o_) in enumerate(parts):
+            idx_ = set(range(a_, b_ + 1))
+            def _pf(x_):
+                tr_ = offs.copy(); tr_[a_:b_ + 1] = x_
+                pp_ = align_at(tr_, only=idx_)[3]
+                return float(np.mean([pp_[q_] for q_ in idx_]))
+            coarse_ = {o_ + d_: _pf(o_ + d_) for d_ in np.arange(-5.0, 5.01, 1.0)}
+            c0_ = max(coarse_, key=coarse_.get)
+            fine_ = {c0_ + d_: _pf(c0_ + d_) for d_ in np.arange(-0.75, 0.76, 0.25)}
+            f0_ = max(fine_, key=fine_.get)
+            if fine_[f0_] > coarse_.get(o_, -1) + 0.005:
+                offs[a_:b_ + 1] = f0_
+                parts[k_][2] = float(f0_)
         pw = align_at(offs)
         desc = " | ".join(f"lines {a + 1}-{b + 1} {o:+.1f}s" for a, b, o in parts)
         if pw[2] > fit_words[pick] + 0.005:
@@ -660,7 +871,7 @@ if heard_words and (not any(origs) or mixed) and len(synced) >= 4:
         # them fall between lyric lines, the render keeps the video's own sound there
         # (only words that appear nowhere in the lyrics: a repeated chorus the lyrics left out is still singing)
         _matched = {_hj for _, _hj in _pairs}
-        _vocab = {x for _, _, x in _lw}
+        _vocab = {x for _, _, x in _lw} | {_tw(y) for bk in backs for y in bk["text"].split()}
         talk_times = [_hw[_hj][0] for _hj in range(len(_hw)) if _hj not in _matched and _hw[_hj][1] not in _vocab]
         _found = {}
         for _li, _hj in _pairs:
@@ -681,6 +892,7 @@ if heard_words and (not any(origs) or mixed) and len(synced) >= 4:
             if not np.isnan(a_) and not np.isnan(b_) and not np.isnan(c_) and abs(a_ - c_) < 1.0 and abs(b_ - a_) > 2.0:
                 _shift[i_] = np.nan
         _anch = int(np.sum(~np.isnan(_shift)))
+        _raw = _shift.copy()  # each heard line's own shift (NaN: not heard clearly), before filling in the rest
         if _anch >= max(4, 0.3 * n_l):
             _known = np.where(~np.isnan(_shift))[0]
             for i_ in range(n_l):  # lines Whisper missed: the shift of the nearest anchored line (in album time)
@@ -701,6 +913,79 @@ if heard_words and (not any(origs) or mixed) and len(synced) >= 4:
                 off_first, off_last = float(_shift[0]), float(_shift[-1])
                 scenes = [_starts[i_] + _shift[i_] for i_ in range(1, n_l) if _shift[i_] - _shift[i_ - 1] >= 2.0]
                 say("info", "using the transcription's timing")
+            else:
+                # Transcription veto. Word fit can't see a line put on the wrong repeat of a chorus (the words fit there
+                # too) or on the wrong side of a jump; the ORDER of the heard words can. Where heard lines agree on a
+                # shift more than 3 s away from the timing in use, that timing is wrong there (Dance, Dance: its lyrics
+                # entry jumps +44 → +52 → +67 s; the last part had been put at +44.7 s, 22 s early).
+                _cur = {l["_i"]: l["words"][0][0] - synced[l["_i"]][0] for l in out_lines if l.get("_i") is not None}
+                _new = np.array([_cur.get(i_, np.nan) for i_ in range(n_l)])
+                _bad = [i_ for i_ in range(n_l) if not np.isnan(_raw[i_]) and i_ in _cur and abs(_cur[i_] - _raw[i_]) > 3.0]
+                _runs, _run = [], []
+                for i_ in _bad:  # runs of such lines (a gap of up to 2 lines allowed)
+                    if _run and i_ - _run[-1] > 3:
+                        _runs.append(_run); _run = []
+                    _run.append(i_)
+                if _run:
+                    _runs.append(_run)
+                _vfix = 0
+                if os.environ.get("KARAOKE_DEBUG_FIT"):
+                    json.dump({"raw": [None if np.isnan(x) else round(float(x), 2) for x in _raw],
+                               "cur": [None if np.isnan(x) else round(float(x), 2) for x in _new], "bad": _bad, "runs": _runs},
+                              open(f"{job_dir}/vetodebug.json", "w"))
+                # a stretch can hold more than one shift (Dance, Dance's lyrics entry jumps again near the end: +67 s,
+                # then +75 s): split it wherever the heard shift moves by more than 1.5 s, and judge each part alone
+                _subs = []
+                for r_ in _runs:
+                    cur_ = [r_[0]]
+                    for k_ in r_[1:]:
+                        if abs(_raw[k_] - float(np.median(_raw[cur_]))) > 1.5 and len(cur_) >= 2 and \
+                                (r_.index(k_) + 1 < len(r_) and abs(_raw[r_[r_.index(k_) + 1]] - _raw[k_]) <= 1.5):
+                            _subs.append(cur_); cur_ = []
+                        cur_.append(k_)
+                    _subs.append(cur_)
+                _runs = _subs
+                for r_ in _runs:
+                    v_ = _raw[r_]
+                    med_ = float(np.median(v_))
+                    core_ = [k_ for k_ in r_ if abs(_raw[k_] - med_) <= 1.5]  # one odd line mustn't void the stretch
+                    if len(core_) >= 4 and len(core_) >= 0.7 * len(r_):
+                        end_ = r_[-1]
+                        while end_ + 1 < n_l and np.isnan(_raw[end_ + 1]):  # unheard lines after it follow it
+                            end_ += 1
+                        for k_ in range(r_[0], end_ + 1):
+                            _new[k_] = _raw[k_] if k_ in core_ else med_
+                        _vfix += end_ - r_[0] + 1
+                    elif len(r_) <= 3:  # a line or a few at a part boundary: take the neighbour's shift if that's what it heard
+                        for k_ in r_:
+                            for nb_ in (k_ - 1, k_ + 1):
+                                if 0 <= nb_ < n_l and nb_ not in r_ and not np.isnan(_new[nb_]) and abs(_new[nb_] - _raw[k_]) < 1.5:
+                                    _new[k_] = _new[nb_]; _vfix += 1
+                                    break
+                            else:
+                                # a lone line whose own timestamp is off (The Kill's last line, 4 s late): move it to where
+                                # it's clearly heard (4+ words matched in order), if that keeps the lines in order
+                                at_ = _starts[k_] + _raw[k_]
+                                prev_ = _starts[k_ - 1] + _new[k_ - 1] if k_ > 0 and not np.isnan(_new[k_ - 1]) else -1e9
+                                next_ = _starts[k_ + 1] + _new[k_ + 1] if k_ + 1 < n_l and not np.isnan(_new[k_ + 1]) else 1e9
+                                if len(_found.get(k_, [])) >= 4 and prev_ + 0.3 < at_ < next_ - 0.3:
+                                    _new[k_] = _raw[k_]; _vfix += 1
+                if _vfix:
+                    _kn = np.where(~np.isnan(_new))[0]
+                    for i_ in range(n_l):  # lines not placed now: their nearest neighbour's shift
+                        if np.isnan(_new[i_]) and len(_kn):
+                            _new[i_] = _new[_kn[np.argmin(np.abs(_kn - i_))]]
+                    for i_ in range(1, n_l):  # lines stay in order
+                        if _starts[i_] + _new[i_] < _starts[i_ - 1] + _new[i_ - 1] + 0.3:
+                            _new[i_] = _new[i_ - 1]
+                    _tv = align_at(_new)
+                    say("info", f"transcription veto: {_vfix} line{'s' if _vfix != 1 else ''} heard more than 3 s from where "
+                                f"they were placed; word fit {_tv[2]:.3f} vs {cur_fit:.3f}")
+                    if _tv[2] >= cur_fit - 0.03:
+                        out_lines, skipped, cur_fit = _tv[0], _tv[1], _tv[2]
+                        off_first, off_last = float(_new[0]), float(_new[-1])
+                        scenes = [_starts[i_] + _new[i_] for i_ in range(1, n_l) if _new[i_] - _new[i_ - 1] >= 2.0]
+                        say("info", "moved them to where they were heard")
 
 
 def _fa_words(a, b, texts):
@@ -737,6 +1022,49 @@ for i in range(len(out_lines) - 1):
         moved += 1
 if moved:
     say("info", f"{moved} line boundar{'y' if moved == 1 else 'ies'} moved where the lyrics' timestamps squeezed a line")
+
+# place the backing phrases: slide a window the phrase's length over the stretch around its lead line and keep the
+# position where the words fit the vocals best (aligning over the whole stretch smeared a phrase across 9 s)
+_placed_b = 0
+if backs:
+    _by_i = {l["_i"]: l for l in out_lines if l.get("_i") is not None}
+    _lead_st = sorted(l["words"][0][0] for l in out_lines)
+    for bk in backs:
+        ld = _by_i.get(bk["lead"])
+        words_b = bk["text"].split()
+        if not ld or any(not _nz(w_) for w_ in words_b):
+            continue
+        ls_, le_ = ld["words"][0][0], ld["words"][-1][1]
+        nxt_ = next((t_ for t_ in _lead_st if t_ > ls_ + 0.2), le_ + 4.0)
+        lk_, bk_ = " ".join(_nz(w_[2]) for w_ in ld["words"]), " ".join(_nz(w_) for w_ in words_b)
+        if len(words_b) >= 2 and bk_ in lk_:  # an echo of the lead's own words ("They were born (they were born)"):
+            ra = le_ - 0.4                      # it answers after the lead, so don't let it land on the lead itself
+            rb = max(ra + 0.45 * len(words_b) + 3.5, nxt_ + 1.0)
+        elif bk["whole"]:  # its own lyric line, after the lead: from its own time (shifted like the lead) on
+            ra = max(ls_, bk["t"] + (ls_ - synced[bk["lead"]][0]) - 1.0)
+            rb = max(ra + 3.0, nxt_ + 3.0)
+        else:              # inside the lead line: sung with it or right after
+            ra, rb = ls_ - 1.0, max(le_ + 1.0, nxt_)
+        ra, rb = max(0.0, ra), min(rb, ra + 15.0, len(audio) / SR)
+        span_ = min(rb - ra, 0.45 * len(words_b) + 1.2)
+        best_ = None
+        st_ = ra
+        while st_ + span_ <= rb + 1e-6:
+            try:
+                tb_, sc_ = _fa_words(st_, st_ + span_, words_b)
+                m_ = float(np.mean(sc_))
+                if not best_ or m_ > best_[0]:
+                    best_ = (m_, tb_)
+            except Exception:
+                pass
+            st_ += 0.25
+        if best_:
+            out_lines.append({"words": [[round(x_, 3), round(y_, 3), w_] for w_, (x_, y_) in zip(words_b, best_[1])],
+                              "orig": None, "backing": True, "singer": ld.get("singer"), "members": ld.get("members")})
+            _placed_b += 1
+    out_lines.sort(key=lambda l: l["words"][0][0])
+    if _placed_b:
+        say("info", f"placed {_placed_b} backing-vocal phrase{'s' if _placed_b != 1 else ''} by ear (they may overlap the lead)")
 del fa_model; gc.collect(); torch.cuda.empty_cache()
 if heard_words:
     for l in out_lines:

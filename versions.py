@@ -18,6 +18,10 @@ IMPROVEMENTS = [  # (when it landed, unix time; songs it matters for; what a rem
     (1794975439, "ja", "mostly-English songs with a Japanese chorus are listened to in English"),
     (1794976824, "all", "talking outside the sung lines (an intro, a skit, an outro) keeps its sound, also with pasted lyrics"),
     (1794976824, "pasted", "lyrics-site leftovers (Genius's \"You might also like\" songs, \"Embed\") are removed from pasted lyrics"),
+    (1794988822, "all", "the video is matched against the album recording itself, so skits, scenes and cuts are found exactly"),
+    (1794988822, "latin", "backing vocals in brackets get their own line, timed separately so they can overlap the lead"),
+    (1794988822, "pasted", "pasted lyrics get the timing of LRCLIB's timed version of the song, matched word by word"),
+    (1794988822, "latin", "the AI lyrics check only makes small fixes (at most 2 words in a line)"),
 ]
 VERSION = len(IMPROVEMENTS)
 

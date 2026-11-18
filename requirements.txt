@@ -18,3 +18,5 @@ pypinyin>=0.50
 speechbrain>=1.0
 scikit-learn>=1.3
 # optional, for ui-test.py:  playwright
+librosa           # music analysis: album matching, spectrogram, vocal onsets
+Pillow            # the editor's spectrogram image

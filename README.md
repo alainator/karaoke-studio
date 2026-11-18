@@ -10,10 +10,10 @@ Type `Artist - Title`. The studio finds the music video on YouTube and the lyric
 
 ## What it does
 
-- **Finds the right video and lyrics.** Official music videos are preferred over lyric videos, live versions, covers and dance practices. No lyrics online? Paste them from any site.
-- **Times the lyrics by listening.** It handles videos that differ from the album: skits, scenes in the middle, cuts. Talking keeps its sound; only the singing is removed.
+- **Finds the right video and lyrics.** Official music videos are preferred over lyric videos, live versions, covers and dance practices. No lyrics online? Paste them from any site; if LRCLIB has a timed version, your words get its timing.
+- **Times the lyrics by listening.** It finds the album recording and matches it against the video's music, so skits, scenes in the middle and cuts are found exactly. Talking keeps its sound; only the singing is removed. Backing vocals in brackets get their own line, so they can overlap the lead.
 - **Fixes lyric mistakes.** An optional local AI (via [Ollama](https://ollama.com)) catches dropped or swapped words and wrong Japanese readings, and keeps a change only if it fits the singing better.
-- **Lets you edit easily.** You get a waveform of the vocals with a block per line: drag, stretch, or tap **S** as each line is sung. Lines the studio is unsure about are marked ⚠, and *Next line to check* walks you through them.
+- **Lets you edit easily.** A waveform or spectrogram of the vocals with a block per line: drag, stretch, or tap **S** as each line is sung, and starts snap to where notes begin. Slow playback to 0.5×, loop a line, split or join lines. Lines the studio is unsure about are marked ⚠, and *Next line to check* walks you through them.
 - **Colours singers.** Duets, groups of up to 8 named singers, and lines shared mid-way (paint the words of each singer). Pasting a Genius page with headers like `[Chorus: Name]` colours the lines for you.
 - **Remakes safely.** Older songs show what a remake would improve. A remake keeps your edits, changes nothing if it finds nothing better, and can be undone.
 - **Uses a second GPU.** A PC on your network can take songs when the main GPU is busy, or you can choose which GPU makes each song.
@@ -34,8 +34,9 @@ Cantonese and other scripts (Cyrillic, Thai…) aren't supported yet. The studio
 
 1. [BS-RoFormer](https://github.com/nomadkaraoke/python-audio-separator) splits the vocals from the music.
 2. Whisper ([stable-ts](https://github.com/jianfch/stable-ts), large-v3) transcribes the vocals, and the lyrics are matched against what was actually sung. That gives each line its place in the video, including where the video jumps.
-3. A forced aligner (torchaudio MMS) places every word. Lines that fit badly are marked for you to check.
-4. The result is an `.ass` subtitle on two alternating rows, so the next line shows before it's sung.
+3. The album recording is found on YouTube and matched against the video's music (librosa), giving an exact map of skits, scenes and cuts.
+4. A forced aligner (torchaudio MMS) places every word. Lines that fit badly are marked for you to check.
+5. The result is an `.ass` subtitle on two alternating rows, so the next line shows before it's sung.
 
 ## Requirements
 

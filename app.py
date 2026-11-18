@@ -471,7 +471,7 @@ def _valid_lines(raw, duration):
         out.append({"words": clean, "orig": orig.strip()[:300] if isinstance(orig, str) and orig.strip() else None,
                     "singer": sg if sg in (1, 2, 3) else None, "members": mem or None,
                     "heard": heard.strip()[:200] if isinstance(heard, str) and heard.strip() else None,
-                    "wwho": wwho if any(wwho) else None, "weak": bool(l.get("weak"))})
+                    "wwho": wwho if any(wwho) else None, "weak": bool(l.get("weak")), "backing": bool(l.get("backing"))})
     if not out:
         raise HTTPException(400, "no lines left")
     out.sort(key=lambda l: l["words"][0][0])
@@ -526,6 +526,71 @@ def peaks(jid: str):
         with open(cache + ".tmp", "w") as f:
             json.dump({"rate": 100, "peaks": vals}, f, separators=(",", ":"))
         os.replace(cache + ".tmp", cache)
+    return FileResponse(cache, media_type="application/json")
+
+
+def _vocals16k(jid):
+    import numpy as np
+    src = job_path(jid, "vocals.m4a")
+    if not os.path.exists(src):
+        raise HTTPException(404, "no vocals")
+    r = subprocess.run(["ffmpeg", "-v", "error", "-i", src, "-ac", "1", "-ar", "16000", "-f", "f32le", "-"], capture_output=True, timeout=120)
+    return np.frombuffer(r.stdout, dtype=np.float32).copy()
+
+
+SPEC_PXS = 50  # spectrogram pixels per second (the editor draws its visible part)
+
+
+def _make_spectro(jid, cache):
+    """A mel spectrogram of the vocal stem as a PNG (low notes at the bottom): voices show as bright stripes, so the
+    start of a syllable or the end of a held note is easier to see than on the loudness waveform (as in Subtitle Edit)."""
+    import numpy as np, librosa
+    from PIL import Image
+    y = _vocals16k(jid)
+    S = librosa.feature.melspectrogram(y=y, sr=16000, n_fft=1024, hop_length=16000 // SPEC_PXS, n_mels=96, fmin=80, fmax=8000)
+    db = librosa.power_to_db(S, ref=np.max)
+    lo, hi = np.percentile(db, 5), np.percentile(db, 99.5)
+    v = np.clip((db - lo) / max(1e-6, hi - lo), 0, 1)[::-1]  # low frequencies at the bottom
+    stops = np.array([[18, 13, 24], [60, 30, 100], [140, 70, 160], [255, 201, 77], [255, 245, 220]], dtype=np.float32)
+    pos = np.linspace(0, 1, len(stops))
+    idx = (v * 255).astype(np.uint8)
+    lut = np.stack([np.interp(np.linspace(0, 1, 256), pos, stops[:, c]) for c in range(3)], axis=1).astype(np.uint8)
+    Image.fromarray(lut[idx], "RGB").save(cache + ".tmp.webp", "WEBP", quality=80, method=4)
+    os.replace(cache + ".tmp.webp", cache)
+
+
+def _make_onsets(jid, cache):
+    """Where vocal notes and syllables start (onset detection on the vocal stem), for the editor's ticks and snapping.
+    Onsets in near-silence (separation leftovers) are dropped."""
+    import numpy as np, librosa
+    y = _vocals16k(jid)
+    hop = 160
+    on = librosa.onset.onset_detect(y=y, sr=16000, hop_length=hop, backtrack=True, units="frames")
+    rms = librosa.feature.rms(y=y, frame_length=640, hop_length=hop)[0]
+    floor = 0.12 * float(np.percentile(rms, 90))
+    keep = [round(f * hop / 16000, 2) for f in on if float(rms[f:f + 10].max(initial=0)) > floor]
+    with open(cache + ".tmp", "w") as f:
+        json.dump({"onsets": keep}, f, separators=(",", ":"))
+    os.replace(cache + ".tmp", cache)
+
+
+@app.get("/api/jobs/{jid}/spectrogram")
+async def spectrogram(jid: str):
+    if not ID_RE.match(jid):
+        raise HTTPException(404)
+    cache = job_path(jid, "spectro.webp")
+    if not os.path.exists(cache):
+        await asyncio.to_thread(_make_spectro, jid, cache)
+    return FileResponse(cache, media_type="image/webp", headers={"Cache-Control": "private, max-age=604800", "X-Px-Per-Second": str(SPEC_PXS)})
+
+
+@app.get("/api/jobs/{jid}/onsets")
+async def onsets(jid: str):
+    if not ID_RE.match(jid):
+        raise HTTPException(404)
+    cache = job_path(jid, "onsets.json")
+    if not os.path.exists(cache):
+        await asyncio.to_thread(_make_onsets, jid, cache)
     return FileResponse(cache, media_type="application/json")
 
 
@@ -903,6 +968,9 @@ async def remake(jid: str, req: Request):
         merge = bool(job.get("edited")) and os.path.exists(job_path(jid, "words.orig.json"))
         if os.path.exists(job_path(jid, "words.before-remake.auto.json")):
             os.remove(job_path(jid, "words.before-remake.auto.json"))
+        for f in ("peaks.json", "spectro.webp", "onsets.json"):  # made from the old audio
+            if os.path.exists(job_path(jid, f)):
+                os.remove(job_path(jid, f))
         if os.path.exists(job_path(jid, "words.orig.json")):
             os.replace(job_path(jid, "words.orig.json"), job_path(jid, "words.before-remake.auto.json"))
         job.update(status="queued", step="queued", error=None, log=[], waiting=None, oom_retries=0, ai_romaji=None,

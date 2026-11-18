@@ -56,7 +56,7 @@ def code_version():
     """Fingerprint of the code that makes songs; the studio only sends jobs to a helper running the same."""
     import hashlib
     h = hashlib.sha256()
-    for f in ("pipeline.py", "assgen.py", "config.py", "romanize.py", "versions.py"):
+    for f in ("pipeline.py", "assgen.py", "config.py", "romanize.py", "versions.py", "albumsync.py"):
         h.update(open(os.path.join(HERE, f), "rb").read())
     return h.hexdigest()[:12]
 

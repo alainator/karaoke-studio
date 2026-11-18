@@ -22,6 +22,11 @@ Style: OrigA,Droid Sans Fallback,52,&H00F0F0F0,&H00F0F0F0,&H00000000,&H80000000,
 Style: OrigB,Droid Sans Fallback,52,&H00F0F0F0,&H00F0F0F0,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,2,2,60,60,138,1"""
 
 
+# backing vocals: smaller and in italics, on their own row above the lyrics
+BACK_STYLE = "Style: Back,Arial,56,&H0000D7FF,&H00FFFFFF,&H00000000,&H80000000,-1,-1,0,0,100,100,0,0,1,3,2,2,60,60,262,1"
+BACK_STYLE_DUAL = "Style: Back,Arial,52,&H0000D7FF,&H00FFFFFF,&H00000000,&H80000000,-1,-1,0,0,100,100,0,0,1,3,2,2,60,60,382,1"
+
+
 # fill colour per singer (ASS &HBBGGRR): 1 = gold (the default), 2 = sky blue, 3 = both = green
 SINGER_FILL = {1: "&H00D7FF&", 2: "&HFFB43C&", 3: "&H78E678&"}
 # named members ("cast", up to 8, e.g. from Genius section headers): one colour each; lines sung together keep gold
@@ -92,7 +97,7 @@ def normalize(data):
             out.append({"words": words, "orig": l.get("orig") or None,
                         "singer": sg if sg in (1, 2, 3) else None, "heard": l.get("heard") or None,
                         "members": sorted(set(mem)) or None, "wwho": ww if ww and any(ww) else None,
-                        "weak": bool(l.get("weak"))})
+                        "weak": bool(l.get("weak")), "backing": bool(l.get("backing"))})
         else:
             out.append({"words": [list(w) for w in l], "orig": None, "singer": None, "heard": None, "members": None, "wwho": None})
     return [l for l in out if l["words"]]
@@ -125,6 +130,7 @@ def save_lines(path, lines, cast=_KEEP):
                               **({"members": l["members"]} if l.get("members") else {}),
                               **({"wwho": l["wwho"]} if l.get("wwho") and len(l["wwho"]) == len(l["words"]) else {}),
                               **({"weak": True} if l.get("weak") else {}),
+                              **({"backing": True} if l.get("backing") else {}),
                               **({"heard": l["heard"]} if l.get("heard") else {})}
                              for l in lines]}, f, ensure_ascii=False)
     os.replace(tmp, path)
@@ -164,20 +170,25 @@ def make_ass(lines, offset=0.0, show_orig=True, video_size=None, cast=None):
     if video_size and video_size[0] and video_size[1]:
         k = max(0.7, min(1.0, (video_size[0] / video_size[1]) / (16 / 9)) ** 0.5)
     segs = [[(a + offset, b + offset, w) for a, b, w in l["words"]] for l in lines]
-    events, hide = [], []
+    events, hide, lead_segs = [], [], []
     for i, words in enumerate(segs):
         start, end = words[0][0], words[-1][1]
-        show = start - 1.5
-        if i >= 2:
-            show = max(show, hide[i - 2] + 0.05)   # the row it reuses must be free
-        if i >= 1:
-            show = max(show, segs[i - 1][0][0] - 0.2)  # don't appear before the previous line starts
-        show = max(0.0, min(show, start))
-        h = end + 0.4
-        hide.append(h)
+        back = bool(lines[i].get("backing"))
+        if back:  # backing vocals: their own row above the lyrics, shown shortly before they're sung
+            show, h = max(0.0, start - 0.8), end + 0.3
+        else:     # lead lines take turns on the two rows (backing lines don't count)
+            n_ = len(lead_segs)
+            show = start - 1.5
+            if n_ >= 2:
+                show = max(show, hide[n_ - 2] + 0.05)   # the row it reuses must be free
+            if n_ >= 1:
+                show = max(show, lead_segs[n_ - 1][0][0] - 0.2)  # don't appear before the previous line starts
+            show = max(0.0, min(show, start))
+            h = end + 0.4
+            hide.append(h); lead_segs.append(words)
         sung = fill_of(lines[i])
         fills = word_fills(lines[i])
-        parts = [f"{{\\k{round((start - show) * 100)}{'' if sung is None else chr(92) + '1c' + sung}}}"]
+        parts = [f"{{\\k{round((start - show) * 100)}{'' if sung is None else chr(92) + '1c' + sung}{chr(92) + 'i1' if lines[i].get('backing') else ''}}}"]
         cur = sung
         for j, (a, b, w) in enumerate(words):
             nxt = words[j + 1][0] if j + 1 < len(words) else b
@@ -185,11 +196,16 @@ def make_ass(lines, offset=0.0, show_orig=True, video_size=None, cast=None):
             change = "" if fc == cur or (fc is None and cur is None) else chr(92) + "1c" + (fc or DEFAULT_FILL)
             cur = fc
             parts.append(f"{{{change}\\kf{max(1, round((nxt - a) * 100))}}}{clean(w)}{' ' if j + 1 < len(words) else ''}")
-        row = "A" if i % 2 == 0 else "B"
+        if back:
+            events.append(f"Dialogue: 0,{ts(show)},{ts(h)},Back,,0,0,0,,{''.join(parts)}")
+            continue
+        row = "A" if (len(lead_segs) - 1) % 2 == 0 else "B"
         events.append(f"Dialogue: 0,{ts(show)},{ts(h)},Row{row},,0,0,0,,{''.join(parts)}")
         if dual and lines[i]["orig"]:
             events.append(f"Dialogue: 0,{ts(show)},{ts(h)},Orig{row},,0,0,0,,{clean(lines[i]['orig'])}")
     styles = DUAL_STYLES if dual else LATIN_STYLES
+    if any(l.get("backing") for l in lines):
+        styles += "\n" + (BACK_STYLE_DUAL if dual else BACK_STYLE)
     if cast:  # who's who: each name in its colour, at the top for the first seconds of the song
         styles += "\n" + LEGEND_STYLE
         names = "   ".join(f"{{\\1c{MEMBER_FILL[i]}}}{clean(n)}" for i, n in enumerate(cast[:8]))
