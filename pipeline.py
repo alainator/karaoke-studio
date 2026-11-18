@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config as C  # noqa: E402
 from assgen import make_ass, save_lines  # noqa: E402
 import versions  # noqa: E402
+from romanize import sound_key  # noqa: E402
 
 WORK, MODELS, SEP_MODEL = C.WORK, C.MODELS, C.SEP_MODEL
 UA = {"User-Agent": C.USER_AGENT}
@@ -143,7 +144,7 @@ else:
 
 
 def _wkey(x):
-    return re.sub(r"[^a-z0-9']", "", unicodedata.normalize("NFKD", x.replace("đ", "d").replace("Đ", "D")).lower())
+    return sound_key(x)
 
 
 def align_words(a, b):
@@ -279,7 +280,12 @@ else:
 synced = [(t, x) for t, x in synced if x]
 align_text = [t for _, t in synced]   # what Whisper reads (original script)
 origs = [None] * len(synced)          # original line shown above the romaji
-from romanize import script_of  # noqa: E402
+from romanize import script_of, SCRIPTS, SCRIPT_RE, is_rtl, romanize_generic, sound_key  # noqa: E402
+# the language each script is most often sung in, until Whisper says which it is
+SCRIPT_LANG = {"cyrillic": "ru", "greek": "el", "devanagari": "hi", "bengali": "bn", "gurmukhi": "pa", "gujarati": "gu",
+               "tamil": "ta", "telugu": "te", "kannada": "kn", "malayalam": "ml", "sinhala": "si", "thai": "th", "lao": "lo",
+               "khmer": "km", "myanmar": "my", "georgian": "ka", "armenian": "hy", "ethiopic": "am", "hebrew": "he", "arabic": "ar"}
+ALIGN_AS = {}  # line index -> spellings for the aligner, when they differ from what's shown (Cantonese)
 SCRIPT = script_of([t for _, t in synced])
 if any(KANA.search(t) for _, t in synced):
     # Japanese: automatic romaji (cutlet + MeCab), the Japanese line stays on screen above it
@@ -306,6 +312,18 @@ elif SCRIPT in ("ko", "zh"):
     lang = SCRIPT
     say("info", ("Korean lyrics: romanized as pronounced" if SCRIPT == "ko" else "Chinese lyrics: pinyin (Mandarin)")
         + ", original shown above")
+elif SCRIPT in SCRIPTS:
+    # other scripts: romanized word by word (uroman; PyThaiNLP splits and romanizes Thai), the original line above;
+    # Arabic and Hebrew are shown as written, words lighting up right to left (their romanization drops the vowels)
+    _sre = SCRIPT_RE[SCRIPT]
+    lang = SCRIPT_LANG.get(SCRIPT, "en")  # until the sung language is detected (Cyrillic: Russian, Ukrainian…)
+    if is_rtl(SCRIPT):
+        say("info", f"{SCRIPTS[SCRIPT][1]} lyrics: shown as written, words light up right to left")
+    else:
+        origs = [t if _sre.search(t) else None for _, t in synced]
+        synced = [(t, hand_romaji[k] if k in hand_romaji else (re.sub(r"\s+", " ", romanize_generic(x, SCRIPT)).strip() or x)
+                   if _sre.search(x) else x) for k, (t, x) in enumerate(synced)]
+        say("info", f"{SCRIPTS[SCRIPT][1]} lyrics: romanized, original shown above")
 elif source == "karamoe":
     lang = "ja"
     align_text = [t for _, t in synced]
@@ -329,8 +347,8 @@ if _romanized and _en(" ".join(re.sub(r"\([^)]*\)", " ", t) for _, t in synced))
         if not any(origs):
             align_text = [t for _, t in synced]
 letters = [c for _, t in synced for c in t if c.isalpha()]
-if letters and sum(unicodedata.name(c, "").startswith("LATIN") for c in letters) / len(letters) < 0.85:
-    fail("these lyrics are in a script the studio can't romanise yet (Latin-alphabet, Japanese, Korean and Mandarin work)")
+if not is_rtl(SCRIPT) and letters and sum(unicodedata.name(c, "").startswith("LATIN") for c in letters) / len(letters) < 0.85:
+    fail("these lyrics are in a script the studio can't read yet")
 say("info", f"{len(synced)} lines" + (" (no timing: they'll be placed by listening)" if untimed else " with timing"))
 
 # Backing vocals in brackets, sung over or between the lead: a line that is all brackets ("(What are you waiting for?
@@ -402,32 +420,71 @@ model = stable_whisper.load_model(C.WHISPER_MODEL, device="cuda")
 audio = stable_whisper.audio.load_audio(vocals)  # 16 kHz mono
 _txt = " ".join(t for _, t in synced)
 _accented = sum(1 for c in _txt if c.isalpha() and not c.isascii()) / max(1, sum(c.isalpha() for c in _txt))
-if SCRIPT == "zh" or (SCRIPT == "latin" and (_en(_txt) < 0.05 or _accented > 0.03)):
+if SCRIPT == "zh" or SCRIPT in SCRIPTS or (SCRIPT == "latin" and (_en(_txt) < 0.05 or _accented > 0.03)):
     # which language is actually sung? (the lyrics' letters can't tell Spanish from Portuguese, or Mandarin from Cantonese)
+    # Only the languages the script allows are compared (Greek letters can't be Hindi; Chinese characters are Mandarin
+    # or Cantonese), over three 30 s stretches of the song: one stretch alone can be instrumental or misheard.
+    ALLOWED = {"zh": ["zh", "yue"], "cyrillic": ["ru", "uk", "be", "bg", "sr", "mk", "kk", "mn", "tg", "ky", "tt", "ba"],
+               "arabic": ["ar", "fa", "ur", "ps", "sd"], "devanagari": ["hi", "mr", "ne", "sa"], "bengali": ["bn", "as"]}
+    allowed = ALLOWED.get(SCRIPT) or ([SCRIPT_LANG[SCRIPT]] if SCRIPT in SCRIPT_LANG else None)
+    det = None
     try:
-        mid = len(audio) // 2
-        det = model.transcribe(audio[max(0, mid - 15 * SR):mid + 15 * SR], language=None, vad=True, verbose=None).language
+        import whisper as _wh
+        votes = {}
+        for frac in (0.3, 0.5, 0.7):
+            c_ = int(len(audio) * frac)
+            seg_ = _wh.pad_or_trim(audio[max(0, c_ - 15 * SR):c_ + 15 * SR])
+            mel_ = _wh.log_mel_spectrogram(seg_, n_mels=model.dims.n_mels).to(model.device)
+            _, probs_ = model.detect_language(mel_)
+            for k_, p_ in probs_.items():
+                votes[k_] = votes.get(k_, 0.0) + float(p_)
+        pool = allowed or list(votes)
+        det = max(pool, key=lambda k_: votes.get(k_, 0.0)) if votes else None
+        if allowed and len(allowed) == 1:
+            det = allowed[0]
     except Exception:
-        det = None
+        try:
+            mid = len(audio) // 2
+            det = model.transcribe(audio[max(0, mid - 15 * SR):mid + 15 * SR], language=None, vad=True, verbose=None).language
+        except Exception:
+            det = None
+    if SCRIPT == "zh":
+        # Mandarin or Cantonese? Whisper can't tell (it gives Cantonese under 1.5 % even on Cantonese songs, and
+        # writes the same characters either way), and neither can the aligner. So: Cantonese when the job says so
+        # (the song page has a Pinyin/Jyutping switch) or when the lyrics are written in spoken Cantonese.
+        _txt_zh = "".join(o for o in origs if o)
+        det = "yue" if job.get("lang") == "yue" or sum(_txt_zh.count(c_) for c_ in "係唔嘅咗冇喺佢哋啲嚟咁乜嘢") >= 3 else "zh"
     if SCRIPT == "zh" and det == "yue":
-        fail("this sounds like Cantonese; only Mandarin is supported for Chinese songs so far")
+        # the aligner was trained on uroman spellings, which are Mandarin-style for Chinese characters in any dialect:
+        # it keeps hearing the lines as pinyin, while the screen shows jyutping
+        ALIGN_AS.update({k: x.split() for k, (t, x) in enumerate(synced) if origs[k]})
+        # Cantonese: jyutping instead of pinyin (the Chinese characters are the same, the sounds aren't)
+        from romanize import romanize_cantonese
+        synced = [(t, hand_romaji[k] if k in hand_romaji else (re.sub(r"\s+", " ", romanize_cantonese(origs[k])).strip() or x)
+                   if origs[k] else x) for k, (t, x) in enumerate(synced)]
+        lang = "yue"
+        say("info", "Cantonese: jyutping instead of pinyin")
+    if SCRIPT in SCRIPTS and det and (allowed is None or det in allowed):
+        lang = det  # which language this script is sung in (Cyrillic: Russian, Ukrainian, Serbian…)
     if SCRIPT == "latin" and det and det not in ("ja", "ko", "zh", "yue"):
         lang = det
     say("info", f"sung language: {det or 'unknown'}")
 # Mostly-English songs with a Japanese/Korean/Chinese chorus (Fear, and Loathing in Las Vegas: 48 English lines, 5
 # Japanese): Whisper listens in English. Told "Japanese", it hears nothing in the English verses, so they got no help
 # from listening and drifted. The native lines keep their romaji and their original line on screen.
-mixed = lang in ("ja", "ko", "zh") and any(origs) and sum(1 for o in origs if o) < 0.4 * len(origs)
+mixed = (lang in ("ja", "ko", "zh", "yue") or (SCRIPT in SCRIPTS and not is_rtl(SCRIPT))) and any(origs) \
+    and sum(1 for o in origs if o) < 0.4 * len(origs)
 wlang = "en" if mixed else lang
 if mixed:
-    say("info", f"mostly English with {sum(1 for o in origs if o)} {dict(ja='Japanese', ko='Korean', zh='Chinese')[lang]} "
-                f"lines: listening in English")
+    say("info", f"mostly English with {sum(1 for o in origs if o)} "
+                f"{dict(ja='Japanese', ko='Korean', zh='Chinese', yue='Cantonese').get(lang) or SCRIPTS[SCRIPT][1]} lines: listening in English")
 res = model.align(audio, "\n".join(align_text), language=wlang, original_split=True)
 wsegs = [[(x.start, x.end) for x in s.words if x.word.strip()] for s in res.segments if s.words]
 heard_words = []
 listen_ja = lang == "ja" and not mixed and any(origs) and len(hand_romaji) < 0.8 * sum(1 for o in origs if o)
 listen_latin = (SCRIPT == "latin" and not any(origs)) or mixed
-if listen_ja or listen_latin:
+listen_other = SCRIPT in SCRIPTS and not mixed
+if listen_ja or listen_latin or listen_other:
     # what the singer actually sings. Japanese lyrics often write one word and sing another (幻 sung "yume");
     # crowd-sourced lyrics of any language drop or swap words. The AI checks compare this with the written line.
     try:
@@ -436,10 +493,25 @@ if listen_ja or listen_latin:
         tr = model.transcribe(audio, language=wlang, word_timestamps=True, vad=False, verbose=None,
                               condition_on_previous_text=False)
         heard_words = [((w.start + w.end) / 2, w.word) for sg in tr.segments for w in sg.words]
+        if listen_other and not is_rtl(SCRIPT):  # heard in the script: romanized the way the lyrics were (Thai split into words)
+            heard_words = [(t_, pc_) for t_, w_ in heard_words
+                           for pc_ in (romanize_generic(w_, SCRIPT).split() if SCRIPT_RE[SCRIPT].search(w_) else [w_])]
         say("info", f"listened to the vocals for the lyrics check ({len(heard_words)} words heard)")
     except Exception as e:
         say("info", f"couldn't transcribe the vocals ({str(e)[:60]})")
 del model; gc.collect(); torch.cuda.empty_cache()
+# Pitch (CREPE): which 10 ms frames of the vocals hold a sung note. A held last word ends where its note does, which
+# loudness alone can't tell from a breath, a backing voice or separation leftovers in the gap after it.
+VOICED = None
+try:
+    import torchcrepe
+    _a = torch.from_numpy(audio).float().unsqueeze(0).to("cuda")
+    _f0, _per = torchcrepe.predict(_a, SR, hop_length=SR // 100, fmin=65, fmax=1100, model="tiny", batch_size=4096,
+                                   device="cuda", return_periodicity=True)
+    VOICED = (torchcrepe.filter.median(_per, 5)[0].float().cpu().numpy() > 0.45)
+    del _a, _f0, _per; torch.cuda.empty_cache()
+except Exception as e:
+    say("info", f"couldn't track the pitch ({str(e)[:60]}); held notes end by loudness")
 # Where does the video's singing sit relative to LRCLIB's (album) timing? Candidates:
 #  - Whisper: median and most common difference of line starts (repeated choruses can fool the median)
 #  - vocal activity: slide all line starts over the vocal stem; best match of "singing right after a line
@@ -547,7 +619,7 @@ def align_at(off, only=None):
         clip = audio[int(a * SR):int(b_al * SR)]
         if len(clip) == 0 or float(np.sqrt(np.mean(clip ** 2))) < 0.08 * VOCAL_RMS:
             skipped.append(text); continue
-        norm = [re.sub(r"[^a-z']", "", unicodedata.normalize("NFKD", x.replace("đ", "d").replace("Đ", "D")).lower()) for x in orig]
+        norm = [sound_key(x) for x in (ALIGN_AS[i] if len(ALIGN_AS.get(i, ())) == len(orig) else orig)]
         keep = [k for k, x in enumerate(norm) if x]
         words = []
         try:
@@ -576,12 +648,27 @@ def align_at(off, only=None):
         s0, s1 = int(words[-1][0] * SR), int(b * SR)
         seg = audio[s0:s1]
         if len(seg) > SR // 10:
-            fr = SR // 50
-            rms = np.sqrt(np.mean(seg[: len(seg) // fr * fr].reshape(-1, fr) ** 2, axis=1))
-            loud = np.nonzero(rms > max(rms.max() * 0.12, 0.2 * VOCAL_RMS, 1e-4))[0]
-            if len(loud):
-                end = words[-1][0] + (loud[-1] + 1) * fr / SR
-                words[-1][1] = max(words[-1][1], min(end, words[-1][1] + 5.0))
+            held = None
+            if VOICED is not None:  # follow the note: voiced frames from the last word on, until 0.12 s without one
+                f0_, f1_ = int(words[-1][0] * 100), min(len(VOICED), int(b * 100))
+                last_, gap_ = None, 0
+                for k_ in range(f0_, f1_):
+                    if VOICED[k_]:
+                        last_, gap_ = k_, 0
+                    elif last_ is not None:
+                        gap_ += 1
+                        if gap_ > 12:
+                            break
+                if last_ is not None:
+                    held = (last_ + 1) / 100 + 0.05
+            if held is None:  # no pitch: the last loud moment before the next line
+                fr = SR // 50
+                rms = np.sqrt(np.mean(seg[: len(seg) // fr * fr].reshape(-1, fr) ** 2, axis=1))
+                loud = np.nonzero(rms > max(rms.max() * 0.12, 0.2 * VOCAL_RMS, 1e-4))[0]
+                if len(loud):
+                    held = words[-1][0] + (loud[-1] + 1) * fr / SR
+            if held is not None:
+                words[-1][1] = max(words[-1][1], min(held, words[-1][1] + 5.0, b))
         out_lines.append({"words": [[round(x, 3), round(y, 3), z] for x, y, z in words], "orig": origs[i], "fit": per[-1], "_i": i})
     return out_lines, skipped, total / len(synced), per
 
@@ -600,7 +687,6 @@ off = cands[pick]
 out_lines, skipped = tried[pick][0], tried[pick][1]
 say("info", "word fit " + ", ".join(f"{n} {cands[n]:+.2f}s = {fit_words[n]:.3f}" for n in tried))
 say("info", f"video offset vs album timing {off:+.2f}s ({pick})")
-
 # Music videos sometimes stop the song for a scene, or cut part of it: from there on, the album timing shifts by
 # that much. Score every line at every offset near the chosen one (vocal activity), then find the best piecewise-
 # constant path (Viterbi): changing offset costs a penalty and must be a real jump (>= 2 s), each part >= 4 lines.
@@ -609,6 +695,7 @@ off_first = off_last = off  # the offset at the song's start and end (they diffe
 cur_fit = fit_words[pick]  # word fit of the timing in use; later methods must beat it
 scenes = []  # video times where a part with a later offset starts (the song was stopped for a scene before it)
 talk_times = []  # video times of heard words that aren't lyrics (set by the transcription matching below)
+TRANSCRIPT_FOUND = 0.0  # share of the lyric lines found in the transcription (0: no transcription to compare with)
 
 # The album map (if one was found): each line goes where the album says, plus one small shift for how LRCLIB's
 # timestamps sit against the album recording (they are often a second or so off it). Used unless its words fit the
@@ -714,7 +801,7 @@ for g in dict.fromkeys(path):
     path_c.append(float(fine[int(np.argmax([np.mean([_line_act(i, x) for i in mine]) for x in fine]))]))
 # the most direct evidence: find the lyric lines in the free transcription of the vocals (Latin and Japanese songs)
 # and see how far each sits from its album time; shifts several lines agree on become candidates too
-if heard_words and (not any(origs) or mixed):
+if heard_words and (not any(origs) or mixed or listen_other):
     import difflib
     hw = [(t, re.sub(r"[^a-z']", "", x.lower())) for t, x in heard_words]
     hw = [x for x in hw if x[1]]
@@ -827,13 +914,13 @@ if len(cands_o) > 1:
 # The words are then timed inside those windows, and the result is kept only if it fits the vocals better than the
 # timing found so far.
 def _tw(x):
-    return re.sub(r"[^a-z']", "", unicodedata.normalize("NFKD", x.replace("đ", "d").replace("Đ", "D")).lower())
+    return sound_key(x)
 
 
-if heard_words and (not any(origs) or mixed) and len(synced) >= 4:
+if heard_words and (not any(origs) or mixed or listen_other) and len(synced) >= 4:
     _hw = [(t, _tw(x)) for t, x in heard_words]
     _hw = [x for x in _hw if x[1]]
-    _lw = [(_i, k, _tw(y)) for _i, (t, text) in enumerate(synced) if not origs[_i] for k, y in enumerate(text.split()) if _tw(y)]
+    _lw = [(_i, k, _tw(y)) for _i, (t, text) in enumerate(synced) if not (origs[_i] and mixed) for k, y in enumerate(text.split()) if _tw(y)]
     if len(_hw) >= 10 and len(_lw) >= 10:
         _voc = {w: _n for _n, w in enumerate({x for _, _, x in _lw} | {x for _, x in _hw})}
         _la = np.array([_voc[x] for _, _, x in _lw]); _ha = np.array([_voc[x] for _, x in _hw])
@@ -892,6 +979,7 @@ if heard_words and (not any(origs) or mixed) and len(synced) >= 4:
             if not np.isnan(a_) and not np.isnan(b_) and not np.isnan(c_) and abs(a_ - c_) < 1.0 and abs(b_ - a_) > 2.0:
                 _shift[i_] = np.nan
         _anch = int(np.sum(~np.isnan(_shift)))
+        TRANSCRIPT_FOUND = _anch / max(1, n_l)
         _raw = _shift.copy()  # each heard line's own shift (NaN: not heard clearly), before filling in the rest
         if _anch >= max(4, 0.3 * n_l):
             _known = np.where(~np.isnan(_shift))[0]
@@ -998,7 +1086,86 @@ def _fa_words(a, b, texts):
     return [(a + sp[0].start * fps, a + sp[-1].end * fps) for sp in spans], [float(np.mean([x.score for x in sp])) for sp in spans]
 
 
-_nz = lambda x: re.sub(r"[^a-z']", "", unicodedata.normalize("NFKD", x.replace("đ", "d").replace("Đ", "D")).lower())
+_nz = sound_key
+# Repeats: a chorus sung again has the same melody. For each block of 3+ lines that the lyrics repeat, compare the
+# vocals (chroma) where the first copy is placed with where the second is placed; if they only match at a shifted
+# position, one copy is misplaced: shift the one whose words fit worse, and keep it only if they then fit better.
+# Works by music, in any language (also where the transcription can't follow the words).
+def repeat_check():
+    global out_lines, skipped, cur_fit
+    # Only where the transcription couldn't follow the lyrics (under 30 % of the lines found in it). Where it can, its
+    # own check is the better judge: on Welcome to the Black Parade this check moved 7 lines that were right
+    # (64 → 59 of 68 lines within 1 s of the singing), because a slightly better word fit isn't proof.
+    if TRANSCRIPT_FOUND >= 0.3:
+        return
+    try:
+        import librosa
+        keys = [" ".join(k_ for k_ in (sound_key(w_) for w_ in x.split()) if k_) for _, x in synced]
+        n = len(keys)
+        pairs = []
+        for a in range(n):
+            for b in range(a + 1, n):
+                L = 0
+                while b + L < n and a + L < b and keys[a + L] and keys[a + L] == keys[b + L]:
+                    L += 1
+                if L >= 3 and (a == 0 or keys[a - 1] != keys[b - 1]):
+                    pairs.append((a, b, L))
+        if not pairs:
+            return
+        chroma = librosa.feature.chroma_cens(y=audio, sr=SR, hop_length=SR // 10).T  # 10 frames a second
+        chroma = chroma / (np.linalg.norm(chroma, axis=1, keepdims=True) + 1e-6)
+        placed = {l["_i"]: l for l in out_lines if l.get("_i") is not None}
+        shift = {i: placed[i]["words"][0][0] - synced[i][0] for i in placed}
+        moves = {}
+        for a, b, L in pairs:
+            if not all(i in placed for i in list(range(a, a + L)) + list(range(b, b + L))):
+                continue
+            tA, eA, tB = placed[a]["words"][0][0], placed[a + L - 1]["words"][-1][1], placed[b]["words"][0][0]
+            dur = eA - tA
+            if dur < 3.0:
+                continue
+            fa_, fl_ = int(tA * 10), int(dur * 10)
+            if fa_ + fl_ > len(chroma):
+                continue
+            A_ = chroma[fa_:fa_ + fl_]
+            def sim(d):
+                fb_ = int(round((tB + d) * 10))
+                if fb_ < 0 or fb_ + fl_ > len(chroma):
+                    return -1.0
+                return float(np.mean(np.sum(A_ * chroma[fb_:fb_ + fl_], axis=1)))
+            grid_ = np.arange(-12.0, 12.01, 0.1)
+            sims = np.array([sim(d) for d in grid_])
+            d_best = float(grid_[int(np.argmax(sims))])
+            if abs(d_best) < 1.0 or sims.max() < 0.8 or sims.max() - sim(0.0) < 0.1:
+                continue
+            fitA = np.mean([placed[i].get("fit", 0.0) for i in range(a, a + L)])
+            fitB = np.mean([placed[i].get("fit", 0.0) for i in range(b, b + L)])
+            if fitB <= fitA:   # the second copy is the doubtful one: move it toward the first
+                for i in range(b, b + L): moves[i] = shift[i] + d_best
+            else:              # or the other way round
+                for i in range(a, a + L): moves[i] = shift[i] - d_best
+        if not moves:
+            return
+        offs = np.array([moves.get(i, shift.get(i, np.nan)) for i in range(n)])
+        kn = np.where(~np.isnan(offs))[0]
+        for i in range(n):  # unplaced lines: their nearest neighbour's shift
+            if np.isnan(offs[i]) and len(kn):
+                offs[i] = offs[kn[np.argmin(np.abs(kn - i))]]
+        for i in range(1, n):
+            if synced[i][0] + offs[i] < synced[i - 1][0] + offs[i - 1] + 0.3:
+                offs[i] = offs[i - 1]
+        r_ = align_at(offs)
+        say("info", f"repeats: {len(moves)} line{'s' if len(moves) != 1 else ''} in repeated sections sit off their "
+                    f"melody's repeat; word fit {r_[2]:.3f} vs {cur_fit:.3f}")
+        if r_[2] > cur_fit + 0.02:
+            out_lines, skipped, cur_fit = r_[0], r_[1], r_[2]
+            say("info", "moved them to where the melody repeats")
+    except Exception as e:
+        say("info", f"repeat check skipped ({str(e)[:60]})")
+
+
+repeat_check()
+
 # Lines are aligned one by one inside the slot LRCLIB's timestamps give them, so one wrong timestamp squeezes a line
 # ("we'll carry on, we'll carry on" crammed into the time before a too-early next line). Re-check every pair of
 # touching lines aligned together, the boundary free to move; keep the joint timing when it clearly fits the vocals
@@ -1113,6 +1280,58 @@ for v in scenes:
 # them, unless they overlap the singing. Works for every song, including pasted lyrics, which have no album timing.
 if os.environ.get("KARAOKE_DEBUG_FIT"):
     say("info", f"debug talk words: {len(talk_times)}: " + " ".join(f"{t_:.1f}" for t_ in sorted(talk_times)[:40]))
+# Talking found by sound: an AudioSet classifier (AST) scores "Speech" every second on the video's own audio. A skit
+# scores ~0.3, singing ~0.03 (The Kill), in any language, so this also works when Whisper can't follow the words.
+def speech_spans():
+    try:
+        from transformers import ASTFeatureExtractor, ASTForAudioClassification
+        name, cache = "MIT/ast-finetuned-audioset-10-10-0.4593", os.path.join(MODELS, "hf")
+        fe_ = ASTFeatureExtractor.from_pretrained(name, token=False, cache_dir=cache)
+        m_ = ASTForAudioClassification.from_pretrained(name, token=False, cache_dir=cache).eval().to("cuda")
+        sp_i = {v: k for k, v in m_.config.id2label.items()}["Speech"]
+        y_ = np.frombuffer(subprocess.run(["ffmpeg", "-v", "error", "-i", f"{w}.mp4", "-map", "0:a:0", "-ac", "1", "-ar", "16000",
+                                           "-f", "f32le", "-"], capture_output=True, check=True).stdout, dtype=np.float32)
+        st_ = list(range(0, max(1, len(y_) - 32000), 16000))
+        out_ = []
+        for b0 in range(0, len(st_), 32):
+            x_ = fe_([y_[s0:s0 + 32000] for s0 in st_[b0:b0 + 32]], sampling_rate=16000, return_tensors="pt").to("cuda")
+            with torch.inference_mode():
+                out_ += torch.sigmoid(m_(**x_).logits)[:, sp_i].float().cpu().tolist()
+        del m_; gc.collect(); torch.cuda.empty_cache()
+        spans_, cur_ = [], None
+        for s0, p_ in zip(st_, out_):
+            t_ = s0 / 16000 + 1.0  # window centre
+            if p_ >= 0.15:
+                cur_ = [t_ - 0.5, t_ + 0.5] if cur_ is None else [cur_[0], t_ + 0.5]
+            elif cur_:
+                spans_.append(cur_); cur_ = None
+        if cur_:
+            spans_.append(cur_)
+        return [(a_, b_) for a_, b_ in spans_ if b_ - a_ >= 3.0]
+    except Exception as e:
+        say("info", f"couldn't check the video's sound for talking ({str(e)[:60]})")
+        return []
+
+
+if out_lines:
+    _sp2 = sorted((l["words"][0][0], l["words"][-1][1]) for l in out_lines)
+    _added = 0
+    for a_, b_ in speech_spans():
+        inside = [(ls, le) for ls, le in _sp2 if min(b_, le) - max(a_, ls) > 0.3]
+        if inside:  # stop before the first sung line it runs into (or start after it)
+            if inside[0][0] - a_ >= 2.5:
+                b_ = inside[0][0] - 0.2
+            elif b_ - inside[-1][1] >= 2.5:
+                a_ = inside[-1][1] + 0.2
+            else:
+                continue
+        if b_ <= _sp2[0][0]:
+            a_ = -FADE  # talking before the song: from the very start
+        a_, b_ = max(-FADE, a_), min(duration, b_)
+        if b_ - a_ >= 2.0 and not any(x <= a_ + 0.5 and b_ - 0.5 <= y for x, y in mids):
+            mids.append((a_, b_)); _added += 1
+    if _added:
+        say("info", f"talking found by sound in {_added} place{'s' if _added != 1 else ''}")
 if len(talk_times) >= 3 and out_lines:
     _sp = sorted((l["words"][0][0], l["words"][-1][1]) for l in out_lines)
     _cl = []
@@ -1143,6 +1362,16 @@ if len(talk_times) >= 3 and out_lines:
         a_, b_ = max(-FADE, a_), min(duration, b_)
         if b_ - a_ >= 2.0 and not any(x <= a_ and b_ <= y for x, y in mids):
             mids.append((a_, b_))
+# one tidy list: overlapping stretches joined, and those already inside the before/after-the-song parts dropped
+_mg = []
+for a_, b_ in sorted(mids):
+    if _mg and a_ <= _mg[-1][1] + 0.5:
+        _mg[-1] = (_mg[-1][0], max(_mg[-1][1], b_))
+    else:
+        _mg.append((a_, b_))
+if pre and _mg and _mg[0][0] <= 0.5:  # talking from the start joins the part before the song
+    pre = max(pre, _mg.pop(0)[1])
+mids = [(a_, b_) for a_, b_ in _mg if not (pre and b_ <= pre + 0.5) and not (post and a_ >= post - 0.5)]
 if pre or post or mids:
     terms = ([f"clip(({pre:.2f}-t)/{FADE},0,1)"] if pre else []) + ([f"clip((t-{post:.2f})/{FADE},0,1)"] if post else []) + \
             [f"min(clip((t-{a:.2f})/{FADE},0,1),clip(({b:.2f}-t)/{FADE},0,1))" for a, b in mids]
@@ -1165,7 +1394,7 @@ os.replace(f"{job_dir}/out.tmp.mp4", f"{job_dir}/out.mp4")
 run("ffmpeg", "-v", "error", "-y", "-i", vocals, "-c:a", "aac", "-b:a", "128k", f"{job_dir}/vocals.tmp.m4a")
 os.replace(f"{job_dir}/vocals.tmp.m4a", f"{job_dir}/vocals.m4a")
 json.dump({"offset": round(off, 2), "lines": len(out_lines), "skipped": skipped, "video": vinfo, "width": vw, "height": vh,
-           "lang": lang, "romaji": ("hand" if len(hand_romaji) >= 0.8 * sum(1 for o in origs if o) else "automatic") if any(origs)
+           "lang": lang, "script": SCRIPT, "rtl": is_rtl(SCRIPT), "romaji": ("hand" if len(hand_romaji) >= 0.8 * sum(1 for o in origs if o) else "automatic") if any(origs)
            else ("kara.moe" if source == "karamoe" else None),
            "duration": round(duration, 1), "seconds": round(time.time() - t0), "encoded": "x264",
            "pipeline": versions.VERSION}, open(f"{job_dir}/result.json", "w"))

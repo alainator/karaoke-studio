@@ -30,7 +30,7 @@ cd "$DIR"
 
 echo "== 3/6 Python + PyTorch (CUDA) + packages (a few GB, takes a while)"
 [ -x venv/bin/python ] || uv venv --python 3.12 venv
-uv pip install --python venv/bin/python -q torch torchaudio --index-url https://download.pytorch.org/whl/cu128
+uv pip install --python venv/bin/python -q torch torchaudio torchvision --index-url https://download.pytorch.org/whl/cu128
 uv pip install --python venv/bin/python -q -r requirements.txt
 venv/bin/python -c "import torch; assert torch.cuda.is_available(), 'PyTorch cannot see the GPU'; print('PyTorch sees', torch.cuda.get_device_name(0))"
 

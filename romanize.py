@@ -7,7 +7,7 @@ Measured on Stray Kids "TOP" against a human romanization: 98.8 % of letters bef
 
 Mandarin: pypinyin, one syllable per character (no tone marks), English kept.
 """
-import re
+import functools, re
 
 HANGUL = re.compile(r"[가-힣]")
 HAN = re.compile(r"[一-鿿㐀-䶿]")
@@ -101,8 +101,39 @@ def romanize_mandarin(line):
     return " ".join(out)
 
 
+# Other scripts: (Unicode ranges, name for people, Noto font family for the TV if Arial lacks it, right-to-left).
+# Romanized with uroman (the universal romanizer the MMS aligner was trained with) or PyThaiNLP for Thai, which also
+# splits Thai into words; Arabic and Hebrew are shown in their own script instead (their romanization leaves out
+# the vowels), with words lighting up right to left.
+SCRIPTS = {
+    "cyrillic":   ("\u0400-\u052f", "Cyrillic", None, False),
+    "greek":      ("\u0370-\u03ff\u1f00-\u1fff", "Greek", None, False),
+    "devanagari": ("\u0900-\u097f", "Devanagari (Hindi…)", "NotoSansDevanagari", False),
+    "bengali":    ("\u0980-\u09ff", "Bengali", "NotoSansBengali", False),
+    "gurmukhi":   ("\u0a00-\u0a7f", "Gurmukhi (Punjabi)", "NotoSansGurmukhi", False),
+    "gujarati":   ("\u0a80-\u0aff", "Gujarati", "NotoSansGujarati", False),
+    "tamil":      ("\u0b80-\u0bff", "Tamil", "NotoSansTamil", False),
+    "telugu":     ("\u0c00-\u0c7f", "Telugu", "NotoSansTelugu", False),
+    "kannada":    ("\u0c80-\u0cff", "Kannada", "NotoSansKannada", False),
+    "malayalam":  ("\u0d00-\u0d7f", "Malayalam", "NotoSansMalayalam", False),
+    "sinhala":    ("\u0d80-\u0dff", "Sinhala", "NotoSansSinhala", False),
+    "thai":       ("\u0e00-\u0e7f", "Thai", "NotoSansThai", False),
+    "lao":        ("\u0e80-\u0eff", "Lao", "NotoSansLao", False),
+    "khmer":      ("\u1780-\u17ff", "Khmer", "NotoSansKhmer", False),
+    "myanmar":    ("\u1000-\u109f", "Burmese", "NotoSansMyanmar", False),
+    "georgian":   ("\u10a0-\u10ff", "Georgian", "NotoSansGeorgian", False),
+    "armenian":   ("\u0530-\u058f", "Armenian", "NotoSansArmenian", False),
+    "ethiopic":   ("\u1200-\u137f", "Ethiopic (Amharic…)", "NotoSansEthiopic", False),
+    "hebrew":     ("\u0590-\u05ff", "Hebrew", None, True),
+    "arabic":     ("\u0600-\u06ff\u0750-\u077f\ufb50-\ufdff\ufe70-\ufeff", "Arabic script", None, True),
+}
+SCRIPT_RE = {k: re.compile(f"[{v[0]}]") for k, v in SCRIPTS.items()}
+NONLATIN = re.compile("[" + "".join(v[0] for v in SCRIPTS.values()) + "\u3040-\u30ff\u4e00-\u9fff\u3400-\u4dbf\uac00-\ud7a3]")
+
+
 def script_of(texts):
-    """'ja' if any kana, else 'ko' if Hangul, else 'zh' if Han characters, else 'latin'."""
+    """'ja' if any kana, else 'ko' if Hangul, else 'zh' if Han characters, else another script from SCRIPTS that
+    has at least 10 letters (the most used one), else 'latin'."""
     t = " ".join(texts)
     if KANA.search(t):
         return "ja"
@@ -110,4 +141,66 @@ def script_of(texts):
         return "ko"
     if len(HAN.findall(t)) >= 10:
         return "zh"
-    return "latin"
+    counts = {k: len(r.findall(t)) for k, r in SCRIPT_RE.items()}
+    best = max(counts, key=counts.get)
+    return best if counts[best] >= 10 else "latin"
+
+
+def is_rtl(script):
+    return bool(SCRIPTS.get(script, (0, 0, 0, False))[3])
+
+
+_UROMAN = None
+
+
+def _uroman():
+    global _UROMAN
+    if _UROMAN is None:
+        import uroman
+        _UROMAN = uroman.Uroman()
+    return _UROMAN
+
+
+def romanize_generic(line, script):
+    """A line in another script → Latin letters, word by word (Latin words kept). Thai is split into words first."""
+    if script == "thai":
+        try:
+            from pythainlp.tokenize import word_tokenize
+            from pythainlp.transliterate import romanize as th_rom
+            out = []
+            for tok in re.findall(r"\S+", line):
+                if SCRIPT_RE["thai"].search(tok):
+                    out += [th_rom(w, engine="royin") for w in word_tokenize(tok, engine="newmm", keep_whitespace=False) if w.strip()]
+                else:
+                    out.append(tok)
+            return " ".join(w for w in out if w)
+        except Exception:
+            pass
+    u = _uroman()
+    return " ".join(u.romanize_string(tok) if NONLATIN.search(tok) else tok for tok in line.split())
+
+
+def romanize_cantonese(line):
+    """Jyutping without tone numbers, one syllable per character (Cantonese songs); other text kept."""
+    import ToJyutping
+    out = []
+    for tok in re.findall(r"[一-鿿㐀-䶿]+|[^一-鿿㐀-䶿\s]+", line):
+        if HAN.match(tok):
+            out += [re.sub(r"\d", "", j) if j else ch for ch, j in ToJyutping.get_jyutping_list(tok)]
+        else:
+            out.append(tok)
+    return " ".join(out)
+
+
+@functools.lru_cache(maxsize=65536)
+def sound_key(text):
+    """What a word sounds like in plain Latin letters (a-z and '), for the aligner and for comparing lyrics with what
+    Whisper heard in any script: other scripts go through uroman first."""
+    import unicodedata
+    if NONLATIN.search(text):
+        try:
+            text = _uroman().romanize_string(text)
+        except Exception:
+            pass
+    text = unicodedata.normalize("NFKD", text.replace("đ", "d").replace("Đ", "D")).lower()
+    return re.sub(r"[^a-z']", "", text)

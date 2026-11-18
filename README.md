@@ -25,10 +25,13 @@ Type `Artist - Title`. The studio finds the music video on YouTube and the lyric
 | English and other Latin-alphabet languages (Spanish, French, Vietnamese…) | As written |
 | Japanese | Romaji with the Japanese line above it: hand-made from [kara.moe](https://kara.moe) when available, otherwise automatic and checked by listening |
 | Korean | Romanized the way it's pronounced, with the Korean line above it |
-| Mandarin Chinese | Pinyin with the Chinese line above it |
-| Mixed (an English song with a Japanese, Korean or Chinese chorus) | Each line as above |
+| Chinese | Pinyin (Mandarin) or jyutping (Cantonese) with the Chinese line above it. Cantonese is picked up when the lyrics are written in spoken Cantonese; otherwise one click on the song page switches, keeping the timing |
+| Russian, Ukrainian and other Cyrillic; Greek | Romanized, with the original line above it |
+| Hindi and other Indian scripts, Thai, Georgian, Armenian, Lao, Khmer, Burmese, Amharic | Romanized, with the original line above it (the song carries the font it needs, so the TV can show it) |
+| Arabic, Persian, Urdu, Hebrew | In their own script, words lighting up right to left |
+| Mixed (an English song with a chorus in another script) | Each line as above |
 
-Cantonese and other scripts (Cyrillic, Thai…) aren't supported yet. The studio says so rather than showing wrong lyrics.
+Tested with one song each in Russian, Ukrainian, Greek, Hindi, Thai, Arabic, Hebrew and Cantonese; the other scripts use the same path.
 
 ## How it works
 
@@ -49,7 +52,7 @@ Cantonese and other scripts (Cyrillic, Thai…) aren't supported yet. The studio
 ```sh
 git clone https://github.com/alainator/karaoke-studio && cd karaoke-studio
 python3.12 -m venv venv
-venv/bin/pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128   # match your driver
+venv/bin/pip install torch torchaudio torchvision --index-url https://download.pytorch.org/whl/cu128   # match your driver
 venv/bin/pip install -r requirements.txt
 venv/bin/python -I get_renderer.py        # lyric renderer and fonts
 cp .env.example .env && chmod 600 .env    # then edit it

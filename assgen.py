@@ -7,7 +7,9 @@ words.json, version 2: {"version": 2, "lines": [{"words": [[start, end, "word"],
   (optional) is Whisper's transcription of what is sung on a Japanese line, for the AI romaji check.
   Version 1 (older jobs) was just the list of word lists.
 """
-import json, os
+import json, os, re
+
+from romanize import SCRIPT_RE
 
 STYLE_FORMAT = ("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, "
                 "Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, "
@@ -161,7 +163,10 @@ def scaled(styles, k):
     return "\n".join(out)
 
 
-def make_ass(lines, offset=0.0, show_orig=True, video_size=None, cast=None):
+RTL_RE = re.compile("[\u0590-\u05ff\u0600-\u06ff\u0750-\u077f\ufb50-\ufdff\ufe70-\ufeff]")
+
+
+def make_ass(lines, offset=0.0, show_orig=True, video_size=None, cast=None, embed_fonts=True):
     """lines: words.json content (v1 or v2). offset shifts everything (+ = later).
     video_size (w, h): on videos narrower than 16:9 the text is scaled down so lines don't wrap as much."""
     lines = normalize(lines)
@@ -171,6 +176,13 @@ def make_ass(lines, offset=0.0, show_orig=True, video_size=None, cast=None):
         k = max(0.7, min(1.0, (video_size[0] / video_size[1]) / (16 / 9)) ** 0.5)
     segs = [[(a + offset, b + offset, w) for a, b, w in l["words"]] for l in lines]
     events, hide, lead_segs = [], [], []
+    fonts_section, families = "", {}
+    if embed_fonts:
+        try:
+            from fonts import embed_for
+            fonts_section, families = embed_for([l["orig"] or "" for l in lines] + [w for l in lines for _, _, w in l["words"]])
+        except Exception:
+            pass
     for i, words in enumerate(segs):
         start, end = words[0][0], words[-1][1]
         back = bool(lines[i].get("backing"))
@@ -188,6 +200,7 @@ def make_ass(lines, offset=0.0, show_orig=True, video_size=None, cast=None):
             hide.append(h); lead_segs.append(words)
         sung = fill_of(lines[i])
         fills = word_fills(lines[i])
+        rtl = bool(RTL_RE.search(" ".join(w for _, _, w in words)))
         parts = [f"{{\\k{round((start - show) * 100)}{'' if sung is None else chr(92) + '1c' + sung}{chr(92) + 'i1' if lines[i].get('backing') else ''}}}"]
         cur = sung
         for j, (a, b, w) in enumerate(words):
@@ -195,14 +208,16 @@ def make_ass(lines, offset=0.0, show_orig=True, video_size=None, cast=None):
             fc = fills[j]
             change = "" if fc == cur or (fc is None and cur is None) else chr(92) + "1c" + (fc or DEFAULT_FILL)
             cur = fc
-            parts.append(f"{{{change}\\kf{max(1, round((nxt - a) * 100))}}}{clean(w)}{' ' if j + 1 < len(words) else ''}")
+            kt = "k" if rtl else "kf"
+            parts.append(f"{{{change}\\{kt}{max(1, round((nxt - a) * 100))}}}{clean(w)}{' ' if j + 1 < len(words) else ''}")
         if back:
             events.append(f"Dialogue: 0,{ts(show)},{ts(h)},Back,,0,0,0,,{''.join(parts)}")
             continue
         row = "A" if (len(lead_segs) - 1) % 2 == 0 else "B"
         events.append(f"Dialogue: 0,{ts(show)},{ts(h)},Row{row},,0,0,0,,{''.join(parts)}")
         if dual and lines[i]["orig"]:
-            events.append(f"Dialogue: 0,{ts(show)},{ts(h)},Orig{row},,0,0,0,,{clean(lines[i]['orig'])}")
+            fam = next((f for sc, f in families.items() if SCRIPT_RE[sc].search(lines[i]["orig"])), None)
+            events.append(f"Dialogue: 0,{ts(show)},{ts(h)},Orig{row},,0,0,0,,{('{' + chr(92) + 'fn' + fam + '}') if fam else ''}{clean(lines[i]['orig'])}")
     styles = DUAL_STYLES if dual else LATIN_STYLES
     if any(l.get("backing") for l in lines):
         styles += "\n" + (BACK_STYLE_DUAL if dual else BACK_STYLE)
@@ -211,4 +226,7 @@ def make_ass(lines, offset=0.0, show_orig=True, video_size=None, cast=None):
         names = "   ".join(f"{{\\1c{MEMBER_FILL[i]}}}{clean(n)}" for i, n in enumerate(cast[:8]))
         until = max(8.0, min(20.0, (segs[0][0][0] if segs else 8.0)))
         events.insert(0, f"Dialogue: 1,{ts(0)},{ts(until)},Legend,,0,0,0,,{names}")
-    return header(scaled(styles, k)) + "\n".join(events) + "\n"
+    out = header(scaled(styles, k)) + "\n".join(events) + "\n"
+    if fonts_section:  # libass reads embedded fonts from a [Fonts] section placed before [Events]
+        out = out.replace("\n[Events]", "\n" + fonts_section + "\n[Events]", 1)
+    return out

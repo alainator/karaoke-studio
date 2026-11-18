@@ -220,6 +220,13 @@ $("#sform").onsubmit = async e => {
   $("#sbtn").disabled = false;
 };
 // timed lyrics, or plain ones (placed by listening), or pasted ones
+// other scripts the studio reads (romanized, original line above; Arabic and Hebrew shown as written)
+const SCRIPT_LABEL = {cyrillic: "Cyrillic → romanized", greek: "Greek → romanized", devanagari: "Hindi script → romanized",
+  bengali: "Bengali → romanized", gurmukhi: "Punjabi → romanized", gujarati: "Gujarati → romanized", tamil: "Tamil → romanized",
+  telugu: "Telugu → romanized", kannada: "Kannada → romanized", malayalam: "Malayalam → romanized", sinhala: "Sinhala → romanized",
+  thai: "Thai → romanized", lao: "Lao → romanized", khmer: "Khmer → romanized", myanmar: "Burmese → romanized",
+  georgian: "Georgian → romanized", armenian: "Armenian → romanized", ethiopic: "Amharic → romanized",
+  hebrew: "Hebrew, shown as written", arabic: "Arabic script, shown as written"};
 const usable = l => l && (l.source === "pasted" || ((l.timed || l.plain) && (l.latin || l.japanese || l.native) && !l.mismatch));
 const lkey = l => `${l.source}:${l.id}`;
 function bestLyrics(d, video) {
@@ -261,7 +268,7 @@ function renderResults() {
     <div class="card lyr ${pick.lyr && lkey(pick.lyr) === lkey(l) ? "sel" : ""}" data-l="${esc(lkey(l))}">
       <div><div class="t">${esc(l.artist)} – ${esc(l.title)}</div>
       <div class="m">${esc(l.album || "")} · ${fmt(l.duration)}${dur && l.duration ? ` (${l.duration - dur > 0 ? "+" : ""}${Math.round(l.duration - dur)}s vs video)` : ""}</div>
-      <div>${romajiOnly(l) ? '<span class="tag">romaji only · no Japanese line</span>' : ""}${l.source === "karamoe" ? '<span class="tag good">hand-timed romaji · kara.moe</span>' : l.timed ? `<span class="tag good">timed · ${l.lines} lines</span>` : l.plain ? '<span class="tag">not timed · placed by listening</span>' : '<span class="tag warn">no lyrics text</span>'}${l.mismatch ? '<span class="tag warn">doesn\'t match the Japanese lyrics</span>' : ""}${l.artist_match === false ? '<span class="tag warn">other artist</span>' : ""}${l.script === "ko" ? '<span class="tag">Korean → romanized</span>' : l.script === "zh" ? '<span class="tag">Chinese → pinyin</span>' : l.japanese ? '<span class="tag">Japanese → automatic romaji</span>' : l.english ? '<span class="tag">English</span>' : l.latin ? "" : '<span class="tag warn">script not supported</span>'}</div>
+      <div>${romajiOnly(l) ? '<span class="tag">romaji only · no Japanese line</span>' : ""}${l.source === "karamoe" ? '<span class="tag good">hand-timed romaji · kara.moe</span>' : l.timed ? `<span class="tag good">timed · ${l.lines} lines</span>` : l.plain ? '<span class="tag">not timed · placed by listening</span>' : '<span class="tag warn">no lyrics text</span>'}${l.mismatch ? '<span class="tag warn">doesn\'t match the Japanese lyrics</span>' : ""}${l.artist_match === false ? '<span class="tag warn">other artist</span>' : ""}${l.script === "ko" ? '<span class="tag">Korean → romanized</span>' : l.script === "zh" ? '<span class="tag">Chinese → pinyin or jyutping</span>' : l.japanese ? '<span class="tag">Japanese → automatic romaji</span>' : SCRIPT_LABEL[l.script] ? `<span class="tag">${SCRIPT_LABEL[l.script]}</span>` : l.english ? '<span class="tag">English</span>' : l.latin ? "" : '<span class="tag warn">script not supported</span>'}</div>
       ${l.first ? `<div class="m">“${esc(l.first)}…”</div>` : ""}</div>
     </div>`).join("") || `<div class="empty">No lyrics found on LRCLIB: paste them below</div>`;
   const pasted = pick.lyr && pick.lyr.source === "pasted";
@@ -439,7 +446,7 @@ async function openJob(id) {
   $("#jobdetail").innerHTML = `${backLink()}
     <div class="row" style="justify-content:space-between;margin:6px 0 10px"><h2 style="margin:0">${esc(j.artist)} – ${esc(j.title)}</h2>
       <span class="row"><input id="rn-artist" class="rn" value="${esc(j.artist)}" placeholder="Artist" title="Artist (sets the song's name in PiKaraoke)">
-      <input id="rn-title" class="rn" value="${esc(j.title)}" placeholder="Title"><button class="ghost" id="rnbtn" style="padding:6px 10px;font-size:13px">Rename</button></span></div>
+      <input id="rn-title" class="rn" value="${esc(j.title)}" placeholder="Title"><button class="ghost" id="rnbtn" style="padding:6px 10px;font-size:13px">Rename</button>${r.script === "zh" || r.lang === "zh" || r.lang === "yue" ? `<button class="ghost" id="zhread" style="padding:6px 10px;font-size:13px" title="Whisper can't tell Mandarin from Cantonese singing. Switch the romanization here; the timing stays.">${r.lang === "yue" ? "Jyutping → Pinyin (Mandarin)" : "Pinyin → Jyutping (Cantonese)"}</button>` : ""}</span></div>
     ${j.updates && j.updates.length ? `<div class="aibox" style="margin-bottom:12px"><div class="row" style="justify-content:space-between">
       <b>Made with an older version: remaking it now would add</b>
       <button class="primary" id="remake">↻ Remake with the latest version</button></div>
@@ -496,6 +503,11 @@ async function openJob(id) {
   if ($("#undoremake")) $("#undoremake").onclick = async () => {
     if (!confirm("Put back the lyrics from before the remake?")) return;
     try { await api(`/api/jobs/${id}/undo-remake`, {method: "POST"}); closePlayer(); ed = null; openJob(id); loadJobs(); toast("Back to the version from before the remake"); }
+    catch (e) { toast(e.message); }
+  };
+  if ($("#zhread")) $("#zhread").onclick = async () => {
+    if (ed && ed.dirty) return toast("Save your edits first");
+    try { await api(`/api/jobs/${id}/chinese-reading`, {method: "POST", body: JSON.stringify({to: r.lang === "yue" ? "zh" : "yue"})}); closePlayer(); ed = null; openJob(id); }
     catch (e) { toast(e.message); }
   };
   $("#rnbtn").onclick = async () => {

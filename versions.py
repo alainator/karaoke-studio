@@ -22,6 +22,9 @@ IMPROVEMENTS = [  # (when it landed, unix time; songs it matters for; what a rem
     (1794988822, "latin", "backing vocals in brackets get their own line, timed separately so they can overlap the lead"),
     (1794988822, "pasted", "pasted lyrics get the timing of LRCLIB's timed version of the song, matched word by word"),
     (1794988822, "latin", "the AI lyrics check only makes small fixes (at most 2 words in a line)"),
+    (1795013581, "all", "talking is also found by its sound, in any language, and keeps the video's own sound"),
+    (1795013581, "all", "held last notes end where the sung pitch stops, not where the track gets quiet"),
+    (1795013581, "all", "songs whose words can't be followed by ear: repeated sections are checked against where their melody repeats"),
 ]
 VERSION = len(IMPROVEMENTS)
 

@@ -20,3 +20,9 @@ scikit-learn>=1.3
 # optional, for ui-test.py:  playwright
 librosa           # music analysis: album matching, spectrogram, vocal onsets
 Pillow            # the editor's spectrogram image
+uroman            # romanizes any script (what the MMS aligner expects)
+ToJyutping        # Cantonese jyutping
+pythainlp         # Thai word splitting and romanization
+fonttools         # embeds font subsets for scripts the TV lacks
+transformers      # the AudioSet classifier that finds talking by sound
+torchcrepe        # pitch tracking for held notes

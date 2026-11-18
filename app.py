@@ -172,7 +172,7 @@ def lrc_search(artist, title, extra_titles=()):
         japanese = bool(KANA.search(text))
         from romanize import script_of
         script = script_of([text])
-        native = script in ("ja", "ko", "zh")
+        native = script != "latin"  # Japanese, Korean, Chinese and every other script the studio reads
         toks = re.findall(r"[a-z']+", text.lower())
         # (only for lyrics without Japanese: a Japanese song with a few English words isn't "English lyrics")
         english = not native and bool(toks) and sum(t in ENGLISH_HINTS for t in toks) / len(toks) > 0.12
@@ -1003,6 +1003,48 @@ async def undo_remake(jid: str, req: Request):
     return {"ok": True}
 
 
+@app.post("/api/jobs/{jid}/chinese-reading")
+async def chinese_reading(jid: str, req: Request):
+    """Switch a Chinese song between pinyin (Mandarin) and jyutping (Cantonese) without remaking it: each line is
+    romanized again from its Chinese line, keeping the timing (one syllable per character either way)."""
+    check_origin(req)
+    to = (await req.json()).get("to")
+    if to not in ("zh", "yue"):
+        raise HTTPException(400, "to: zh or yue")
+    from romanize import romanize_cantonese, romanize_mandarin
+    conv = romanize_cantonese if to == "yue" else romanize_mandarin
+    with lock:
+        job = load(jid)
+        if job["status"] != "done" or (job.get("result") or {}).get("script", "zh") != "zh":
+            raise HTTPException(400, "only for finished Chinese songs")
+        path = job_path(jid, "words.json")
+        lines, cast = load_lines(path), load_cast(path)
+        if not os.path.exists(job_path(jid, "words.orig.json")):
+            shutil.copyfile(path, job_path(jid, "words.orig.json"))
+        n = 0
+        for l in lines:
+            if not l.get("orig"):
+                continue
+            toks = []
+            for t in re.sub(r"\s+", " ", conv(l["orig"])).split():  # punctuation rides with the word before it, as when made
+                if not re.search(r"[A-Za-z]", t) and toks:
+                    toks[-1] += " " + t
+                else:
+                    toks.append(t)
+            l["words"] = [[w[0], w[1], t] for w, t in zip(l["words"], toks)] if len(toks) == len(l["words"]) \
+                else remap_words(l["words"], " ".join(toks))
+            n += 1
+        save_lines(path, lines, cast)
+        open(job_path(jid, "lyrics.ass"), "w").write(make_ass(lines, job.get("offset", 0.0), video_size=vsize(job), cast=cast))
+        job["result"] = dict(job.get("result") or {}, lang=to)
+        job["lang"] = to  # a remake keeps the choice
+        job["edited"] = time.time()
+        if job.get("published"):
+            job["unpublished_changes"] = True
+        save(jid, job)
+    return {"lines": n, "lang": to}
+
+
 @app.post("/api/jobs/{jid}/retry")
 async def retry(jid: str, req: Request):
     check_origin(req)
@@ -1262,7 +1304,7 @@ def maybe_auto_romaji(jid, rc):
         return
     res = json.load(open(job_path(jid, "result.json")))
     ja_auto = res.get("romaji") == "automatic" and res.get("lang") == "ja"
-    latin = not res.get("romaji") and res.get("lang") not in ("ko", "zh", "ja")
+    latin = not res.get("romaji") and res.get("lang") not in ("ko", "zh", "ja") and res.get("script", "latin") == "latin"
     if not (ja_auto or latin):  # Korean/Chinese romanization and hand-made romaji aren't checked
         return
     set_job(jid, step="romaji")
