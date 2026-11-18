@@ -595,9 +595,10 @@ document.addEventListener("keydown", e => {
     const l = ed.lines[i];
     moveLine(i, now - l.words[0][0]);
     ed.dirty = true; renderEditor();
-    ed.sel = Math.min(ed.lines.indexOf(l) + 1, ed.lines.length - 1); renderEditor(); markCurrent();
+    ed.sel = Math.min(ed.lines.indexOf(l) + 1, ed.lines.length - 1); renderEditor(); markCurrent(); keepVisible(ed.sel);
     return;
   }
+  if (e.code === "Escape" && ed.sel != null) { ed.sel = null; ed.splitFor = null; renderEditor(); markCurrent(); return; }
   if ((e.code === "ArrowLeft" || e.code === "ArrowRight") && ed.sel != null && ed.lines[ed.sel]) {
     e.preventDefault();
     if (document.activeElement && document.activeElement.blur) document.activeElement.blur();  // the video must not seek too
@@ -606,14 +607,22 @@ document.addEventListener("keydown", e => {
   }
 }, true);
 
+// keep line i visible inside the list (never scrolls the page)
+function keepVisible(i) {
+  const tr = document.querySelector(`.edtab tr[data-i="${i}"]`); if (!tr) return;
+  const box = tr.closest(".edwrap"), r = tr.getBoundingClientRect(), br = box.getBoundingClientRect();
+  if (r.top < br.top || r.bottom > br.bottom) box.scrollTop = Math.max(0, box.scrollTop + (r.top - br.top) - box.clientHeight / 3);
+}
 function markCurrent() {
   if (!ed || !$("#pv")) return;
-  const t = $("#pv").currentTime - curOff();
+  const v = $("#pv"), t = v.currentTime - curOff();
   let k = -1;
   ed.lines.forEach((l, i) => { if (l.words[0][0] - 0.05 <= t) k = i; });
+  // follow the playing line only while playing, with no line selected, and not right after the user touched the list
+  const follow = !v.paused && ed.sel == null && Date.now() - (ed.touched || 0) > 5000;
   document.querySelectorAll(".edtab tr").forEach(tr => {
     const on = +tr.dataset.i === k;
-    if (on && !tr.classList.contains("cur") && !document.activeElement.closest(".edtab")) {
+    if (follow && on && !tr.classList.contains("cur") && !document.activeElement.closest(".edtab")) {
       // scroll only the lyric list, never the page (the video must stay where the user put it)
       const box = tr.closest(".edwrap"), r = tr.getBoundingClientRect(), br = box.getBoundingClientRect();
       if (r.top < br.top || r.bottom > br.bottom) box.scrollTop = Math.max(0, box.scrollTop + (r.top - br.top) - box.clientHeight / 3);
@@ -626,9 +635,10 @@ function renderEditor() {
   const off = curOff();
   ed.lines.sort((a, b) => a.words[0][0] - b.words[0][0]);
   if (!ed.view.start && $("#pv")) ed.view.start = Math.max(0, $("#pv").currentTime - 3);
+  const keepTop = $(".edwrap") ? $(".edwrap").scrollTop : null, keepPage = window.scrollY;  // rebuilding must not scroll
   $("#editor").innerHTML = `
     <div class="row" style="justify-content:space-between">
-      <div><h3>Lyrics editor</h3><div class="hint">Click a line to select it, play, and press <kbd>S</kbd> the moment it's sung: it moves there and the next line is selected, so keep tapping. <kbd>←</kbd>/<kbd>→</kbd> nudge the selected line 0.1 s (<kbd>Shift</kbd> 1 s). Save to update the preview.</div></div>
+      <div><h3>Lyrics editor</h3><div class="hint">Click a line to select it, play, and press <kbd>S</kbd> the moment it's sung: it moves there and the next line is selected, so keep tapping. <kbd>←</kbd>/<kbd>→</kbd> nudge the selected line 0.1 s (<kbd>Shift</kbd> 1 s); <kbd>Esc</kbd> deselects. Save to update the preview.</div></div>
       <div class="row">${ed.dirty ? '<span class="dirty">unsaved changes</span>' : ""}
         <button class="ghost" id="pastebtn" title="Paste the lyrics from a lyrics site (e.g. Genius): fixes words/readings and, from section headers like [Chorus: Name], colours lines by singer; you review every change">${ed.lines.some(l => l.orig) ? "Paste romaji" : "Paste lyrics"}</button>
         ${STATUS.romaji_ai && (ed.lines.some(l => l.orig && /[\u3040-\u30ff]/.test(l.orig)) || !ed.lines.some(l => l.orig)) ? `<button class="ghost" id="aicheck" title="Compares the lyrics with what's actually sung and suggests fixes; you review every change">${ed.lines.some(l => l.orig) ? "Check romaji with AI" : "Check lyrics with AI"}</button>` : ""}
@@ -672,6 +682,10 @@ function renderEditor() {
         <td><button class="ib ${l.wwho ? "on" : ""}" data-act="split" title="Shared line: give part of it to another singer">◐</button></td>
         <td><button class="ib danger" data-act="del" title="Delete this line">✕</button></td>
       </tr>`).join("")}</tbody></table></div>`;
+  if (keepTop != null) $(".edwrap").scrollTop = keepTop;
+  if (window.scrollY !== keepPage) window.scrollTo(0, keepPage);
+  // touching the list (scroll, click, typing) pauses following the playing line for a few seconds
+  ["pointerdown", "wheel", "keydown", "touchstart"].forEach(ev => $(".edwrap").addEventListener(ev, () => { ed.touched = Date.now(); }, {passive: true}));
   const changed = () => { const keep = ed.lines[ed.sel]; ed.dirty = true; renderEditor(); if (keep) { ed.sel = ed.lines.indexOf(keep); renderEditor(); } markCurrent(); };
   ed.changed = changed;
   $("#ripple").onchange = e => { ed.ripple = e.target.checked; try { localStorage.setItem("ks-ripple", ed.ripple ? "1" : "0"); } catch (x) {} };
