@@ -405,6 +405,7 @@ say("info", f"video offset vs album timing {off:+.2f}s ({pick})")
 # constant path (Viterbi): changing offset costs a penalty and must be a real jump (>= 2 s), each part >= 4 lines.
 # The result is kept only if the words then fit the vocals better than with one offset (the same judge as above).
 off_first = off_last = off  # the offset at the song's start and end (they differ when the video's timing jumps)
+cur_fit = fit_words[pick]  # word fit of the timing in use; later methods must beat it
 scenes = []  # video times where a part with a later offset starts (the song was stopped for a scene before it)
 STEP, JUMP, PENALTY = 0.25, 2.0, 2.0
 grid = off + np.arange(-60.0, 60.0 + STEP / 2, STEP)
@@ -539,13 +540,99 @@ if len(cands_o) > 1:
         pw = align_at(offs)
         desc = " | ".join(f"lines {a + 1}-{b + 1} {o:+.1f}s" for a, b, o in parts)
         if pw[2] > fit_words[pick] + 0.005:
-            out_lines, skipped = pw[0], pw[1]
+            out_lines, skipped, cur_fit = pw[0], pw[1], pw[2]
             off_first, off_last = float(offs[0]), float(offs[-1])
             scenes = [_starts[a] + o for k, (a, b, o) in enumerate(parts) if k and o > parts[k - 1][2]]
             say("info", f"the video's timing jumps partway (a scene or a cut): {desc}; word fit {pw[2]:.3f} vs {fit_words[pick]:.3f}")
         else:
             say("info", f"a timing jump looked possible ({desc}) but fit the words no better; kept one offset")
 
+
+# Transcription first: line the lyrics up with what Whisper heard, word by word and in order (like aligning two
+# texts). Heard words that match no lyric are talking (a skit, a scene) or mishearings and are skipped cheaply; each
+# lyric line that is clearly found gets an anchor "sung here". Lines Whisper missed take their neighbours' shift.
+# The words are then timed inside those windows, and the result is kept only if it fits the vocals better than the
+# timing found so far.
+def _tw(x):
+    return re.sub(r"[^a-z']", "", unicodedata.normalize("NFKD", x.replace("đ", "d").replace("Đ", "D")).lower())
+
+
+if heard_words and not any(origs) and len(synced) >= 4:
+    _hw = [(t, _tw(x)) for t, x in heard_words]
+    _hw = [x for x in _hw if x[1]]
+    _lw = [(_i, k, _tw(y)) for _i, (t, text) in enumerate(synced) for k, y in enumerate(text.split()) if _tw(y)]
+    if len(_hw) >= 10 and len(_lw) >= 10:
+        _voc = {w: _n for _n, w in enumerate({x for _, _, x in _lw} | {x for _, x in _hw})}
+        _la = np.array([_voc[x] for _, _, x in _lw]); _ha = np.array([_voc[x] for _, x in _hw])
+        _lp = np.array([hash(x[:3]) for _, _, x in _lw]); _hp = np.array([hash(x[:3]) for _, x in _hw])
+        _MATCH, _NEAR, _MISS, _GAP_L, _GAP_H = 2.0, 1.0, -1.0, -0.4, -0.2  # skipping heard words (talking) is cheap
+        _n, _m = len(_lw), len(_hw)
+        _H = np.zeros(_m + 1)  # semi-global: heard words before the first lyric cost nothing
+        _ptr = np.zeros((_n + 1, _m + 1), dtype=np.int8)  # 1 diagonal, 2 lyric word unheard, 3 heard word skipped
+        for _i in range(1, _n + 1):
+            _sim = np.where(_ha == _la[_i - 1], _MATCH, np.where(_hp == _lp[_i - 1], _NEAR, _MISS))
+            _dg = _H[:-1] + _sim
+            _up = _H + _GAP_L
+            _A = np.empty(_m + 1); _A[0] = _up[0]; _A[1:] = np.maximum(_dg, _up[1:])
+            _src = np.empty(_m + 1, dtype=np.int8); _src[0] = 2; _src[1:] = np.where(_dg >= _up[1:], 1, 2)
+            # left moves (skipping heard words) via a running max: best over k<=j of A[k] + _GAP_H*(j-k)
+            _ix = np.arange(_m + 1)
+            _rmax = np.maximum.accumulate(_A - _GAP_H * _ix) + _GAP_H * _ix
+            _lft = _rmax > _A + 1e-9
+            _H = np.where(_lft, _rmax, _A)
+            _ptr[_i] = np.where(_lft, 3, _src)
+        # trace back from the best end (heard words after the last lyric cost nothing)
+        _i, _j = _n, int(np.argmax(_H))
+        _pairs = []
+        while _i > 0 and _j > 0:
+            _p_ = _ptr[_i, _j]
+            if _p_ == 1:
+                if _ha[_j - 1] == _la[_i - 1] or _hp[_j - 1] == _lp[_i - 1]:
+                    _pairs.append((_i - 1, _j - 1))
+                _i, _j = _i - 1, _j - 1
+            elif _p_ == 2:
+                _i -= 1
+            else:
+                _j -= 1
+        _found = {}
+        for _li, _hj in _pairs:
+            _found.setdefault(_lw[_li][0], []).append((_lw[_li][1], _hw[_hj][0]))
+        _nw = {}
+        for i_, k_, _ in _lw:
+            _nw[i_] = _nw.get(i_, 0) + 1
+        _shift = np.full(n_l, np.nan)
+        for i_, _got in _found.items():
+            if len(_got) >= max(2, 0.4 * _nw[i_]):
+                _t_i = synced[i_][0]
+                # a line starts no later than its earliest heard word (words can be held for seconds: "Loooook in my
+                # eyes"), so anchor on that word, allowing a quick 0.3 s for each unheard word before it
+                _shift[i_] = float(min(_th - 0.15 - _kk * 0.3 for _kk, _th in _got)) - _t_i
+        # an anchor that disagrees by > 2 s with both neighbours, which agree with each other, is a stray match
+        for i_ in range(1, n_l - 1):
+            a_, b_, c_ = _shift[i_ - 1], _shift[i_], _shift[i_ + 1]
+            if not np.isnan(a_) and not np.isnan(b_) and not np.isnan(c_) and abs(a_ - c_) < 1.0 and abs(b_ - a_) > 2.0:
+                _shift[i_] = np.nan
+        _anch = int(np.sum(~np.isnan(_shift)))
+        if _anch >= max(4, 0.3 * n_l):
+            _known = np.where(~np.isnan(_shift))[0]
+            for i_ in range(n_l):  # lines Whisper missed: the shift of the nearest anchored line (in album time)
+                if np.isnan(_shift[i_]):
+                    _shift[i_] = _shift[_known[np.argmin(np.abs(_starts[_known] - _starts[i_]))]]
+            for i_ in range(1, n_l):  # lines stay in order
+                if _starts[i_] + _shift[i_] < _starts[i_ - 1] + _shift[i_ - 1] + 0.3:
+                    _shift[i_] = _shift[i_ - 1]
+            _used = {_hj for _, _hj in _pairs}
+            _talk = sum(1 for j_ in range(len(_hw)) if j_ not in _used)
+            _ta = align_at(_shift)
+            say("info", f"transcription first: {_anch} of {n_l} lines found in what was heard, {_talk} heard words "
+                        f"aren't lyrics (talking or mishearings); word fit {_ta[2]:.3f} vs {cur_fit:.3f}")
+            if os.environ.get("KARAOKE_DEBUG_FIT"):
+                save_lines(f"{job_dir}/words.transcription.json", _ta[0])
+            if _ta[2] > cur_fit + 0.005:
+                out_lines, skipped, cur_fit = _ta[0], _ta[1], _ta[2]
+                off_first, off_last = float(_shift[0]), float(_shift[-1])
+                scenes = [_starts[i_] + _shift[i_] for i_ in range(1, n_l) if _shift[i_] - _shift[i_ - 1] >= 2.0]
+                say("info", "using the transcription's timing")
 
 
 def _fa_words(a, b, texts):
