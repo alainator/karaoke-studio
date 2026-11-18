@@ -445,13 +445,14 @@ def _line_act(i, x):
     return _mean_act(_starts[i] + x, _starts[i] + x + min(2.0, nxt - _starts[i]))
 
 
+MAX_C = 8
 cands_o = [off]
+path_c = []  # the activity path's offsets (coarse: they join after the transcription's)
 for g in dict.fromkeys(path):
     o = float(grid[g])
-    if all(abs(o - c) >= JUMP for c in cands_o):
-        mine = [i for i, h in enumerate(path) if abs(float(grid[h]) - o) < STEP / 2]  # fine-tune on its own lines
-        fine = np.arange(o - 0.3, o + 0.3, 0.02)
-        cands_o.append(float(fine[int(np.argmax([np.mean([_line_act(i, x) for i in mine]) for x in fine]))]))
+    mine = [i for i, h in enumerate(path) if abs(float(grid[h]) - o) < STEP / 2]  # fine-tune on its own lines
+    fine = np.arange(o - 0.3, o + 0.3, 0.02)
+    path_c.append(float(fine[int(np.argmax([np.mean([_line_act(i, x) for i in mine]) for x in fine]))]))
 # the most direct evidence: find the lyric lines in the free transcription of the vocals (Latin and Japanese songs)
 # and see how far each sits from its album time; shifts several lines agree on become candidates too
 if heard_words and not any(origs):
@@ -467,20 +468,27 @@ if heard_words and not any(origs):
         for j in range(len(hw) - len(lw) + 1):
             if difflib.SequenceMatcher(None, lw, hws[j:j + len(lw)]).ratio() >= 0.75:
                 pairs.append((hw[j][0] - 0.2 - t, i))
+    # densest shifts first: a 3 s window (lyric timestamps drift within a part), counted in distinct lines;
+    # after taking one, drop everything within JUMP of it and look again
     pairs.sort()
-    clusters, k = [], 0
-    while k < len(pairs):
-        m = k
-        while m < len(pairs) and pairs[m][0] - pairs[k][0] <= 1.5:
-            m += 1
-        grp = pairs[k:m]
-        clusters.append((len({i for _, i in grp}), float(np.median([x for x, _ in grp]))))
-        k = m
+    clusters, left = [], list(pairs)
+    while left:
+        xs = np.array([x for x, _ in left])
+        sup = [len({i for x, i in left if abs(x - c) <= 1.5}) for c in xs]
+        k = int(np.argmax(sup))
+        grp = [x for x, _ in left if abs(x - xs[k]) <= 1.5]
+        clusters.append((sup[k], float(np.median(grp))))
+        left = [(x, i) for x, i in left if abs(x - clusters[-1][1]) >= JUMP]
+        if sup[k] < 3:
+            break
     for support, o in sorted(clusters, reverse=True):
-        if len(cands_o) >= 6 or support < 3:
+        if len(cands_o) >= 5 or support < 3:
             break
         if abs(o - off) <= 120 and all(abs(o - c) >= JUMP for c in cands_o):
             cands_o.append(o)
+for o in path_c:
+    if len(cands_o) < MAX_C and all(abs(o - c) >= JUMP for c in cands_o):
+        cands_o.append(o)
 # the path above can overlook a section (a coarse signal, one global trade-off): also let every run of 6 lines
 # propose the offset that suits it best, when that is clearly better for it than every candidate so far
 W = 6
@@ -491,17 +499,20 @@ for a0 in range(0, max(1, n_l - W + 1), 2):
     have = max(m[int(np.argmin(np.abs(grid - c)))] for c in cands_o)
     props.append((m[g] - have, float(grid[g]), list(range(a0, min(n_l, a0 + W)))))
 for gain, o, mine in sorted(props, reverse=True):
-    if len(cands_o) >= 6 or gain < 0.25:
+    if len(cands_o) >= MAX_C or gain < 0.25:
         break
     if all(abs(o - c) >= JUMP for c in cands_o):
         fine = np.arange(o - 0.3, o + 0.3, 0.02)
         cands_o.append(float(fine[int(np.argmax([np.mean([_line_act(i, x) for i in mine]) for x in fine]))]))
 say("info", "timing candidates " + ", ".join(f"{o:+.1f}s" for o in cands_o))
 if len(cands_o) > 1:
-    runs = {o: (tried[pick] if o == off else align_at(o)) for o in cands_o[:6]}
+    runs = {o: (tried[pick] if o == off else align_at(o)) for o in cands_o[:MAX_C]}
     C = list(runs)
     F = np.array([runs[o][3] for o in C]).T  # lines x candidates: word fit of each line at each offset
-    WP = 0.6  # word-fit cost of a jump (a line's fit is ~0.2-0.7)
+    if os.environ.get("KARAOKE_DEBUG_FIT"):
+        json.dump({"C": C, "F": F.tolist(), "starts": _starts.tolist()}, open(f"{job_dir}/fitdebug.json", "w"))
+    # cost of a jump, in this song's own scale: rough vocals give every line a low fit (The Kill ~0.15), clean ones high
+    WP = 2.5 * float(np.median(F.max(1)))
     dp2, back2 = F[0].copy(), np.zeros((n_l, len(C)), dtype=int)
     for i in range(1, n_l):
         new, bk = np.zeros(len(C)), np.zeros(len(C), dtype=int)

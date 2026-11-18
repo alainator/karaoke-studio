@@ -104,6 +104,10 @@ for it in items:
 
     if not new or key(new) == key(old) or abs(len(new.split()) - len(old.split())) > 3:
         continue
+    # bracketed words are backing vocals: they overlap the lead and are faint in the separated vocals, so the check
+    # can't judge them; never drop or change them
+    if any(key(p) != key(q) for p, q in zip(re.findall(r"\([^)]*\)", old), re.findall(r"\([^)]*\)", new) + [""] * 9)):
+        continue
     # don't let it borrow the neighbours' words
     if key(new) and (key(new) == key(it["before"]) or key(new) == key(it["after"])):
         continue
