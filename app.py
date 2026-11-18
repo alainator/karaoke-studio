@@ -314,6 +314,9 @@ async def create_job(req: Request):
 def summary(job):
     out = _summary(job)
     out["updates"] = versions.missing(job) if job.get("status") == "done" else []
+    out["can_undo_remake"] = bool(job.get("remade")) and not job.get("remake_undone") and job.get("status") == "done" \
+        and os.path.exists(job_path(job["id"], "words.before-remake.json"))
+    out["remake_note"] = job.get("remake_note")
     return out
 
 
@@ -814,13 +817,39 @@ async def remake(jid: str, req: Request):
             raise HTTPException(400, "only finished songs can be remade")
         if os.path.exists(job_path(jid, "words.json")):
             shutil.copyfile(job_path(jid, "words.json"), job_path(jid, "words.before-remake.json"))
-        for f in ("words.orig.json",):  # "Undo all edits" would go back to the old version's timing
-            if os.path.exists(job_path(jid, f)):
-                os.remove(job_path(jid, f))
+        # the old automatic version (before the user's edits) tells which lines they moved by hand
+        merge = bool(job.get("edited")) and os.path.exists(job_path(jid, "words.orig.json"))
+        if os.path.exists(job_path(jid, "words.before-remake.auto.json")):
+            os.remove(job_path(jid, "words.before-remake.auto.json"))
+        if os.path.exists(job_path(jid, "words.orig.json")):
+            os.replace(job_path(jid, "words.orig.json"), job_path(jid, "words.before-remake.auto.json"))
         job.update(status="queued", step="queued", error=None, log=[], waiting=None, oom_retries=0, ai_romaji=None,
-                   edited=None, video_v=time.time(), remade=time.time())
+                   video_v=time.time(), remade=time.time(), remake_merge=merge, remake_note=None, remake_undone=False,
+                   pre_remake={k: job.get(k) for k in ("edited", "result", "offset")})
         save(jid, job)
     wake.set()
+    return {"ok": True}
+
+
+@app.post("/api/jobs/{jid}/undo-remake")
+async def undo_remake(jid: str, req: Request):
+    """Put back the lyrics the song had before its last remake (the new video and sound stay)."""
+    check_origin(req)
+    with lock:
+        job = load(jid)
+        if job["status"] != "done" or not os.path.exists(job_path(jid, "words.before-remake.json")):
+            raise HTTPException(400, "there's no earlier version to go back to")
+        shutil.copyfile(job_path(jid, "words.before-remake.json"), job_path(jid, "words.json"))
+        if os.path.exists(job_path(jid, "words.before-remake.auto.json")):
+            shutil.copyfile(job_path(jid, "words.before-remake.auto.json"), job_path(jid, "words.orig.json"))
+        lines = load_lines(job_path(jid, "words.json"))
+        open(job_path(jid, "lyrics.ass"), "w").write(make_ass(lines, job.get("offset", 0.0), video_size=vsize(job),
+                                                              cast=load_cast(job_path(jid, "words.json"))))
+        job.update(remake_undone=True, remake_note=None, edited=(job.get("pre_remake") or {}).get("edited") or time.time())
+        if job.get("published"):
+            job["unpublished_changes"] = True
+        job.setdefault("log", []).append("remake undone: the lyrics are back to the version before it")
+        save(jid, job)
     return {"ok": True}
 
 
@@ -981,6 +1010,23 @@ def finish(jid, rc, err, oom, where):
             job["result"]["gpu"] = job.get("gpu")
             if job.get("published"):  # a remade song: PiKaraoke still has the old one until it's published again
                 job["unpublished_changes"] = True
+            if job.get("remade") and job.get("remake_merge"):
+                try:
+                    r = merge_remake(jid)
+                except Exception as e:
+                    r = None
+                    job.setdefault("log", []).append(f"couldn't carry your edits over ({str(e)[:80]}); Undo remake restores them")
+                if r is not None:
+                    ch, ad = r
+                    job["remake_note"] = ("the remake found nothing to change: your version is kept as it was" if not ch and not ad else
+                                          f"{ch} line{'s' if ch != 1 else ''} got new timing (keeping your singers and word fixes)"
+                                          + (f", {ad} line{'s' if ad != 1 else ''} added" if ad else "")
+                                          + "; lines you had moved by hand kept your timing")
+                    job["edited"] = time.time()
+                    job.setdefault("log", []).append("remake: " + job["remake_note"])
+                    lines = load_lines(job_path(jid, "words.json"))
+                    open(job_path(jid, "lyrics.ass"), "w").write(make_ass(lines, job.get("offset", 0.0), video_size=vsize(job),
+                                                                          cast=load_cast(job_path(jid, "words.json"))))
         elif oom and job.get("oom_retries", 0) < 2:
             # something else grabbed the GPU mid-job (an LLM loading, another tool): wait and try again
             job.update(status="queued", step="queued", oom_retries=job.get("oom_retries", 0) + 1,
@@ -989,6 +1035,76 @@ def finish(jid, rc, err, oom, where):
         else:
             job.update(status="failed", error=err or ("the graphics card ran out of memory" if oom else f"pipeline exited with code {rc}"))
         save(jid, job)
+
+
+def _ltext(l):
+    return re.sub(r"[^\w]+", " ", " ".join(w[2] for w in l["words"]).lower()).strip()
+
+
+def _pair(a, b):
+    """Pair two lists of lines in order by text (a DP over text similarity >= 0.5); returns {index in a: index in b}."""
+    import difflib
+    n, m = len(a), len(b)
+    sim = [[0.0] * m for _ in range(n)]
+    for i in range(n):
+        ta = _ltext(a[i])
+        for j in range(m):
+            if abs(i * m / max(1, n) - j) <= 40:  # far-apart lines can't be the same line
+                r = difflib.SequenceMatcher(None, ta, _ltext(b[j])).ratio()
+                sim[i][j] = r if r >= 0.5 else 0.0
+    best = [[0.0] * (m + 1) for _ in range(n + 1)]
+    for i in range(n - 1, -1, -1):
+        for j in range(m - 1, -1, -1):
+            best[i][j] = max(best[i + 1][j], best[i][j + 1], (sim[i][j] + best[i + 1][j + 1]) if sim[i][j] else 0.0)
+    out, i, j = {}, 0, 0
+    while i < n and j < m:
+        if sim[i][j] and abs(best[i][j] - (sim[i][j] + best[i + 1][j + 1])) < 1e-9:
+            out[i] = j; i += 1; j += 1
+        elif best[i][j] == best[i + 1][j]:
+            i += 1
+        else:
+            j += 1
+    return out
+
+
+def merge_remake(jid):
+    """After remaking a song the user had edited, keep their work where it still holds:
+       - a line they moved by hand keeps their timing (they checked it by ear);
+       - a line whose new automatic timing is the same as the old one stays exactly as they left it;
+       - otherwise the line takes the new timing, with their singer, member colours, shared-line painting and word fixes.
+    Returns (lines changed, lines added); (0, 0) means the remake found nothing to change and their version is kept."""
+    ed_p, auto_p, new_p = job_path(jid, "words.before-remake.json"), job_path(jid, "words.before-remake.auto.json"), job_path(jid, "words.json")
+    if not (os.path.exists(ed_p) and os.path.exists(auto_p) and os.path.exists(new_p)):
+        return None
+    edited, old_auto, new = load_lines(ed_p), load_lines(auto_p), load_lines(new_p)
+    cast = load_cast(ed_p)
+    e2a, a2n = _pair(edited, old_auto), _pair(old_auto, new)
+    same = lambda x, y: abs(x["words"][0][0] - y["words"][0][0]) <= 0.15 and abs(x["words"][-1][1] - y["words"][-1][1]) <= 0.15
+    out, changed = [], 0
+    for i, l in enumerate(edited):
+        a = e2a.get(i)
+        if a is None or not same(l, old_auto[a]) or a2n.get(a) is None:
+            out.append(l); continue  # added by the user, moved by hand, or gone from the remake: theirs stays
+        n = new[a2n[a]]
+        if same(n, old_auto[a]):
+            out.append(l); continue  # the remake found the same timing: nothing to change
+        words = n["words"]
+        if _ltext(l) != _ltext(old_auto[a]):  # the user fixed words: keep their text on the new timing
+            words = remap_words(n["words"], " ".join(w[2] for w in l["words"]))
+        ww = l.get("wwho") if l.get("wwho") and len(l["wwho"]) == len(words) else None
+        out.append(dict(l, words=words, wwho=ww, weak=n.get("weak")))
+        changed += 1
+    # lines the remake found that the old version didn't have at all (the user deleting a line is respected)
+    paired_new = set(a2n.values())
+    added = [n for j, n in enumerate(new) if j not in paired_new]
+    out += added
+    out.sort(key=lambda l: l["words"][0][0])
+    shutil.copyfile(new_p, job_path(jid, "words.orig.json"))  # "Undo all edits" now goes to the new automatic version
+    if not changed and not added:
+        shutil.copyfile(ed_p, new_p)  # found nothing: their version, exactly
+    else:
+        save_lines(new_p, out, cast)
+    return changed, len(added)
 
 
 def maybe_auto_romaji(jid, rc):

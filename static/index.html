@@ -382,7 +382,10 @@ async function openJob(id) {
       <b>Made with an older version: remaking it now would add</b>
       <button class="primary" id="remake">↻ Remake with the latest version</button></div>
       <ul style="margin:6px 0 0 18px;padding:0">${j.updates.map(u => `<li>${esc(u)}</li>`).join("")}</ul>
-      <div class="hint" style="margin-top:6px">Takes 1–2 minutes. The new timing replaces this one${j.edited ? " (your edits are kept in a backup file, words.before-remake.json)" : ""}${j.published ? "; publish it afterwards to update PiKaraoke" : ""}.</div></div>` : ""}
+      <div class="hint" style="margin-top:6px">Takes 1–2 minutes. ${j.edited ? "Your edits are kept: lines you moved by hand keep your timing, other lines get the new timing with your singers, colours and word fixes, and if the remake finds nothing to change, your version stays exactly as it is. <i>Undo remake</i> brings back this version if you prefer it" : "The new timing replaces this one"}${j.published ? "; publish it afterwards to update PiKaraoke" : ""}.</div></div>` : ""}
+    ${j.can_undo_remake ? `<div class="aibox" style="margin-bottom:12px"><div class="row" style="justify-content:space-between">
+      <span><b>Remade with the latest version</b>${j.remake_note ? `: ${esc(j.remake_note)}` : ""}.</span>
+      <button class="ghost" id="undoremake" title="Put back the lyrics this song had before the remake">Undo remake</button></div></div>` : ""}
     <div class="player"><video id="pv" data-id="${esc(id)}" controls playsinline preload="auto" src="/api/jobs/${esc(id)}/file/video.mp4?v=${Math.round(j.video_v || j.finished || 0)}"></video></div>
     <div class="controls">
       <div class="ctl"><label><span>Guide vocals</span><span id="voxv">off</span></label><input type="range" id="voxr" min="0" max="100" value="0"></div>
@@ -419,8 +422,13 @@ async function openJob(id) {
   initEditor(id, j);
   if ($("#remake")) $("#remake").onclick = async () => {
     if (ed && ed.dirty && !confirm("You have unsaved edits; remaking replaces the timing. Remake anyway?")) return;
-    if (j.edited && !confirm("This song has edits. Remaking makes it again from scratch (the edited lyrics are kept in a backup file). Remake?")) return;
+
     try { await api(`/api/jobs/${id}/remake`, {method: "POST"}); if (ed) ed.dirty = false; closePlayer(); ed = null; openJob(id); loadJobs(); }
+    catch (e) { toast(e.message); }
+  };
+  if ($("#undoremake")) $("#undoremake").onclick = async () => {
+    if (!confirm("Put back the lyrics from before the remake?")) return;
+    try { await api(`/api/jobs/${id}/undo-remake`, {method: "POST"}); closePlayer(); ed = null; openJob(id); loadJobs(); toast("Back to the version from before the remake"); }
     catch (e) { toast(e.message); }
   };
   $("#rnbtn").onclick = async () => {
