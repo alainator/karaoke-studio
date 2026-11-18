@@ -19,6 +19,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import config as C  # noqa: E402
 from assgen import load_cast, load_lines, make_ass, save_lines, who_of  # noqa: E402
+import versions  # noqa: E402
 
 JOBS, LIB, MV_DIR = C.JOBS, C.LIBRARY, C.MV_DIR
 PK_DB, PK_URL = C.PIKARAOKE_DB, C.PIKARAOKE_URL
@@ -311,6 +312,12 @@ async def create_job(req: Request):
 
 
 def summary(job):
+    out = _summary(job)
+    out["updates"] = versions.missing(job) if job.get("status") == "done" else []
+    return out
+
+
+def _summary(job):
     keys = ("id", "artist", "title", "yt", "status", "step", "created", "finished", "error", "offset",
             "published", "published_as", "video_title", "result", "waiting", "edited", "unpublished_changes", "lang", "gpu", "ai_romaji", "video_v", "gpu_pref")
     return {k: job.get(k) for k in keys}
@@ -796,6 +803,27 @@ async def rename(jid: str, req: Request):
     return {"artist": artist, "title": title, "name": new, "message": msg}
 
 
+@app.post("/api/jobs/{jid}/remake")
+async def remake(jid: str, req: Request):
+    """Make a finished song again with the current version, in place (same page; publishing replaces PiKaraoke's copy).
+    The current lyrics (with any edits) are kept as words.before-remake.json."""
+    check_origin(req)
+    with lock:
+        job = load(jid)
+        if job["status"] != "done":
+            raise HTTPException(400, "only finished songs can be remade")
+        if os.path.exists(job_path(jid, "words.json")):
+            shutil.copyfile(job_path(jid, "words.json"), job_path(jid, "words.before-remake.json"))
+        for f in ("words.orig.json",):  # "Undo all edits" would go back to the old version's timing
+            if os.path.exists(job_path(jid, f)):
+                os.remove(job_path(jid, f))
+        job.update(status="queued", step="queued", error=None, log=[], waiting=None, oom_retries=0, ai_romaji=None,
+                   edited=None, video_v=time.time(), remade=time.time())
+        save(jid, job)
+    wake.set()
+    return {"ok": True}
+
+
 @app.post("/api/jobs/{jid}/retry")
 async def retry(jid: str, req: Request):
     check_origin(req)
@@ -951,6 +979,8 @@ def finish(jid, rc, err, oom, where):
             job.update(status="done", step="done")
             job["result"] = json.load(open(job_path(jid, "result.json")))
             job["result"]["gpu"] = job.get("gpu")
+            if job.get("published"):  # a remade song: PiKaraoke still has the old one until it's published again
+                job["unpublished_changes"] = True
         elif oom and job.get("oom_retries", 0) < 2:
             # something else grabbed the GPU mid-job (an LLM loading, another tool): wait and try again
             job.update(status="queued", step="queued", oom_retries=job.get("oom_retries", 0) + 1,

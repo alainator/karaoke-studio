@@ -15,6 +15,7 @@ import json, os, re, shutil, subprocess, sys, time, unicodedata, urllib.parse, u
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config as C  # noqa: E402
 from assgen import make_ass, save_lines  # noqa: E402
+import versions  # noqa: E402
 
 WORK, MODELS, SEP_MODEL = C.WORK, C.MODELS, C.SEP_MODEL
 UA = {"User-Agent": C.USER_AGENT}
@@ -762,5 +763,6 @@ os.replace(f"{job_dir}/vocals.tmp.m4a", f"{job_dir}/vocals.m4a")
 json.dump({"offset": round(off, 2), "lines": len(out_lines), "skipped": skipped, "video": vinfo, "width": vw, "height": vh,
            "lang": lang, "romaji": ("hand" if len(hand_romaji) >= 0.8 * sum(1 for o in origs if o) else "automatic") if any(origs)
            else ("kara.moe" if source == "karamoe" else None),
-           "duration": round(duration, 1), "seconds": round(time.time() - t0), "encoded": "x264"}, open(f"{job_dir}/result.json", "w"))
+           "duration": round(duration, 1), "seconds": round(time.time() - t0), "encoded": "x264",
+           "pipeline": versions.VERSION}, open(f"{job_dir}/result.json", "w"))
 say("step", "done")
