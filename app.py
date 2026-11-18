@@ -9,10 +9,11 @@ library (optionally deleting the older YouTube lyric version) and ask PiKaraoke 
 There is no login of its own: put it behind an authenticating reverse proxy, or keep it on 127.0.0.1.
 """
 import argparse, asyncio, http.cookiejar, json, math, os, re, shutil, sqlite3, subprocess, sys, threading, time
+import logging, logging.handlers
 import unicodedata, urllib.error, urllib.parse, urllib.request
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -20,6 +21,15 @@ sys.path.insert(0, HERE)
 import config as C  # noqa: E402
 from assgen import load_cast, load_lines, make_ass, save_lines, who_of  # noqa: E402
 import versions  # noqa: E402
+
+# what the studio did and when: data/logs/studio.log (5 files of 2 MB kept)
+os.makedirs(C.LOGS, exist_ok=True)
+log = logging.getLogger("studio")
+log.setLevel(logging.INFO)
+if not log.handlers:
+    _h = logging.handlers.RotatingFileHandler(os.path.join(C.LOGS, "studio.log"), maxBytes=2_000_000, backupCount=5, encoding="utf-8")
+    _h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s", "%Y-%m-%d %H:%M:%S"))
+    log.addHandler(_h)
 
 JOBS, LIB, MV_DIR = C.JOBS, C.LIBRARY, C.MV_DIR
 PK_DB, PK_URL = C.PIKARAOKE_DB, C.PIKARAOKE_URL
@@ -393,6 +403,8 @@ async def create_job(req: Request):
                "gpu_pref": b.get("gpu") if b.get("gpu") in ("local", "remote") else "auto",
                **({"lyrics_text": pasted} if source == "pasted" else {}),
                "created": time.time(), "offset": 0.0, "log": []})
+    log.info("queued %s | video %s | lyrics %s:%s | gpu %s%s", jid, yt, source, lrc_id if source != "pasted" else f"{len(pasted)} chars",
+             b.get("gpu") or "auto", f" | replaces {b.get('replace')}" if b.get("replace") else "")
     # "Change video or lyrics" on an existing song: the new one takes its place (only the studio's copy is removed;
     # a published file stays in PiKaraoke until the new song is published over it)
     old = str(b.get("replace") or "")
@@ -1005,6 +1017,17 @@ async def reset_lines(jid: str, req: Request):
     return {"ok": True}
 
 
+@app.get("/api/jobs/{jid}/log")
+def job_log_text(jid: str):
+    """Everything the pipeline printed while making this song (every run), for tracing a problem."""
+    p = job_path(jid, "pipeline.log")
+    if not os.path.exists(p):
+        return PlainTextResponse("No log for this song: it was made before logs were kept. Remake it to get one.\n")
+    with open(p, "rb") as f:
+        f.seek(max(0, os.path.getsize(p) - 1_500_000))
+        return PlainTextResponse(f.read().decode("utf-8", "replace"))
+
+
 @app.post("/api/jobs/{jid}/reviewed")
 async def set_reviewed(jid: str, req: Request):
     """The user played the song through and it's fine (or takes that back). Shown on the song list in place of the
@@ -1077,6 +1100,7 @@ async def remake(jid: str, req: Request):
                    video_v=time.time(), remade=time.time(), reviewed=None, remake_merge=merge, remake_note=None, remake_undone=False,
                    pre_remake={k: job.get(k) for k in ("edited", "result", "offset")})
         save(jid, job)
+    log.info("remake %s | gpu %s | keeps edits: %s", jid, job.get("gpu_pref", "auto"), merge)
     wake.set()
     return {"ok": True}
 
@@ -1166,6 +1190,7 @@ def delete_job(jid: str, req: Request):
         if job["status"] == "running":
             raise HTTPException(400, "it's running; wait for it to finish")
         shutil.rmtree(job_path(jid))  # only the studio's copy; a published song stays in PiKaraoke
+    log.info("deleted %s (%s - %s)", jid, job.get("artist"), job.get("title"))
     return {"ok": True}
 
 
@@ -1239,6 +1264,8 @@ def claim(jid, where, gpu_name):
         job.update(status="running", step="lyrics", waiting=None, started=time.time(), gpu=gpu_name, log=[])
         save(jid, job)
     slots[where] = jid
+    log.info("started %s on %s (%s)", jid, gpu_name, where)
+    C.job_log(job_path(jid), f"run started on {gpu_name} ({where}), code {C.code_version()}", header=True)
     return True
 
 
@@ -1248,6 +1275,7 @@ def worker():
             schedule_once()
         except Exception as e:
             print(f"scheduler error: {e!r}", flush=True)
+            log.exception("scheduler error")
         wake.wait(10); wake.clear()
 
 
@@ -1327,6 +1355,15 @@ def finish(jid, rc, err, oom, where):
         else:
             job.update(status="failed", error=err or ("the graphics card ran out of memory" if oom else f"pipeline exited with code {rc}"))
         save(jid, job)
+        took = f"{job['finished'] - job['started']:.0f}s" if job.get("started") else "?"
+        if job["status"] == "done":
+            c = (job.get("result") or {}).get("confidence") or {}
+            log.info("done %s on %s in %s | %s lines, %s to check, %s heard in place", jid, where, took, c.get("lines"), c.get("check"), c.get("sure"))
+        elif job["status"] == "failed":
+            log.error("failed %s on %s after %s | %s", jid, where, took, job.get("error"))
+        else:
+            log.warning("requeued %s after running out of GPU memory on %s", jid, where)
+        C.job_log(job_path(jid), f"run ended: {job['status']}" + (f" ({job.get('error')})" if job["status"] == "failed" else ""), header=True)
 
 
 def _ltext(l):
@@ -1427,6 +1464,7 @@ def run_local(jid):
         for line in p.stdout:
             line = line.rstrip()
             oom = oom or "out of memory" in line.lower()
+            C.job_log(job_path(jid), line)
             if not line.startswith("@"):
                 if re.match(r"[A-Za-z_.]*(Error|Exception)\b", line):  # a crash: keep what it said, to show with the failure
                     crash = line[:200]
@@ -1480,6 +1518,11 @@ def run_remote(jid):
             set_job(jid, step=st.get("step") or "lyrics", log=st.get("log", []))
             if st["status"] == "running":
                 continue
+            try:  # the helper's full pipeline output for this run, whether it worked or not
+                with helper_call(f"/jobs/{jid}/files/pipeline.log", timeout=30, raw=True) as r, open(job_path(jid, "pipeline.log"), "ab") as f:
+                    f.write(r.read()[-2_000_000:])
+            except Exception:
+                C.job_log(job_path(jid), "(the helper's pipeline output couldn't be fetched)")
             if st["status"] == "done":
                 for name in ("out.mp4", "vocals.m4a", "words.json", "lyrics.ass", "result.json"):
                     dst = job_path(jid, name)
@@ -1594,6 +1637,7 @@ async def publish(jid: str, req: Request):
                     os.remove(stem + ext)
             removed.append(name)
         job.update(status="done", published=time.time(), published_as=base, unpublished_changes=False)
+        log.info("published %s as %s", jid, base)
         job.setdefault("log", []).append(f"published as '{base}'" + (f"; removed {len(removed)} old version(s)" if removed else ""))
         save(jid, job)
     msg = pk_rescan()

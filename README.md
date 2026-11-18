@@ -78,6 +78,11 @@ sudo systemctl restart karaoke-studio
 ```
 The helper only accepts the studio server, and only with the secret. It updates itself from GitHub whenever the studio runs newer code.
 
+## Logs
+
+- `data/logs/studio.log`: what the studio did and when (queued, started on which card, finished, failed and why, published).
+- Each song's **log ↗** link: everything the pipeline printed while making it, every run.
+
 ## Security
 
 **The studio has no login of its own**, and it can change your karaoke library. Keep it on `127.0.0.1`, or put it behind a reverse proxy that requires a login (Authentik, Authelia, oauth2-proxy…), and set `STUDIO_ORIGINS` to the address you use.

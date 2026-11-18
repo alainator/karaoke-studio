@@ -67,3 +67,23 @@ def tool_env():
     if NODE_BIN:
         e["PATH"] = NODE_BIN + os.pathsep + e.get("PATH", "/usr/bin:/bin")
     return e
+
+
+# ---- logs ----
+# data/logs/studio.log: what the studio did and when (songs queued, started, finished, failed, published…).
+# <job folder>/pipeline.log: everything the pipeline printed while making that song, every run appended.
+LOGS = env("KARAOKE_LOGS", os.path.join(HERE, "data", "logs"))
+
+
+def job_log(job_dir, line, header=False):
+    """Append one line of pipeline output (or a run header) to the job's pipeline.log; never raises."""
+    import time
+    try:
+        line = line.rstrip()
+        if not header and (not line or "%|" in line or "\r" in line):  # progress bars
+            return
+        with open(os.path.join(job_dir, "pipeline.log"), "a", encoding="utf-8", errors="replace") as f:
+            f.write((f"\n==== {time.strftime('%Y-%m-%d %H:%M:%S')} {line} ====\n" if header else f"{time.strftime('%H:%M:%S')} {line[:2000]}\n"))
+    except Exception:
+        pass
+

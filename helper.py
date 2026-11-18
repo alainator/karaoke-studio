@@ -71,8 +71,10 @@ def run(jid):
     p = subprocess.Popen([sys.executable, "-I", os.path.join(HERE, "pipeline.py"), d], stdout=subprocess.PIPE,
                          stderr=subprocess.STDOUT, text=True, env=dict(C.tool_env(), PYTHONUNBUFFERED="1"))
     oom = False
+    C.job_log(d, f"run started on the helper, code {C.code_version()}", header=True)
     for line in p.stdout:
         line = line.rstrip()
+        C.job_log(d, line)
         oom = oom or "out of memory" in line.lower()
         if line.startswith("@"):
             kind, _, text = line[1:].partition(" ")
@@ -158,7 +160,7 @@ def status(jid: str):
 
 @app.get("/jobs/{jid}/files/{name}")
 def file(jid: str, name: str):
-    if jid not in jobs or name not in FILES or not ID_RE.match(jid):
+    if jid not in jobs or name not in FILES + ("pipeline.log",) or not ID_RE.match(jid):
         raise HTTPException(404)
     p = os.path.join(JOBS, jid, name)
     if not os.path.exists(p):
