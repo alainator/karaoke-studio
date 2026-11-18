@@ -396,6 +396,7 @@ function stepBar(j) {
 function confTag(j) {
   if (j.status !== "done") return "";
   const c = (j.result || {}).confidence;
+  if (!c) return "";  // made before lines were checked by ear: its old marks aren't reliable enough to count
   if (j.to_check) return ` <span class="tag" style="color:#ffb020" title="${j.to_check} line${j.to_check === 1 ? " is" : "s are"} marked ⚠ in the editor: the studio isn't sure about ${j.to_check === 1 ? "its" : "their"} timing">⚠ ${j.to_check} to check</span>`;
   if (c && c.sure != null && c.lines && c.sure < 0.5 * c.lines) return ` <span class="tag" style="color:#ffb020" title="Only ${c.sure} of ${c.lines} lines could be heard where they were placed (hard singing to follow by ear), so the studio can't vouch for the rest: play it through">◔ ${Math.round(100 * c.sure / c.lines)}% heard in place</span>`;
   if (c && c.sure != null && c.lines) return ` <span class="tag" title="${c.sure} of ${c.lines} lines were heard right where they were placed; none are marked to check">✓ ${Math.round(100 * c.sure / c.lines)}% heard in place</span>`;

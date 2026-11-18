@@ -1316,7 +1316,7 @@ if heard_words:
 # How sure is each line? The best evidence is the transcription: a line heard where it was placed is right even when
 # the aligner's word fit is poor (measured on 10 songs: fit alone marked 57 lines, 47 of them fine, and missed 23 of
 # the 33 that were more than 1.5 s off). So:
-#   sure      heard within 1.2 s of where it sits
+#   sure      heard within 1 s of where it sits (a sweep: 0.8 s doubles the marks for 3 more catches of 33)
 #   check     heard somewhere else; or not heard and its words fit badly; or put there by a guess
 #   unsure    not heard, fit acceptable (not marked, but not counted as sure)
 # Without a transcription to compare with, only the word fit is left (the old rule).
@@ -1334,7 +1334,7 @@ for l in out_lines:
     why_ = None
     if l.get("_guess"):
         why_ = l["_guess"]
-    elif hd_ is not None and abs(hd_) > 1.2:
+    elif hd_ is not None and abs(hd_) > 1.0:
         why_ = f"heard about {abs(hd_):.0f} s {'earlier' if hd_ > 0 else 'later'} than where it sits"
     elif hd_ is None and low_:
         why_ = "not heard here, and its words fit the singing poorly" if _raw is not None else "its words fit the singing poorly"

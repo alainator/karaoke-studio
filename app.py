@@ -519,9 +519,14 @@ async def put_lines(jid: str, req: Request):
         if not os.path.exists(job_path(jid, "words.orig.json")):
             shutil.copyfile(job_path(jid, "words.json"), job_path(jid, "words.orig.json"))
         save_lines(job_path(jid, "words.json"), lines, cast)
-        open(job_path(jid, "lyrics.ass"), "w").write(make_ass(lines, job.get("offset", 0.0), video_size=vsize(job), cast=cast))
+        ass_p, ass_new = job_path(jid, "lyrics.ass"), make_ass(lines, job.get("offset", 0.0), video_size=vsize(job), cast=cast)
+        try:
+            ass_same = open(ass_p).read() == ass_new
+        except OSError:
+            ass_same = False
+        open(ass_p, "w").write(ass_new)
         job["edited"] = time.time()
-        if job.get("published"):
+        if job.get("published") and not ass_same:  # clearing a ⚠ mark changes nothing on screen: nothing to republish
             job["unpublished_changes"] = True
         save(jid, job)
     return {"lines": len(lines)}
@@ -1230,7 +1235,7 @@ def finish(jid, rc, err, oom, where):
                     job.setdefault("log", []).append(f"couldn't carry your edits over ({str(e)[:80]}); Undo remake restores them")
                 if r is not None:
                     ch, ad = r
-                    job["remake_note"] = ("the remake found nothing to change: your version is kept as it was" if not ch and not ad else
+                    job["remake_note"] = ("the remake found nothing to change: your words and timing are kept as they were" if not ch and not ad else
                                           f"{ch} line{'s' if ch != 1 else ''} got new timing (keeping your singers and word fixes)"
                                           + (f", {ad} line{'s' if ad != 1 else ''} added" if ad else "")
                                           + "; lines you had moved by hand kept your timing")
@@ -1292,14 +1297,22 @@ def merge_remake(jid):
     cast = load_cast(ed_p)
     e2a, a2n = _pair(edited, old_auto), _pair(old_auto, new)
     same = lambda x, y: abs(x["words"][0][0] - y["words"][0][0]) <= 0.15 and abs(x["words"][-1][1] - y["words"][-1][1]) <= 0.15
-    out, changed = [], 0
+    # The ⚠ marks are the studio's opinion, not the user's work, so they always follow the remake: a line the user
+    # placed by hand is checked (no mark), any other line takes the new version's mark and reason.
+    out, changed, marks = [], 0, 0
+    def remark(l, weak, why):
+        nonlocal marks
+        if bool(l.get("weak")) == bool(weak) and (l.get("why") or None) == (why or None if weak else None):
+            return l
+        marks += 1
+        return dict(l, weak=bool(weak), why=why if weak else None)
     for i, l in enumerate(edited):
         a = e2a.get(i)
         if a is None or not same(l, old_auto[a]) or a2n.get(a) is None:
-            out.append(l); continue  # added by the user, moved by hand, or gone from the remake: theirs stays
+            out.append(remark(l, False, None)); continue  # added by the user, moved by hand, or gone from the remake: theirs stays
         n = new[a2n[a]]
         if same(n, old_auto[a]):
-            out.append(l); continue  # the remake found the same timing: nothing to change
+            out.append(remark(l, n.get("weak"), n.get("why"))); continue  # same timing: only its mark can change
         words = n["words"]
         if _ltext(l) != _ltext(old_auto[a]):  # the user fixed words: keep their text on the new timing
             words = remap_words(n["words"], " ".join(w[2] for w in l["words"]))
@@ -1312,10 +1325,10 @@ def merge_remake(jid):
     out += added
     out.sort(key=lambda l: l["words"][0][0])
     shutil.copyfile(new_p, job_path(jid, "words.orig.json"))  # "Undo all edits" now goes to the new automatic version
-    if not changed and not added:
+    if not changed and not added and not marks:
         shutil.copyfile(ed_p, new_p)  # found nothing: their version, exactly
     else:
-        save_lines(new_p, out, cast)
+        save_lines(new_p, out, cast)  # (with only marks changed, every word and time is still theirs)
     return changed, len(added)
 
 
