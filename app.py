@@ -1420,7 +1420,7 @@ def maybe_auto_romaji(jid, rc):
 
 
 def run_local(jid):
-    rc, err, oom = 1, None, False
+    rc, err, oom, crash = 1, None, False, None
     try:
         p = subprocess.Popen([sys.executable, "-I", f"{HERE}/pipeline.py", f"{JOBS}/{jid}"], stdout=subprocess.PIPE,
                              stderr=subprocess.STDOUT, text=True, env=dict(C.tool_env(), PYTHONUNBUFFERED="1"))
@@ -1428,6 +1428,8 @@ def run_local(jid):
             line = line.rstrip()
             oom = oom or "out of memory" in line.lower()
             if not line.startswith("@"):
+                if re.match(r"[A-Za-z_.]*(Error|Exception)\b", line):  # a crash: keep what it said, to show with the failure
+                    crash = line[:200]
                 continue
             kind, _, text = line[1:].partition(" ")
             with lock:
@@ -1440,6 +1442,8 @@ def run_local(jid):
                     err = text
                 save(jid, job)
         rc = p.wait()
+        if rc != 0 and not err and not oom and crash:
+            err = f"it stopped with an error ({crash})"
         if oom:
             time.sleep(20)
         maybe_auto_romaji(jid, rc)

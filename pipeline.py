@@ -398,7 +398,12 @@ if not (os.path.exists(vocals) and os.path.exists(inst)):
     from audio_separator.separator import Separator
     sep = Separator(model_file_dir=MODELS, output_dir=WORK, output_format="WAV")
     sep.load_model(SEP_MODEL)
-    sep.separate(f"{w}.wav", {"Vocals": f"{yt}-vocals", "Instrumental": f"{yt}-inst"})
+    # The separator cleans up the names it's given (a video id like "_2hwblQ_I20" or "Uj6jsBb__8I" lost underscores,
+    # and the tracks were then never found), so it writes to plain names that are renamed afterwards.
+    tmp_ = f"sep{os.getpid()}"
+    sep.separate(f"{w}.wav", {"Vocals": f"{tmp_}-vocals", "Instrumental": f"{tmp_}-inst"})
+    os.replace(f"{WORK}/{tmp_}-vocals.wav", vocals)
+    os.replace(f"{WORK}/{tmp_}-inst.wav", inst)
     del sep
     os.remove(f"{w}.wav")
 import gc, torch  # noqa: E402
