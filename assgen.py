@@ -31,6 +31,27 @@ TOGETHER_FILL = "&H00D7FF&"
 LEGEND_STYLE = "Style: Legend,Arial,40,&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,1,8,60,60,36,1"
 
 
+DEFAULT_FILL = "&H00D7FF&"  # the styles' sung colour (gold), for words with no singer set
+
+
+def who_of(x):
+    """A per-word singer override: {"singer": 1-3} or {"members": [indices]}, or None (the line's own singer)."""
+    if not isinstance(x, dict):
+        return None
+    m = [i for i in (x.get("members") or []) if isinstance(i, int) and 0 <= i < 8]
+    if m:
+        return {"members": sorted(set(m))}
+    return {"singer": x["singer"]} if x.get("singer") in (1, 2, 3) else None
+
+
+def word_fills(line):
+    """The sung colour of each word: a word's own singer (lines shared by two singers: "A whole new world" begun by
+    one and finished by the other) or else the line's."""
+    base = fill_of(line)
+    ww = line.get("wwho") or []
+    return [(fill_of(ww[j]) or DEFAULT_FILL) if j < len(ww) and ww[j] else base for j in range(len(line["words"]))]
+
+
 def fill_of(line):
     m = [i for i in (line.get("members") or []) if isinstance(i, int) and 0 <= i < 8]
     if len(m) == 1:
@@ -65,11 +86,14 @@ def normalize(data):
         if isinstance(l, dict):
             sg = l.get("singer")
             mem = [i for i in (l.get("members") or []) if isinstance(i, int) and 0 <= i < 8]
-            out.append({"words": [list(w) for w in l.get("words", [])], "orig": l.get("orig") or None,
+            words = [list(w) for w in l.get("words", [])]
+            ww = l.get("wwho")
+            ww = [who_of(x) for x in ww] if isinstance(ww, list) and len(ww) == len(words) else None
+            out.append({"words": words, "orig": l.get("orig") or None,
                         "singer": sg if sg in (1, 2, 3) else None, "heard": l.get("heard") or None,
-                        "members": sorted(set(mem)) or None})
+                        "members": sorted(set(mem)) or None, "wwho": ww if ww and any(ww) else None})
         else:
-            out.append({"words": [list(w) for w in l], "orig": None, "singer": None, "heard": None, "members": None})
+            out.append({"words": [list(w) for w in l], "orig": None, "singer": None, "heard": None, "members": None, "wwho": None})
     return [l for l in out if l["words"]]
 
 
@@ -98,6 +122,7 @@ def save_lines(path, lines, cast=_KEEP):
                    "lines": [{"words": l["words"], **({"orig": l["orig"]} if l.get("orig") else {}),
                               **({"singer": l["singer"]} if l.get("singer") in (1, 2, 3) else {}),
                               **({"members": l["members"]} if l.get("members") else {}),
+                              **({"wwho": l["wwho"]} if l.get("wwho") and len(l["wwho"]) == len(l["words"]) else {}),
                               **({"heard": l["heard"]} if l.get("heard") else {})}
                              for l in lines]}, f, ensure_ascii=False)
     os.replace(tmp, path)
@@ -149,10 +174,15 @@ def make_ass(lines, offset=0.0, show_orig=True, video_size=None, cast=None):
         h = end + 0.4
         hide.append(h)
         sung = fill_of(lines[i])
+        fills = word_fills(lines[i])
         parts = [f"{{\\k{round((start - show) * 100)}{'' if sung is None else chr(92) + '1c' + sung}}}"]
+        cur = sung
         for j, (a, b, w) in enumerate(words):
             nxt = words[j + 1][0] if j + 1 < len(words) else b
-            parts.append(f"{{\\kf{max(1, round((nxt - a) * 100))}}}{clean(w)}{' ' if j + 1 < len(words) else ''}")
+            fc = fills[j]
+            change = "" if fc == cur or (fc is None and cur is None) else chr(92) + "1c" + (fc or DEFAULT_FILL)
+            cur = fc
+            parts.append(f"{{{change}\\kf{max(1, round((nxt - a) * 100))}}}{clean(w)}{' ' if j + 1 < len(words) else ''}")
         row = "A" if i % 2 == 0 else "B"
         events.append(f"Dialogue: 0,{ts(show)},{ts(h)},Row{row},,0,0,0,,{''.join(parts)}")
         if dual and lines[i]["orig"]:

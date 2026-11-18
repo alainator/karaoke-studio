@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import config as C  # noqa: E402
-from assgen import load_cast, load_lines, make_ass, save_lines  # noqa: E402
+from assgen import load_cast, load_lines, make_ass, save_lines, who_of  # noqa: E402
 
 JOBS, LIB, MV_DIR = C.JOBS, C.LIBRARY, C.MV_DIR
 PK_DB, PK_URL = C.PIKARAOKE_DB, C.PIKARAOKE_URL
@@ -395,8 +395,9 @@ def _valid_lines(raw, duration):
         words = l.get("words") if isinstance(l, dict) else None
         if not isinstance(words, list) or not 1 <= len(words) <= 60:
             raise HTTPException(400, "each line needs 1-60 words")
+        ww = l.get("wwho") if isinstance(l.get("wwho"), list) and len(l["wwho"]) == len(words) else [None] * len(words)
         clean = []
-        for w in words:
+        for w, who in zip(words, ww):
             if not (isinstance(w, list) and len(w) == 3 and all(isinstance(x, (int, float)) for x in w[:2])
                     and isinstance(w[2], str)):
                 raise HTTPException(400, "bad word entry")
@@ -404,10 +405,12 @@ def _valid_lines(raw, duration):
             if not (math.isfinite(a) and math.isfinite(b)) or not 0 <= a <= limit or not 0 <= b <= limit:
                 raise HTTPException(400, "word time out of range")
             if t:
-                clean.append([round(a, 3), round(max(a, b), 3), t])
+                clean.append(([round(a, 3), round(max(a, b), 3), t], who_of(who)))
         if not clean:
             continue
-        clean.sort(key=lambda w: w[0])
+        clean.sort(key=lambda x: x[0][0])  # a word's own singer stays with it
+        wwho = [who for _, who in clean]
+        clean = [w for w, _ in clean]
         orig = l.get("orig")
         sg = l.get("singer")
         heard = l.get("heard")
@@ -415,7 +418,8 @@ def _valid_lines(raw, duration):
         mem = sorted({int(i) for i in mem if isinstance(i, int) and 0 <= i < 8}) if isinstance(mem, list) else None
         out.append({"words": clean, "orig": orig.strip()[:300] if isinstance(orig, str) and orig.strip() else None,
                     "singer": sg if sg in (1, 2, 3) else None, "members": mem or None,
-                    "heard": heard.strip()[:200] if isinstance(heard, str) and heard.strip() else None})
+                    "heard": heard.strip()[:200] if isinstance(heard, str) and heard.strip() else None,
+                    "wwho": wwho if any(wwho) else None})
     if not out:
         raise HTTPException(400, "no lines left")
     out.sort(key=lambda l: l["words"][0][0])
@@ -436,6 +440,10 @@ async def put_lines(jid: str, req: Request):
         for l in lines:
             if l.get("members"):
                 l["members"] = [i for i in l["members"] if i < len(cast)] or None
+            if l.get("wwho"):
+                l["wwho"] = [None if not x else x if "singer" in x else ({"members": [i for i in x["members"] if i < len(cast)]}
+                             if any(i < len(cast) for i in x["members"]) else None) for x in l["wwho"]]
+                l["wwho"] = l["wwho"] if any(l["wwho"]) else None
         if not os.path.exists(job_path(jid, "words.orig.json")):
             shutil.copyfile(job_path(jid, "words.json"), job_path(jid, "words.orig.json"))
         save_lines(job_path(jid, "words.json"), lines, cast)
