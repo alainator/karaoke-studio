@@ -255,6 +255,45 @@ def km_search(title, artist=""):
     return out, jp[:2]
 
 
+def split_query(q):
+    """'radiohead creep' -> ('Radiohead', 'Creep'): find which part of a search without ' - ' is the artist, from LRCLIB
+    (an entry whose artist and title together make up the search, else one whose artist starts or ends it) or from
+    YouTube titles written 'Artist - Title'. Returns (artist, title) or None."""
+    nq = norm(q)
+    if not nq:
+        return None
+    try:
+        hits = http_json("https://lrclib.net/api/search?" + urllib.parse.urlencode({"q": q}))[:30]
+    except Exception:
+        hits = []
+    from collections import Counter
+    seen_artist = Counter(norm(h.get("artistName")) for h in hits)  # a real artist shows up in many entries
+    rank = lambda c: (seen_artist[norm(c[0])], c[2])  # then: artist written first in the search
+    full, part = [], []
+    words = q.split()
+    for h in hits:
+        a, t = norm(h.get("artistName")), norm(h.get("trackName"))
+        if a and t and a in nq and t in nq and abs(len(a) + len(t) + 1 - len(nq)) <= 3 and nq.replace(a, "", 1).strip() == t:
+            full.append((h["artistName"], h["trackName"], nq.startswith(a)))  # artist and title together are the search
+        n = len(a.split())
+        if a and n < len(words) and norm(" ".join(words[:n])) == a:   # it starts with an artist: the rest is the title
+            part.append((h["artistName"], " ".join(words[n:]), True))
+        if a and n < len(words) and norm(" ".join(words[-n:])) == a:  # or ends with one
+            part.append((h["artistName"], " ".join(words[:-n]), False))
+    for cands in (full, part):
+        if cands:
+            a, t, _ = max(cands, key=rank)
+            return a, t
+    try:  # YouTube titles like "Artist - Title (Official Music Video)"
+        for v in yt_search("", q)[:8]:
+            m = re.match(r"^(.+?)\s+[-–—]\s+(.+?)(\s*[(\[].*)?$", v.get("title") or "")
+            if m and norm(m.group(1)) and norm(m.group(2)) and norm(m.group(1)) in nq and norm(m.group(2)) in nq:
+                return m.group(1).strip(), m.group(2).strip()
+    except Exception:
+        pass
+    return None
+
+
 @app.get("/api/search")
 def search(q: str):
     q = q.strip()
@@ -263,6 +302,9 @@ def search(q: str):
     artist, _, title = q.partition(" - ")
     if not title:
         artist, title = "", q
+        guess = split_query(q)  # typed without ' - ': work out which part is the artist
+        if guess:
+            artist, title = guess
     videos = yt_search(artist, title)
     notes = []
     km, jp_titles = km_search(title.strip(), artist.strip())

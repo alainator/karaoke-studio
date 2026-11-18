@@ -269,6 +269,7 @@ function renderResults() {
         <div class="row" style="margin-top:6px"><button class="primary" id="mkuse">Use these lyrics</button></div>` : ""}</div>
     </div>`;
   const canMake = pick.video && pick.lyr && usable(pick.lyr);
+  if (!pick.names || !pick.names.edited) pick.names = autoNames(d);
   const notes = (d.notes || []).map(n => `<div class="empty" style="padding:10px;margin-top:10px">${esc(n)}</div>`).join("");
   $("#results").innerHTML = `${notes}
     <div class="cols">
@@ -276,13 +277,16 @@ function renderResults() {
       <div><h2>Lyrics</h2><div class="list">${lyrsAll}</div></div>
     </div>
     <div class="makebar">
-      <input type="text" id="artist" value="${esc(d.artist || "")}" placeholder="Artist">
-      <input type="text" id="title" value="${esc(d.title || "")}" placeholder="Title">
+      <input type="text" id="artist" value="${esc(pick.names.artist)}" placeholder="Artist">
+      <input type="text" id="title" value="${esc(pick.names.title)}" placeholder="Title">
+      <span class="hint namesrc">${pick.names.edited ? `your names <button class="ib" id="renames" title="Fill in the names from the lyrics or the video again">↺</button>` : `names from ${esc(pick.names.from)}`}</span>
       ${gpuMenu()}
       <button class="primary" id="make" ${canMake ? "" : "disabled"}>Make karaoke</button>
       <span class="hint">${canMake ? "about 1–2 minutes" : "pick a video and lyrics (or paste them)"}</span>
     </div>`;
   document.querySelectorAll("[data-vid]").forEach(c => c.onclick = () => { pick.video = d.videos.find(v => v.id === c.dataset.vid); if (!(pick.lyr && pick.lyr.source === "pasted")) pick.lyr = null; renderResults(); });
+  ["artist", "title"].forEach(k => $("#" + k).oninput = e => { pick.names[k] = e.target.value; if (!pick.names.edited) { pick.names.edited = true; $(".namesrc").innerHTML = `your names <button class="ib" id="renames" title="Fill in the names from the lyrics or the video again">↺</button>`; $("#renames").onclick = refillNames; } });
+  if ($("#renames")) $("#renames").onclick = refillNames;
   $("#pastecard").onclick = e => {
     if (e.target.closest("textarea, button")) return;
     pick.pasteOpen = !pick.pasteOpen; renderResults();
@@ -311,6 +315,49 @@ function gpuMenu() {
     <option value="local">${local}</option>
     <option value="remote">${helper}</option></select>`;
 }
+// ---- artist/title for the new song: from the picked lyrics (official spelling), else the video's title, else the search
+const NATIVE = /[\u3040-\u30ff\u4e00-\u9fff\uac00-\ud7a3]/;
+const JUNK = /\s*[(\[（【][^)\]）】]*(remaster|explicit|clean|radio edit|album version|single version|official|music video|lyric|audio|visuali[sz]er|\bhd\b|\b4k\b|m\/v|\bmv\b|\bpv\b|full ver|prod\.|produced by)[^)\]）】]*[)\]）】]/gi;
+function tidyName(x) {
+  let t = (x || "").replace(JUNK, "").replace(/\s+[-–]\s+(\d{4}\s+)?remaster(ed)?.*$/i, "").replace(/\s+(official\s+)?(music\s+video|m\/v|mv)$/i, "");
+  t = t.replace(/\s{2,}/g, " ").trim();
+  const parts = t.split(/\s*[;|]\s*/).filter(Boolean);  // "Creep;Creep": an upload's doubled title
+  if (parts.length > 1 && parts.every(x => x.toLowerCase() === parts[0].toLowerCase())) t = parts[0];
+  // SHOUTED multi-word names ("IN THE END") get normal capitals; short ones (MGMT, AC/DC, LiSA) stay as they are
+  if (t === t.toUpperCase() && /[A-Z]{3,}\s+[A-Z]{3,}/.test(t)) t = t.toLowerCase().replace(/(^|[\s(\-"])([a-z])/g, (m, p, c) => p + c.toUpperCase());
+  return t;
+}
+const titleCase = t => t === t.toLowerCase() ? t.replace(/(^|[\s(\-"])([a-z])/g, (m, p, c) => p + c.toUpperCase()) : t;
+function namesFromVideo(v) {
+  if (!v || !v.title) return null;
+  let m = v.title.match(/^(.+?)\s*[「"“『](.+?)[」"”』]/);  // Stray Kids "神메뉴(God's Menu)" M/V
+  if (m) {
+    let title = m[2]; const par = title.match(/\(([^)]+)\)/);
+    if (par && !NATIVE.test(par[1]) && NATIVE.test(title.replace(/\([^)]*\)/, ""))) title = par[1];
+    return {artist: tidyName(m[1]), title: tidyName(title)};
+  }
+  m = v.title.match(/^(.+?)\s+[-–—]\s+(.+)$/);
+  if (m) return {artist: tidyName(m[1]), title: tidyName(m[2].split(/\s+[|｜]\s+/)[0])};
+  return null;
+}
+function autoNames(d) {
+  const typed = {artist: titleCase((d.artist || "").trim()), title: titleCase((d.title || "").trim())};
+  const l = pick.lyr && pick.lyr.source !== "pasted" ? pick.lyr : null;
+  if (l && l.artist && l.title) {
+    let artist = tidyName(l.artist), title = tidyName(l.title);
+    // uploads that put the artist in the title too ("Radiohead - Creep", "Linkin Park / In the End")
+    const lead = title.toLowerCase().indexOf(artist.toLowerCase());
+    if (artist && lead === 0) { const rest = title.slice(artist.length).replace(/^\s*[-–—/|:]\s*/, ""); if (rest && rest !== title) title = rest; }
+    // the official title in Japanese/Korean/Chinese script while the search was in romaji: keep the romaji title
+    if (NATIVE.test(title) && typed.title && !NATIVE.test(typed.title)) title = typed.title;
+    if (NATIVE.test(artist) && typed.artist && !NATIVE.test(typed.artist)) artist = typed.artist;
+    return {artist, title, from: "the lyrics", edited: false};
+  }
+  const v = namesFromVideo(pick.video);
+  if (v && v.artist && v.title) return {...v, from: "the video's title", edited: false};
+  return {...typed, from: "your search", edited: false};
+}
+function refillNames() { pick.names = null; renderResults(); }
 async function makeJob() {
   const artist = $("#artist").value.trim(), title = $("#title").value.trim();
   if (!artist || !title) return toast("Fill in artist and title");
