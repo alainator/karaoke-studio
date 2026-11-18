@@ -102,8 +102,26 @@ def lrc_lines(text):
 def plain_lines(text):
     """Lyrics without timing (pasted, or LRCLIB's plain lyrics): one line each, section headers like [Chorus: X] and
     lyrics-site leftovers dropped. Placeholder times 4 s apart; the real ones come from listening (below)."""
-    keep = [l.strip() for l in (text or "").splitlines()]
-    keep = [l for l in keep if l and not re.fullmatch(r"\[[^\]]*\]", l) and not re.fullmatch(r"\d*\s*Embed|You might also like|See .* Live", l)]
+    keep, skip = [], 0
+    raw = [l.strip() for l in (text or "").splitlines()]
+    for n, l in enumerate(raw):
+        if not l:
+            continue
+        if skip:  # Genius's "You might also like" box: three song titles and their artists, until the next header
+            if re.fullmatch(r"\[[^\]]*\]", l):
+                skip = 0
+            else:
+                skip -= 1
+                continue
+        m = re.search(r"\s*You might also like\s*$", l)
+        if m:
+            l, skip = l[:m.start()].strip(), 6
+        l = re.sub(r"\d*\s*Embed$", "", l).strip()  # Genius glues "123Embed" to the last line
+        if not l or re.fullmatch(r"\[[^\]]*\]", l) or re.fullmatch(r"See .* Live|Translations|\d+\s+Contributors?.*", l):
+            continue
+        if n < 3 and re.search(r"\bLyrics$", l):  # the page title ("You Got Beef? Lyrics")
+            continue
+        keep.append(l)
     return [(4.0 * k, l) for k, l in enumerate(keep)]
 
 
@@ -450,6 +468,7 @@ say("info", f"video offset vs album timing {off:+.2f}s ({pick})")
 off_first = off_last = off  # the offset at the song's start and end (they differ when the video's timing jumps)
 cur_fit = fit_words[pick]  # word fit of the timing in use; later methods must beat it
 scenes = []  # video times where a part with a later offset starts (the song was stopped for a scene before it)
+talk_times = []  # video times of heard words that aren't lyrics (set by the transcription matching below)
 STEP, JUMP, PENALTY = 0.25, 2.0, 2.0
 grid = off + np.arange(-60.0, 60.0 + STEP / 2, STEP)
 n_l = len(_starts)
@@ -637,6 +656,12 @@ if heard_words and (not any(origs) or mixed) and len(synced) >= 4:
                 _i -= 1
             else:
                 _j -= 1
+        # heard words that matched no lyric: talking (a skit, an intro, a scene) or mishearings; where several of
+        # them fall between lyric lines, the render keeps the video's own sound there
+        # (only words that appear nowhere in the lyrics: a repeated chorus the lyrics left out is still singing)
+        _matched = {_hj for _, _hj in _pairs}
+        _vocab = {x for _, _, x in _lw}
+        talk_times = [_hw[_hj][0] for _hj in range(len(_hw)) if _hj not in _matched and _hw[_hj][1] not in _vocab]
         _found = {}
         for _li, _hj in _pairs:
             _found.setdefault(_lw[_li][0], []).append((_lw[_li][1], _hw[_hj][0]))
@@ -755,6 +780,41 @@ for v in scenes:
     e0 = min([l["words"][0][0] for l in out_lines if l["words"][0][0] >= v - 0.3], default=None)
     if s0 is not None and e0 is not None and e0 - s0 >= 3.0:
         mids.append((s0 + 0.3, e0 - 0.3))
+# Talking anywhere outside the sung lines (an intro before the first line, a skit between lines, an outro): clusters
+# of heard words that appear nowhere in the lyrics (3+ words, under 2.5 s apart) keep the video's own sound around
+# them, unless they overlap the singing. Works for every song, including pasted lyrics, which have no album timing.
+if os.environ.get("KARAOKE_DEBUG_FIT"):
+    say("info", f"debug talk words: {len(talk_times)}: " + " ".join(f"{t_:.1f}" for t_ in sorted(talk_times)[:40]))
+if len(talk_times) >= 3 and out_lines:
+    _sp = sorted((l["words"][0][0], l["words"][-1][1]) for l in out_lines)
+    _cl = []
+    for t_ in sorted(talk_times):
+        if _cl and t_ - _cl[-1][-1] <= 2.5:
+            _cl[-1].append(t_)
+        else:
+            _cl.append([t_])
+    _win = []
+    for c_ in _cl:
+        if len(c_) < 3:
+            continue
+        a_, b_ = c_[0] - 0.5, c_[-1] + 0.8
+        # a talking stretch running into a sung line (often just a misheard word in it) stops before that line
+        inside = [(ls, le) for ls, le in _sp if min(b_, le) - max(a_, ls) > 0.3]
+        if inside:
+            if inside[0][0] - 0.2 - a_ < 2.0:
+                continue  # talking over the singing: can't keep the original there
+            b_ = inside[0][0] - 0.2
+        if b_ <= _sp[0][0]:
+            a_ = -FADE  # talking before the first sung line: an intro; keep the video's sound from the start
+        # join with the previous talking stretch when no lyric line lies between them
+        if _win and a_ - _win[-1][1] < 6.0 and not any(_win[-1][1] < ls < a_ for ls, _ in _sp):
+            _win[-1] = (_win[-1][0], b_)
+        else:
+            _win.append((a_, b_))
+    for a_, b_ in _win:
+        a_, b_ = max(-FADE, a_), min(duration, b_)
+        if b_ - a_ >= 2.0 and not any(x <= a_ and b_ <= y for x, y in mids):
+            mids.append((a_, b_))
 if pre or post or mids:
     terms = ([f"clip(({pre:.2f}-t)/{FADE},0,1)"] if pre else []) + ([f"clip((t-{post:.2f})/{FADE},0,1)"] if post else []) + \
             [f"min(clip((t-{a:.2f})/{FADE},0,1),clip(({b:.2f}-t)/{FADE},0,1))" for a, b in mids]
@@ -763,7 +823,7 @@ if pre or post or mids:
         g = f"max({g},{x})"
     say("info", "kept the video's own sound " + ", ".join(x for x in (
         f"for its first {pre:.0f}s (before the song)" if pre else "",
-        *[f"at {a:.0f}-{b:.0f}s (a scene inside the song)" for a, b in mids],
+        *[f"at {max(0, a):.0f}-{b:.0f}s (talking or a scene)" for a, b in mids],
         f"after {post:.0f}s (after the song)" if post else "") if x))
     mix = (f"[0:a:0]aformat=sample_rates=44100:channel_layouts=stereo,volume='{g}':eval=frame[o];"
            f"[1:a:0]aformat=sample_rates=44100:channel_layouts=stereo,volume='1-{g}':eval=frame[i];"

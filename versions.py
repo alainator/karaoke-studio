@@ -2,7 +2,7 @@
 
 Every song records the version that made it (result.json "pipeline"); songs from before that use the time they were
 made. Add an entry here whenever a change makes songs come out better, with which songs it matters for:
-"all", "latin" (Latin-alphabet lyrics), "ja" (Japanese), "native" (Korean, Chinese).
+"all", "latin" (Latin-alphabet lyrics), "ja" (Japanese), "native" (Korean, Chinese), "pasted" (pasted lyrics).
 """
 IMPROVEMENTS = [  # (when it landed, unix time; songs it matters for; what a remake adds)
     (1794940958, "all", "the video's timing is chosen by how well the words fit the singing (fixed a 12 s wrong offset)"),
@@ -16,6 +16,8 @@ IMPROVEMENTS = [  # (when it landed, unix time; songs it matters for; what a rem
     (1794972339, "latin", "transcription first: the lyrics are matched to what is actually sung before timing"),
     (1794975439, "all", "lines whose timing the aligner is unsure about are marked for checking in the editor"),
     (1794975439, "ja", "mostly-English songs with a Japanese chorus are listened to in English"),
+    (1794976824, "all", "talking outside the sung lines (an intro, a skit, an outro) keeps its sound, also with pasted lyrics"),
+    (1794976824, "pasted", "lyrics-site leftovers (Genius's \"You might also like\" songs, \"Embed\") are removed from pasted lyrics"),
 ]
 VERSION = len(IMPROVEMENTS)
 
@@ -33,7 +35,7 @@ def missing(job):
     kind = "ja" if lang == "ja" else "native" if lang in ("ko", "zh") else "latin"
     out = []
     for _, who, what in newer:
-        if who not in ("all", kind):
+        if who not in ("all", kind) and not (who == "pasted" and job.get("lyrics_source") == "pasted"):
             continue
         if what.startswith("the video is re-encoded") and res.get("encoded") == "x264":
             continue  # already fixed by deploy/reencode-videos.py
