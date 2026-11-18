@@ -646,11 +646,47 @@ def remap_words(old, text):
     return out or [list(w) for w in old]
 
 
+_JP_PUNCT = {"、": ", ", "。": ". ", "！": "! ", "？": "? ", "，": ", ", "：": ": ", "；": "; ", "「": " ", "」": " ", "『": " ",
+             "』": " ", "（": " (", "）": ") ", "〜": "~", "～": "~", "・": " ", "…": "… ", "　": " "}
+
+
+def romanize_paste(text):
+    """Pasted lyrics may be in Japanese/Korean script, or mix it with English inside one 'word' ("swim、生き残るために"):
+    use normal punctuation, split where scripts change, and romanize the native parts the way the studio does."""
+    from romanize import romanize_korean
+    for k, v in _JP_PUNCT.items():
+        text = text.replace(k, v)
+    kat = None
+    out_lines = []
+    for ln in text.splitlines():
+        parts = re.split(r"([\u3040-\u30ff\u4e00-\u9fff\u3400-\u4dbf々ー]+|[\uac00-\ud7a3]+)", ln)
+        buf = []
+        for part in parts:
+            if not part:
+                continue
+            if re.fullmatch(r"[\uac00-\ud7a3]+", part):
+                buf.append(" " + romanize_korean(part) + " ")
+            elif re.fullmatch(r"[\u3040-\u30ff\u4e00-\u9fff\u3400-\u4dbf々ー]+", part):
+                if kat is None:
+                    import cutlet
+                    kat = cutlet.Cutlet(); kat.use_foreign_spelling = False
+                buf.append(" " + kat.romaji(part) + " ")
+            else:
+                buf.append(part)
+        out_lines.append(re.sub(r"[ \t]+", " ", "".join(buf)).strip())
+    return "\n".join(out_lines)
+
+
 def paste_suggest(lines, text):
     """Line up pasted romaji (any site's layout: lines split or joined differently, section headers) with the song's
     lines by their letters, and suggest each line's text from it. Returns suggestions like the AI check."""
     import difflib
     letters = lambda w: re.sub(r"[^a-z]", "", unicodedata.normalize("NFKD", w.replace("đ", "d").replace("Đ", "D")).lower())
+    # a romanized song (Japanese/Korean/Chinese lines shown in romaji): pasted native script is romanized first, so
+    # kanji or "、" can never end up inside a romaji line
+    native_paste = any(l.get("orig") for l in lines) and bool(re.search(r"[\u3040-\u30ff\u4e00-\u9fff\uac00-\ud7a3]", text))
+    if native_paste or (any(l.get("orig") for l in lines) and re.search(r"[、。]", text)):
+        text = romanize_paste(text)
     # the song: one letter string, remembering which line each letter belongs to
     S, sl = [], []
     for i, l in enumerate(lines):
@@ -715,6 +751,10 @@ def paste_suggest(lines, text):
         old = " ".join(w[2] for w in l["words"])
         if not new or letters(new) == letters(old):
             continue
+        if l.get("orig") and re.search(r"[\u3040-\u30ff\u4e00-\u9fff\uac00-\ud7a3]", new):
+            continue  # never put native script into a romaji line
+        if l.get("orig") and native_paste:
+            continue  # a page in Japanese/Korean script says nothing new about readings: only English lines change
         # skip pairs that share almost nothing (alignment slipped)
         if difflib.SequenceMatcher(None, letters(new), letters(old)).ratio() < 0.5:
             continue
