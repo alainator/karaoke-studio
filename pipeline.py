@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config as C  # noqa: E402
 from assgen import make_ass, save_lines  # noqa: E402
 import versions  # noqa: E402
+import earcheck  # noqa: E402
 from romanize import sound_key  # noqa: E402
 
 WORK, MODELS, SEP_MODEL = C.WORK, C.MODELS, C.SEP_MODEL
@@ -481,10 +482,11 @@ if mixed:
 res = model.align(audio, "\n".join(align_text), language=wlang, original_split=True)
 wsegs = [[(x.start, x.end) for x in s.words if x.word.strip()] for s in res.segments if s.words]
 heard_words = []
+heard_spans = []  # the same words with start and end times (saved as heard.json for checking by ear)
 listen_ja = lang == "ja" and not mixed and any(origs) and len(hand_romaji) < 0.8 * sum(1 for o in origs if o)
 listen_latin = (SCRIPT == "latin" and not any(origs)) or mixed
 listen_other = SCRIPT in SCRIPTS and not mixed
-if listen_ja or listen_latin or listen_other:
+if True:  # every song is transcribed: the lyrics checks use it where they apply, and the lines to check are found by ear
     # what the singer actually sings. Japanese lyrics often write one word and sing another (幻 sung "yume");
     # crowd-sourced lyrics of any language drop or swap words. The AI checks compare this with the written line.
     try:
@@ -493,6 +495,7 @@ if listen_ja or listen_latin or listen_other:
         tr = model.transcribe(audio, language=wlang, word_timestamps=True, vad=False, verbose=None,
                               condition_on_previous_text=False)
         heard_words = [((w.start + w.end) / 2, w.word) for sg in tr.segments for w in sg.words]
+        heard_spans = [[round(w.start, 2), round(w.end, 2), w.word] for sg in tr.segments for w in sg.words]
         if listen_other and not is_rtl(SCRIPT):  # heard in the script: romanized the way the lyrics were (Thai split into words)
             heard_words = [(t_, pc_) for t_, w_ in heard_words
                            for pc_ in (romanize_generic(w_, SCRIPT).split() if SCRIPT_RE[SCRIPT].search(w_) else [w_])]
@@ -1313,41 +1316,24 @@ if heard_words:
             ws = [w for t, w in heard_words if s0 <= t <= s1]
             text = "".join(ws) if l.get("orig") else " ".join(w.strip() for w in ws)
             l["heard"] = re.sub(r"\s+", " ", text).strip()[:200] or None
-# How sure is each line? The best evidence is the transcription: a line heard where it was placed is right even when
-# the aligner's word fit is poor (measured on 10 songs: fit alone marked 57 lines, 47 of them fine, and missed 23 of
-# the 33 that were more than 1.5 s off). So:
-#   sure      heard within 1 s of where it sits (a sweep: 0.8 s doubles the marks for 3 more catches of 33)
-#   check     heard somewhere else; or not heard and its words fit badly; or put there by a guess
-#   unsure    not heard, fit acceptable (not marked, but not counted as sure)
-# Without a transcription to compare with, only the word fit is left (the old rule).
+# How sure is each line? The best evidence is the transcription: a line heard where it sits is right even when the
+# aligner's word fit is poor (measured on 10 songs: fit alone marked 57 lines, 47 of them fine, and missed 23 of the
+# 33 that were more than 1.5 s off). earcheck.py compares every line with what was heard, letter by letter, in any
+# language; the transcription is saved so the song can be checked again later without the GPU.
 _fits = [l.get("fit", 0.0) for l in out_lines if l.get("fit")]
 _med = float(np.median(_fits)) if _fits else 0.0
-_n_sure = _n_check = 0
 for l in out_lines:
-    if l.get("backing"):
-        continue
-    i_ = l.get("_i")
-    low_ = bool(_fits and l.get("fit") is not None and l["fit"] < 0.5 * _med)
-    hd_ = None
-    if _raw is not None and i_ is not None and not np.isnan(_raw[i_]):
-        hd_ = l["words"][0][0] - (synced[i_][0] + float(_raw[i_]))
-    why_ = None
-    if l.get("_guess"):
-        why_ = l["_guess"]
-    elif hd_ is not None and abs(hd_) > 1.0:
-        why_ = f"heard about {abs(hd_):.0f} s {'earlier' if hd_ > 0 else 'later'} than where it sits"
-    elif hd_ is None and low_:
-        why_ = "not heard here, and its words fit the singing poorly" if _raw is not None else "its words fit the singing poorly"
-    l["weak"] = bool(why_)
-    l["why"] = why_
-    _n_check += bool(why_)
-    _n_sure += bool(hd_ is not None and not why_)
-_n_lead = sum(1 for l in out_lines if not l.get("backing"))
-CONF = {"lines": _n_lead, "check": _n_check, "sure": _n_sure if _raw is not None else None}
-if _n_check:
-    say("info", f"{_n_check} line{'s' if _n_check != 1 else ''} to check" + (f"; {_n_sure} of {_n_lead} heard right where they sit" if _raw is not None else ""))
-elif _raw is not None:
-    say("info", f"{_n_sure} of {_n_lead} lines heard right where they sit; none marked to check")
+    l["_lowfit"] = bool(_fits and l.get("fit") is not None and l["fit"] < 0.5 * _med)
+if heard_spans:
+    json.dump({"lang": wlang, "words": heard_spans}, open(f"{job_dir}/heard.json", "w"), ensure_ascii=False)
+elif os.path.exists(f"{job_dir}/heard.json"):
+    os.remove(f"{job_dir}/heard.json")
+CONF = earcheck.mark(out_lines, heard_spans, wlang)
+if CONF["check"]:
+    say("info", f"{CONF['check']} line{'s' if CONF['check'] != 1 else ''} to check"
+                + (f"; {CONF['sure']} of {CONF['lines']} heard right where they sit" if CONF["sure"] is not None else ""))
+elif CONF["sure"] is not None:
+    say("info", f"{CONF['sure']} of {CONF['lines']} lines heard right where they sit; none marked to check")
 save_lines(f"{job_dir}/words.json", out_lines)
 vw, vh = (int(x) for x in vinfo.split(",")[1:3])
 open(f"{job_dir}/lyrics.ass", "w").write(make_ass(out_lines, video_size=(vw, vh)))

@@ -100,7 +100,7 @@ def normalize(data):
                         "singer": sg if sg in (1, 2, 3) else None, "heard": l.get("heard") or None,
                         "members": sorted(set(mem)) or None, "wwho": ww if ww and any(ww) else None,
                         "weak": bool(l.get("weak")), "why": (l.get("why") or None) if l.get("weak") else None,
-                        "backing": bool(l.get("backing"))})
+                        "ok": bool(l.get("ok")), "backing": bool(l.get("backing"))})
         else:
             out.append({"words": [list(w) for w in l], "orig": None, "singer": None, "heard": None, "members": None, "wwho": None})
     return [l for l in out if l["words"]]
@@ -134,6 +134,7 @@ def save_lines(path, lines, cast=_KEEP):
                               **({"wwho": l["wwho"]} if l.get("wwho") and len(l["wwho"]) == len(l["words"]) else {}),
                               **({"weak": True} if l.get("weak") else {}),
                               **({"why": str(l["why"])[:160]} if l.get("weak") and l.get("why") else {}),
+                              **({"ok": True} if l.get("ok") and not l.get("weak") else {}),
                               **({"backing": True} if l.get("backing") else {}),
                               **({"heard": l["heard"]} if l.get("heard") else {})}
                              for l in lines]}, f, ensure_ascii=False)
@@ -168,6 +169,10 @@ def scaled(styles, k):
 RTL_RE = re.compile("[\u0590-\u05ff\u0600-\u06ff\u0750-\u077f\ufb50-\ufdff\ufe70-\ufeff]")
 
 
+LEAD = 2.0    # a line appears up to this long before its first word (when its row is free)
+LINGER = 2.0  # and stays up to this long after its last word (when the row isn't needed yet)
+
+
 def make_ass(lines, offset=0.0, show_orig=True, video_size=None, cast=None, embed_fonts=True):
     """lines: words.json content (v1 or v2). offset shifts everything (+ = later).
     video_size (w, h): on videos narrower than 16:9 the text is scaled down so lines don't wrap as much."""
@@ -185,6 +190,7 @@ def make_ass(lines, offset=0.0, show_orig=True, video_size=None, cast=None, embe
             fonts_section, families = embed_for([l["orig"] or "" for l in lines] + [w for l in lines for _, _, w in l["words"]])
         except Exception:
             pass
+    lead_starts = [sg[0][0] for k, sg in enumerate(segs) if not lines[k].get("backing")]
     for i, words in enumerate(segs):
         start, end = words[0][0], words[-1][1]
         back = bool(lines[i].get("backing"))
@@ -192,13 +198,16 @@ def make_ass(lines, offset=0.0, show_orig=True, video_size=None, cast=None, embe
             show, h = max(0.0, start - 0.8), end + 0.3
         else:     # lead lines take turns on the two rows (backing lines don't count)
             n_ = len(lead_segs)
-            show = start - 1.5
+            show = start - LEAD
             if n_ >= 2:
                 show = max(show, hide[n_ - 2] + 0.05)   # the row it reuses must be free
             if n_ >= 1:
                 show = max(show, lead_segs[n_ - 1][0][0] - 0.2)  # don't appear before the previous line starts
             show = max(0.0, min(show, start))
-            h = end + 0.4
+            # stay up after the last word for as long as the row is free (the line after next needs it LEAD before
+            # it starts): timing that is a little early, or a held last note, still leaves the words there to sing
+            free = lead_starts[n_ + 2] - LEAD - 0.05 if n_ + 2 < len(lead_starts) else end + LINGER
+            h = max(end + 0.4, min(end + LINGER, free))
             hide.append(h); lead_segs.append(words)
         sung = fill_of(lines[i])
         fills = word_fills(lines[i])

@@ -13,7 +13,8 @@ Type `Artist - Title`. The studio finds the music video on YouTube and the lyric
 - **Finds the right video and lyrics.** Official music videos are preferred over lyric videos, live versions, covers and dance practices. No lyrics online? Paste them from any site; if LRCLIB has a timed version, your words get its timing.
 - **Times the lyrics by listening.** It finds the album recording and matches it against the video's music, so skits, scenes in the middle and cuts are found exactly. Talking keeps its sound; only the singing is removed. Backing vocals in brackets get their own line, so they can overlap the lead.
 - **Fixes lyric mistakes.** An optional local AI (via [Ollama](https://ollama.com)) catches dropped or swapped words and wrong Japanese readings, and keeps a change only if it fits the singing better.
-- **Lets you edit easily.** A waveform or spectrogram of the vocals with a block per line: drag, stretch, or tap **S** as each line is sung, and starts snap to where notes begin. Slow playback to 0.5×, loop a line, split or join lines. Lines the studio is unsure about are marked ⚠ with the reason, *Next line to check* walks you through them, and each song shows how many are left.
+- **Lets you edit easily.** A waveform or spectrogram of the vocals with a block per line: drag, stretch, or tap **S** as each line is sung, and starts snap to where notes begin. Slow playback to 0.5×, loop a line, split or join lines.
+- **Tells you what to fix.** Every song is checked by ear after it's made: lines heard somewhere other than where they sit are marked ⚠ with the reason, the song page lists them, and the song list shows how many each song has left.
 - **Colours singers.** Duets, groups of up to 8 named singers, and lines shared mid-way (paint the words of each singer). Pasting a Genius page with headers like `[Chorus: Name]` colours the lines for you.
 - **Remakes safely.** Older songs show what a remake would improve. A remake keeps your edits, changes nothing if it finds nothing better, and can be undone.
 - **Uses a second GPU.** A PC on your network can take songs when the main GPU is busy, or you can choose which GPU makes each song.
@@ -61,7 +62,7 @@ venv/bin/python -I app.py                 # http://127.0.0.1:5570
 
 The first song downloads the models (about 4 GB). `deploy/karaoke-studio.service.example` is a systemd unit.
 
-Songs made with older versions can have their videos fixed for smooth seeking with `venv/bin/python -I deploy/reencode-videos.py`.
+For songs made with older versions: `venv/bin/python -I deploy/check-library.py` checks each one by ear and marks the lines to fix (about 20 s a song, changes only the marks), and `deploy/reencode-videos.py` fixes their videos for smooth seeking.
 
 ## A second GPU (optional)
 

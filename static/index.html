@@ -397,7 +397,7 @@ function confTag(j) {
   if (j.status !== "done") return "";
   const c = (j.result || {}).confidence;
   if (!c) return "";  // made before lines were checked by ear: its old marks aren't reliable enough to count
-  if (j.to_check) return ` <span class="tag" style="color:#ffb020" title="${j.to_check} line${j.to_check === 1 ? " is" : "s are"} marked ⚠ in the editor: the studio isn't sure about ${j.to_check === 1 ? "its" : "their"} timing">⚠ ${j.to_check} to check</span>`;
+  if (j.to_check) return ` <span class="tag" style="color:#ffb020" title="${j.to_check} line${j.to_check === 1 ? " is" : "s are"} marked ⚠ in the editor: the studio isn't sure about ${j.to_check === 1 ? "its" : "their"} timing">⚠ ${j.to_check} line${j.to_check === 1 ? "" : "s"} to fix</span>`;
   if (c && c.sure != null && c.lines && c.sure < 0.5 * c.lines) return ` <span class="tag" style="color:#ffb020" title="Only ${c.sure} of ${c.lines} lines could be heard where they were placed (hard singing to follow by ear), so the studio can't vouch for the rest: play it through">◔ ${Math.round(100 * c.sure / c.lines)}% heard in place</span>`;
   if (c && c.sure != null && c.lines) return ` <span class="tag" title="${c.sure} of ${c.lines} lines were heard right where they were placed; none are marked to check">✓ ${Math.round(100 * c.sure / c.lines)}% heard in place</span>`;
   return "";
@@ -798,6 +798,22 @@ function markCurrent() {
     tr.classList.toggle("cur", on);
   });
 }
+// What needs fixing in this song, in plain words: each marked line with its time and the reason; click one to jump
+// to it. Nothing marked: say how much of the song was heard right where it sits.
+function fixBox() {
+  const marked = ed.lines.map((l, i) => [l, i]).filter(([l]) => l.weak);
+  const c = ((ed.j || {}).result || {}).confidence;
+  if (!marked.length) {
+    if (!c || c.sure == null) return "";
+    const pct = Math.round(100 * c.sure / Math.max(1, c.lines));
+    return pct >= 50 ? `<div class="aibox" style="margin-bottom:10px">✓ <b>Nothing marked to fix.</b> ${c.sure} of ${c.lines} lines were heard right where they sit.</div>`
+      : `<div class="aibox" style="margin-bottom:10px;border-color:#ffb020">◔ <b>The studio couldn't follow this song by ear</b> (only ${c.sure} of ${c.lines} lines heard in place), so it can't say which lines are off. Play it through once.</div>`;
+  }
+  return `<div class="aibox" style="margin-bottom:10px;border-color:#ffb020"><b>⚠ ${marked.length} line${marked.length === 1 ? "" : "s"} to fix or confirm</b>
+    <span class="hint"> — click one to jump there; move the line if it's off, or click its ⚠ in the list below if it's fine.</span>
+    <div style="margin-top:6px;display:flex;flex-direction:column;gap:3px;max-height:150px;overflow:auto">${marked.map(([l, i]) =>
+      `<button class="ghost" data-fix="${i}" style="text-align:left;padding:4px 8px;font-size:13px"><b>${fmtT(l.words[0][0] + curOff())}</b> · line ${i + 1} · ${esc(l.words.map(w => w[2]).join(" ").slice(0, 46))} <span class="hint">— ${esc(l.why || "the studio is unsure about its timing")}</span></button>`).join("")}</div></div>`;
+}
 function renderEditor() {
   if (!ed) return;
   const off = curOff();
@@ -836,6 +852,7 @@ function renderEditor() {
       <button class="ghost ${ed.loop ? "on" : ""}" id="loopbtn" style="padding:5px 10px;font-size:13px" title="Repeat the selected line while you adjust it (L)">⟲ Loop line</button>
       <button class="ib" id="zout" title="Zoom out">−</button><button class="ib" id="zin" title="Zoom in">+</button></span></div>
       <canvas id="wave" style="height:${ed.lines.some(l => l.backing) ? 176 : 150}px"></canvas></div>
+    ${fixBox()}
     <div class="edbar">${ed.lines.some(l => l.weak) ? `<button class="ghost" id="nextweak" title="Select the next line the aligner is unsure about and play from just before it">⚠ Next line to check (${ed.lines.filter(l => l.weak).length})</button>` : ""}<label class="ripple" title="When you move a line (S, arrows, −/+, ⏱, typing a time, dragging its block), every later line moves by the same amount: one fix repairs a whole section that's off"><input type="checkbox" id="ripple" ${ed.ripple ? "checked" : ""}> Move the lines after it too</label>
       <input id="newline" placeholder="Missing line? Type it, play to where it's sung, then Add"><button class="ghost" id="addline">Add at playback time</button>
       ${ed.skipped.map((s, i) => `<button class="chip" data-sk="${i}" title="Not sung in this video according to the aligner">+ ${esc(s)}</button>`).join("")}</div>
@@ -860,6 +877,11 @@ function renderEditor() {
   ["pointerdown", "wheel", "keydown", "touchstart"].forEach(ev => $(".edwrap").addEventListener(ev, () => { ed.touched = Date.now(); }, {passive: true}));
   const changed = () => { const keep = ed.lines[ed.sel]; ed.dirty = true; renderEditor(); if (keep) { ed.sel = ed.lines.indexOf(keep); renderEditor(); } markCurrent(); };
   ed.changed = changed;
+  document.querySelectorAll("[data-fix]").forEach(b => b.onclick = () => {
+    const i = +b.dataset.fix; if (!ed.lines[i]) return;
+    ed.sel = i; renderEditor(); keepVisible(i);
+    const v = $("#pv"); v.currentTime = Math.max(0, ed.lines[i].words[0][0] + curOff() - 1.5); v.play();
+  });
   if ($("#nextweak")) $("#nextweak").onclick = () => {
     const from = ed.sel != null ? ed.sel : -1;
     let i = ed.lines.findIndex((l, k) => k > from && l.weak); if (i < 0) i = ed.lines.findIndex(l => l.weak); if (i < 0) return;
@@ -908,7 +930,7 @@ function renderEditor() {
     if (br) { ed.brush = whoCycle()[+br.dataset.b]; return renderEditor(); }
     if (e.target.closest(".wchip[data-j]")) return;  // painting happens on pointerdown/over (below)
     const okm = e.target.closest(".weakmark");  // "this line is fine": clear its mark
-    if (okm) { ed.lines[+okm.closest("tr").dataset.i].weak = false; return changed(); }
+    if (okm) { const lk = ed.lines[+okm.closest("tr").dataset.i]; lk.weak = false; lk.ok = true; return changed(); }
     const b = e.target.closest("button"); if (!b) return;
     const i = +b.closest("tr").dataset.i, l = ed.lines[i], v = $("#pv");
     if (b.dataset.act === "play") { v.currentTime = Math.max(0, l.words[0][0] + curOff() - 1.5); v.play(); return; }

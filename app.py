@@ -491,7 +491,7 @@ def _valid_lines(raw, duration):
                     "heard": heard.strip()[:200] if isinstance(heard, str) and heard.strip() else None,
                     "wwho": wwho if any(wwho) else None, "weak": bool(l.get("weak")),
                     "why": l["why"].strip()[:160] if l.get("weak") and isinstance(l.get("why"), str) and l["why"].strip() else None,
-                    "backing": bool(l.get("backing"))})
+                    "ok": bool(l.get("ok")) and not l.get("weak"), "backing": bool(l.get("backing"))})
     if not out:
         raise HTTPException(400, "no lines left")
     out.sort(key=lambda l: l["words"][0][0])
