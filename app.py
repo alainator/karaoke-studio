@@ -998,10 +998,16 @@ async def remake(jid: str, req: Request):
     """Make a finished song again with the current version, in place (same page; publishing replaces PiKaraoke's copy).
     The current lyrics (with any edits) are kept as words.before-remake.json."""
     check_origin(req)
+    try:
+        gpu = (await req.json()).get("gpu")
+    except Exception:
+        gpu = None
     with lock:
         job = load(jid)
         if job["status"] != "done":
             raise HTTPException(400, "only finished songs can be remade")
+        if gpu in ("auto", "local", "remote"):  # the card chosen on the song page (otherwise as the song was first made)
+            job["gpu_pref"] = gpu
         if os.path.exists(job_path(jid, "words.json")):
             shutil.copyfile(job_path(jid, "words.json"), job_path(jid, "words.before-remake.json"))
         # the old automatic version (before the user's edits) tells which lines they moved by hand

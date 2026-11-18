@@ -317,13 +317,13 @@ function renderResults() {
   document.querySelectorAll("[data-l]").forEach(c => c.onclick = () => { pick.lyr = d.lyrics.find(l => lkey(l) === c.dataset.l); renderResults(); });
   $("#make").onclick = makeJob;
 }
-function gpuMenu() {
+function gpuMenu(id = "gpupick") {
   // which graphics card makes the song: Auto (whichever is free) or one you pick
   const g = STATUS.gpus || {};
   if (!g.helper) return "";  // only one card: nothing to choose
   const local = `${esc(g.local || "this server")} (this server) — ${g.local_busy ? "making a song" : (STATUS.gpu_free_gb != null ? STATUS.gpu_free_gb + " GB free" : "")}`;
   const helper = `${esc(STATUS.helper_gpu || "GPU")} (${esc(g.helper)}) — ${!g.helper_online ? "off or unreachable" : g.helper_busy ? "making a song" : g.helper_outdated ? "updating" : (STATUS.helper_free_gb != null ? STATUS.helper_free_gb + " GB free" : "on")}`;
-  return `<select id="gpupick" title="Which graphics card makes this song">
+  return `<select id="${id}" title="Which graphics card makes this song">
     <option value="auto">GPU: Auto (whichever is free)</option>
     <option value="local">${local}</option>
     <option value="remote">${helper}</option></select>`;
@@ -462,7 +462,7 @@ async function openJob(id) {
       <input id="rn-title" class="rn" value="${esc(j.title)}" placeholder="Title"><button class="ghost" id="rnbtn" style="padding:6px 10px;font-size:13px">Rename</button>${r.script === "zh" || r.lang === "zh" || r.lang === "yue" ? `<button class="ghost" id="zhread" style="padding:6px 10px;font-size:13px" title="Whisper can't tell Mandarin from Cantonese singing. Switch the romanization here; the timing stays.">${r.lang === "yue" ? "Jyutping → Pinyin (Mandarin)" : "Pinyin → Jyutping (Cantonese)"}</button>` : ""}</span></div>
     ${j.updates && j.updates.length ? `<div class="aibox" style="margin-bottom:12px"><div class="row" style="justify-content:space-between">
       <b>Made with an older version: remaking it now would add</b>
-      <button class="primary" id="remake">↻ Remake with the latest version</button></div>
+      <span class="row">${gpuMenu("gpupick2")}<button class="primary" id="remake">↻ Remake with the latest version</button></span></div>
       <ul style="margin:6px 0 0 18px;padding:0">${j.updates.map(u => `<li>${esc(u)}</li>`).join("")}</ul>
       <div class="hint" style="margin-top:6px">Takes 1–2 minutes. ${j.edited ? "Your edits are kept: lines you moved by hand keep your timing, other lines get the new timing with your singers, colours and word fixes, and if the remake finds nothing to change, your version stays exactly as it is. <i>Undo remake</i> brings back this version if you prefer it" : "The new timing replaces this one"}${j.published ? "; publish it afterwards to update PiKaraoke" : ""}.</div></div>` : ""}
     ${j.can_undo_remake ? `<div class="aibox" style="margin-bottom:12px"><div class="row" style="justify-content:space-between">
@@ -510,7 +510,7 @@ async function openJob(id) {
   if ($("#remake")) $("#remake").onclick = async () => {
     if (ed && ed.dirty && !confirm("You have unsaved edits; remaking replaces the timing. Remake anyway?")) return;
 
-    try { await api(`/api/jobs/${id}/remake`, {method: "POST"}); if (ed) ed.dirty = false; closePlayer(); ed = null; openJob(id); loadJobs(); }
+    try { await api(`/api/jobs/${id}/remake`, {method: "POST", body: JSON.stringify({gpu: ($("#gpupick2") || {}).value || null})}); if (ed) ed.dirty = false; closePlayer(); ed = null; openJob(id); loadJobs(); }
     catch (e) { toast(e.message); }
   };
   if ($("#undoremake")) $("#undoremake").onclick = async () => {

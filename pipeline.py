@@ -17,6 +17,7 @@ import config as C  # noqa: E402
 from assgen import make_ass, save_lines  # noqa: E402
 import versions  # noqa: E402
 import earcheck  # noqa: E402
+import linecheck  # noqa: E402
 from romanize import sound_key  # noqa: E402
 
 WORK, MODELS, SEP_MODEL = C.WORK, C.MODELS, C.SEP_MODEL
@@ -1150,6 +1151,68 @@ if _raw is not None and out_lines and len(out_lines) == len(synced):
                     say("info", f"the last {len(_tl)} line{'s' if len(_tl) != 1 else ''} weren't heard and sat on talking: "
                                 f"moved {d_:.1f}s later, to where the talking ends")
                 break
+
+
+# Close the loop: check the finished timing by ear (the same check that marks lines for the user) and fix what it
+# clearly hears. A line heard well away from where it sits (over 1 s late, or 2.5 s early) is moved to where it was
+# heard and its words aligned again; the move is kept only if a second check then hears the line in place and the
+# lines stay in order. (Dance, Dance: its last four lines were heard 8-10 s later than placed, and the earlier
+# steps, which work on runs of lines, sometimes let that through.)
+if heard_spans and out_lines and len(out_lines) == len(synced) and all(l.get("_i") == k_ for k_, l in enumerate(out_lines)):
+    _fixed = 0
+    for _pass in range(2):
+        _ho = linecheck.heard_offsets(out_lines, heard_spans, wlang)
+        _st = [l["words"][0][0] for l in out_lines]
+        _mv = {}
+        for k_, x_ in enumerate(_ho):
+            if x_ is None or not (x_ < -earcheck.LATE or x_ > earcheck.EARLY) or abs(x_) > 15.0:
+                continue
+            _mv[k_] = x_
+        # a line that wasn't heard goes along with a neighbour that moves a lot, if the lyrics put the two close
+        # together (within 4 s) and closer than its other neighbour: they were sung together (marked as a guess)
+        _fol = {}
+        for k_, x_ in enumerate(_ho):
+            if x_ is not None or k_ in _mv:
+                continue
+            gp_ = synced[k_][0] - synced[k_ - 1][0] if k_ > 0 else 1e9
+            gn_ = synced[k_ + 1][0] - synced[k_][0] if k_ + 1 < len(synced) else 1e9
+            nb_ = k_ + 1 if gn_ <= gp_ else k_ - 1
+            if min(gp_, gn_) <= 4.0 and nb_ in _mv and abs(_mv[nb_]) > 2.5:
+                _fol[k_] = nb_
+        for k_, nb_ in _fol.items():
+            _mv[k_] = _mv[nb_]
+        for k_ in sorted(_mv):  # a moved line must still come after the line before it and before the line after it
+            pv_ = _st[k_ - 1] + _mv.get(k_ - 1, 0.0) if k_ > 0 else -1e9
+            nx_ = _st[k_ + 1] + _mv.get(k_ + 1, 0.0) if k_ + 1 < len(_st) else 1e9
+            if not (pv_ + 0.3 < _st[k_] + _mv[k_] < nx_ - 0.3):
+                del _mv[k_]
+        if not _mv:
+            break
+        _offs = np.array([l["words"][0][0] - synced[l["_i"]][0] for l in out_lines])
+        for k_, x_ in _mv.items():
+            _offs[k_] += x_
+        _cand = list(out_lines)
+        for l_ in align_at(_offs, only=set(_mv))[0]:
+            _cand[l_["_i"]] = dict(l_, **{g_: out_lines[l_["_i"]][g_] for g_ in ("_guess",) if g_ in out_lines[l_["_i"]]})
+        _h2 = linecheck.heard_offsets(_cand, heard_spans, wlang)
+        if os.environ.get("KARAOKE_DEBUG_FIT"):
+            say("info", f"debug ear pass {_pass}: tail offsets {[None if x is None else round(x, 1) for x in _ho[-6:]]} move {dict((k, round(v, 1)) for k, v in _mv.items())} "
+                        f"followers {_fol} realigned {[k for k in _mv if _cand[k] is not out_lines[k]]} after {[(k, None if _h2[k] is None else round(_h2[k], 1)) for k in _mv]} "
+                        f"new starts {[round(_cand[k]['words'][0][0], 1) for k in sorted(_mv)]}")
+        _ok = [k_ for k_ in _mv if k_ not in _fol and _cand[k_] is not out_lines[k_] and _h2[k_] is not None and abs(_h2[k_]) <= 1.0]
+        for k_ in _ok:
+            out_lines[k_] = _cand[k_]
+            out_lines[k_].pop("_guess", None)  # heard in place now: no longer a guess
+        for k_, nb_ in _fol.items():  # followers go only if their neighbour's move held
+            if nb_ in _ok and k_ in _mv and _cand[k_] is not out_lines[k_]:
+                out_lines[k_] = dict(_cand[k_], _guess="wasn't heard: moved along with the line next to it (a guess)")
+                _ok.append(k_)
+        _fixed += len(_ok)
+        if not _ok:
+            break
+    if _fixed:
+        off_last = float(out_lines[-1]["words"][0][0] - synced[-1][0])
+        say("info", f"checked by ear: {_fixed} line{'s' if _fixed != 1 else ''} moved to where they were heard")
 
 
 def _fa_words(a, b, texts):
