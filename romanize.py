@@ -204,3 +204,19 @@ def sound_key(text):
             pass
     text = unicodedata.normalize("NFKD", text.replace("đ", "d").replace("Đ", "D")).lower()
     return re.sub(r"[^a-z']", "", text)
+
+
+# Runes (Elder and Younger Futhark, Anglo-Saxon): some lyrics write whole lines in runes (Ado's "Tot Musica" spells
+# its chant this way). Each rune becomes the Latin letter(s) it stands for, so the line can be sung and timed.
+RUNES = dict(zip("ᚠᚢᚦᚨᚱᚲᚷᚹᚺᚾᛁᛃᛈᛉᛊᛏᛒᛖᛗᛚᛞᛟᚬᚴᚼᚽᚿᛅᛆᛋᛌᛐᛑᛘᛙᛦᛧᚭᚮᚯᚩᚪᚣᛣᛤ",
+                 "fuþarkgwhnijpzstbemldookhhnaasstdmmrroooaayk k"))
+RUNES.update({"ᚩ": "o", "ᚦ": "th", "ᛜ": "ng", "ᛝ": "ng", "ᛇ": "ei", "ᚫ": "ae", "ᛠ": "ea", "ᛡ": "io", "ᛢ": "kw", "ᛥ": "st", "ᛤ": "k", "ᛣ": "k"})
+RUNE_RE = re.compile("[\u16A0-\u16F8]")
+
+
+def derune(text):
+    """Runes in a line, written in Latin letters (other text untouched)."""
+    if not RUNE_RE.search(text):
+        return text
+    return RUNE_RE.sub(lambda m: RUNES.get(m.group(0), ""), text)
+

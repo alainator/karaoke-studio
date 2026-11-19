@@ -258,6 +258,10 @@ if any(CJK.search(x) for _, x in synced):
     synced = merged
 else:
     synced = [(t, _clean(x)) for t, x in synced]
+from romanize import derune, RUNE_RE as RUNE_CHECK  # noqa: E402
+if any(RUNE_CHECK.search(x) for _, x in synced):
+    synced = [(t, derune(x)) for t, x in synced]
+    say("info", "lines written in runes: spelled in Latin letters")
 synced = [(t, x) for t, x in synced if x]
 align_text = [t for _, t in synced]   # what Whisper reads (original script)
 origs = [None] * len(synced)          # original line shown above the romaji
