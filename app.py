@@ -402,7 +402,7 @@ async def create_job(req: Request):
     # the old song is still there). Only the studio's copy is removed; a published file stays in PiKaraoke until the
     # new song is published over it.
     old = str(b.get("replace") or "")
-    if ID_RE.match(old) and old != jid and os.path.exists(job_path(old, "job.json")):
+    if ID_RE.match(old) and old != jid and os.path.exists(os.path.join(JOBS, old, "job.json")):
         set_job(jid, replaces=old)
     wake.set()
     return {"id": jid}
@@ -1342,7 +1342,7 @@ def finish(jid, rc, err, oom, where):
             if job.get("published"):  # a remade song: PiKaraoke still has the old one until it's published again
                 job["unpublished_changes"] = True
             old = job.pop("replaces", None)  # made to replace another song: that one goes now
-            if old and ID_RE.match(old) and old != jid and os.path.exists(job_path(old, "job.json")):
+            if old and ID_RE.match(old) and old != jid and os.path.exists(os.path.join(JOBS, old, "job.json")):  # it may be gone already
                 try:
                     if load(old).get("status") not in ("running", "queued"):
                         shutil.rmtree(job_path(old))
