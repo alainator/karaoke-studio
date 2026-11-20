@@ -1558,6 +1558,13 @@ def run_remote(jid):
                     with helper_call(f"/jobs/{jid}/files/{name}", timeout=120, raw=True) as r, open(dst + ".part", "wb") as f:
                         shutil.copyfileobj(r, f, 1 << 20)
                     os.replace(dst + ".part", dst)
+                try:  # what the helper heard (the by-ear check uses it later); a helper on older code doesn't send it
+                    with helper_call(f"/jobs/{jid}/files/heard.json", timeout=60, raw=True) as r, open(job_path(jid, "heard.json.part"), "wb") as f:
+                        shutil.copyfileobj(r, f)
+                    os.replace(job_path(jid, "heard.json.part"), job_path(jid, "heard.json"))
+                except Exception:
+                    if os.path.exists(job_path(jid, "heard.json.part")):
+                        os.remove(job_path(jid, "heard.json.part"))
                 maybe_auto_romaji(jid, 0)
                 finish(jid, 0, None, False, "remote")
             else:

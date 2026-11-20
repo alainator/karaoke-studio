@@ -3,6 +3,8 @@
     venv/bin/python -I deploy/check-library.py            # all finished songs that have no check yet
     venv/bin/python -I deploy/check-library.py --all      # check every song again
     venv/bin/python -I deploy/check-library.py --dry      # only report, change nothing
+    venv/bin/python -I deploy/check-library.py --missing-heard   # songs without heard.json (made on a helper PC
+                                                                   before helpers sent it back): listen and mark again
 
 Transcribes each song's vocal track once on the GPU (about 20 s a song, saved as heard.json), then marks the lines
 that were heard somewhere other than where they sit. Words, timing, singers and published files are not touched:
@@ -14,7 +16,7 @@ import config as C
 import earcheck
 from assgen import normalize
 
-ALL, DRY = "--all" in sys.argv, "--dry" in sys.argv
+ALL, DRY, MISSING = "--all" in sys.argv, "--dry" in sys.argv, "--missing-heard" in sys.argv
 model = None
 todo = marked = 0
 for jid in sorted(os.listdir(C.JOBS)):
@@ -25,9 +27,11 @@ for jid in sorted(os.listdir(C.JOBS)):
         continue
     if job.get("status") != "done" or not os.path.exists(os.path.join(d, "words.json")) or not os.path.exists(os.path.join(d, "vocals.m4a")):
         continue
-    if (job.get("result") or {}).get("confidence") and not ALL:
-        continue
     hp = os.path.join(d, "heard.json")
+    if MISSING and os.path.exists(hp):
+        continue
+    if (job.get("result") or {}).get("confidence") and not ALL and not MISSING:
+        continue
     if not os.path.exists(hp):
         import stable_whisper
         model = model or stable_whisper.load_model(C.WHISPER_MODEL, device="cuda")

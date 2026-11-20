@@ -27,6 +27,7 @@ TOKEN = os.environ.get("HELPER_TOKEN", "")
 ALLOW = {a.strip() for a in os.environ.get("HELPER_ALLOW", "").split(",") if a.strip()}
 JOBS = os.path.join(C.JOBS, "helper")
 FILES = ("out.mp4", "vocals.m4a", "words.json", "lyrics.ass", "result.json")
+OPTIONAL = ("heard.json",)  # what was heard (the by-ear check): sent back too, but a song is fine without it
 ID_RE = re.compile(r"^[0-9a-z-]{8,80}$")
 
 os.makedirs(JOBS, exist_ok=True)
@@ -160,7 +161,7 @@ def status(jid: str):
 
 @app.get("/jobs/{jid}/files/{name}")
 def file(jid: str, name: str):
-    if jid not in jobs or name not in FILES + ("pipeline.log",) or not ID_RE.match(jid):
+    if jid not in jobs or name not in FILES + OPTIONAL + ("pipeline.log",) or not ID_RE.match(jid):
         raise HTTPException(404)
     p = os.path.join(JOBS, jid, name)
     if not os.path.exists(p):
