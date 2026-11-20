@@ -279,8 +279,13 @@ if any(KANA.search(t) for _, t in synced):
     kat.use_foreign_spelling = False  # the sung reading ("aidoru"), which is also what the aligner hears
     # lines without Japanese (English parts, already-romaji lines) stay as they are and get no line above
     origs = [t if CJK.search(t) else None for _, t in synced]
+    # a Japanese song with Korean lines (a JA/KO duet): cutlet turns Hangul into "?", so those lines are romanized as
+    # Korean (pronounced), still with the original line above
+    from romanize import romanize_korean as _rk_
+    _hangul = re.compile(r"[\uac00-\ud7a3]")
+    _rom = lambda x: _rk_(x) if _hangul.search(x) and not KANA.search(x) else kat.romaji(x)
     synced = [(t, hand_romaji[k] if k in hand_romaji else
-               (re.sub(r"\s+", " ", kat.romaji(x)).strip() or x) if CJK.search(x) else x)
+               (re.sub(r"\s+", " ", _rom(x)).strip() or x) if CJK.search(x) else x)
               for k, (t, x) in enumerate(synced)]
     lang = "ja"
     auto_n = sum(1 for k in range(len(synced)) if k not in hand_romaji and CJK.search(origs[k] or ""))
@@ -310,7 +315,7 @@ elif SCRIPT in SCRIPTS:
                    if _sre.search(x) else x) for k, (t, x) in enumerate(synced)]
         say("info", f"{SCRIPTS[SCRIPT][1]} lyrics: romanized, original shown above")
 elif source == "karamoe":
-    lang = "ja"
+    lang = job.get("lang") or "ja"  # kara.moe is mostly anime songs; a language set on the song wins (English anime songs)
     align_text = [t for _, t in synced]
 # romaji lyrics sometimes carry an English translation in brackets ("Yoru no nioi ni (I'll spend all thirty
 # nights)"): drop those, but only in songs whose own lyrics aren't English (in English songs, brackets are
@@ -461,6 +466,11 @@ if SCRIPT == "zh" or SCRIPT in SCRIPTS or (SCRIPT == "latin" and (_en(_txt) < 0.
         lang = det
     say("info", f"sung language: {det or 'unknown'}")
     SUNG = det
+# a language set on the song by hand wins over detection for Latin-script lyrics (detection can hear a spoken intro
+# or a crowd: Croatian "Cesarica" was heard as English)
+if SCRIPT == "latin" and job.get("lang") and job["lang"] not in ("ja", "ko", "zh", "yue") and lang != job["lang"]:
+    lang = job["lang"]
+    say("info", f"language set on the song: {lang}")
 # Mostly-English songs with a Japanese/Korean/Chinese chorus (Fear, and Loathing in Las Vegas: 48 English lines, 5
 # Japanese): Whisper listens in English. Told "Japanese", it hears nothing in the English verses, so they got no help
 # from listening and drifted. The native lines keep their romaji and their original line on screen.
@@ -1546,4 +1556,10 @@ json.dump({"offset": round(off, 2), "lines": len(out_lines), "skipped": skipped,
            else ("kara.moe" if source == "karamoe" else None),
            "duration": round(duration, 1), "seconds": round(time.time() - t0), "encoded": "x264",
            "confidence": CONF, "pipeline": versions.VERSION}, open(f"{job_dir}/result.json", "w"))
+# a song the user trimmed (ads or an intro cut off): the new render is cut the same way, lines and all
+_trim = job.get("trim") or {}
+if _trim.get("start") or _trim.get("end"):
+    import trimtools  # noqa: E402
+    trimtools.apply_trim(job_dir, float(_trim.get("start") or 0), _trim.get("end"), old_start=0.0, fresh=True)
+    say("info", f"trimmed to {float(_trim.get('start') or 0):.1f} s" + (f"-{_trim['end']:.1f} s" if _trim.get("end") else "") + " of the video, as before")
 say("step", "done")

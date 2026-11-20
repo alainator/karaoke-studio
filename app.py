@@ -21,6 +21,8 @@ sys.path.insert(0, HERE)
 import config as C  # noqa: E402
 from assgen import load_cast, load_lines, make_ass, save_lines, who_of  # noqa: E402
 import versions  # noqa: E402
+import trimtools  # noqa: E402
+import videoswap  # noqa: E402
 
 # what the studio did and when: data/logs/studio.log (5 files of 2 MB kept)
 os.makedirs(C.LOGS, exist_ok=True)
@@ -445,7 +447,7 @@ def summary(job):
 
 def _summary(job):
     keys = ("id", "artist", "title", "yt", "status", "step", "created", "finished", "error", "offset",
-            "published", "published_as", "video_title", "result", "waiting", "edited", "unpublished_changes", "lang", "gpu", "ai_romaji", "video_v", "gpu_pref", "reviewed", "lrc_id", "lyrics_source")
+            "published", "published_as", "video_title", "result", "waiting", "edited", "unpublished_changes", "lang", "gpu", "ai_romaji", "video_v", "gpu_pref", "reviewed", "lrc_id", "lyrics_source", "trim", "video_task")
     return {k: job.get(k) for k in keys}
 
 
@@ -467,6 +469,8 @@ def get_job(jid: str):
     s = summary(job)
     s["log"] = job.get("log", [])[-30:]
     s["steps"] = STEPS
+    if job.get("status") == "done":
+        s["videos"] = videos_listing(jid, job)
     return s
 
 
@@ -593,6 +597,431 @@ async def put_lines(jid: str, req: Request):
             job["unpublished_changes"] = True
         save(jid, job)
     return {"lines": len(lines)}
+
+
+@app.post("/api/jobs/{jid}/trim")
+async def trim_song(jid: str, req: Request):
+    """Cut the start and/or end off a made song's video (ads, an intro skit, a long title card). start/end are seconds
+    in the ORIGINAL video; start 0 and no end puts the whole video back. Lines move with the cut. Lines sung outside
+    the kept part are refused unless drop_lines is true."""
+    check_origin(req)
+    b = await req.json()
+    try:
+        start = max(0.0, float(b.get("start") or 0))
+        end = float(b["end"]) if b.get("end") not in (None, "", 0) else None
+    except (TypeError, ValueError):
+        raise HTTPException(400, "start and end are seconds")
+
+    def work():
+        with lock:
+            job = load(jid)
+            if job["status"] != "done":
+                raise HTTPException(400, "finish making it first")
+            if video_busy(job):
+                raise HTTPException(409, VIDEO_BUSY)
+            res = job.get("result") or {}
+            full = (res.get("trim") or {}).get("full") or res.get("duration") or 0
+            if end is not None and (end <= start + 5 or end > full + 0.5):
+                raise HTTPException(400, f"the end must be at least 5 s after the start and at most {full:.1f} s")
+            if start >= full - 5:
+                raise HTTPException(400, "the start is too close to the end of the video")
+            old_start = float((job.get("trim") or {}).get("start") or 0)
+            bad = trimtools.lines_cut_off(job_path(jid), old_start, start, end)
+            if bad and not b.get("drop_lines"):
+                raise HTTPException(409, "lines " + ", ".join(map(str, bad[:12])) + (" and more" if len(bad) > 12 else "")
+                                    + " are sung outside the part you keep: move or delete them first, or trim anyway to drop them")
+            jd = job_path(jid)
+            custom = bool(videoswap.entries(jd))
+            videoswap.put_official_back(jd)  # trimtools keeps (and cuts from) whatever out.mp4 is: it must be the official one
+            try:
+                length = trimtools.apply_trim(jd, start, end, old_start=old_start, offset=job.get("offset", 0.0))
+            finally:
+                if custom:  # custom videos follow the cut: made again from their places in the original video
+                    keys = videoswap.official_changed(jd)
+                    claim_video(job, "custom videos, for the new trim")
+                    save(jid, job)
+                    rerender_later(jid, keys, "custom videos, for the new trim")
+            job["video_v"] = time.time()  # a new out.mp4: the page mustn't play its cached copy
+            if start <= 0.05 and end is None:
+                job.pop("trim", None)
+            else:
+                job["trim"] = {"start": round(start, 2), "end": round(end, 2) if end else None}
+            job["result"] = json.load(open(job_path(jid, "result.json")))
+            job["edited"] = time.time()
+            if job.get("published"):
+                job["unpublished_changes"] = True
+            job.setdefault("log", []).append(f"trimmed to {start:.1f}-{(end or full):.1f} s of the video ({length:.1f} s)"
+                                             if job.get("trim") else "trim removed: the whole video again")
+            save(jid, job)
+            return {"duration": round(length, 1), "trim": job.get("trim"), "dropped": bad if b.get("drop_lines") else [],
+                    "videos": keys if custom else []}
+    return await asyncio.to_thread(work)
+
+
+# ---------------- custom videos (videoswap.py) ----------------
+# People's own videos for a song: the song keeps its sound and lyrics and plays over another picture, either in place
+# of the official video (out.mp4; the official is kept for "Restore official") or as a named second version published
+# as its own PiKaraoke entry. Downloading, lining up and rendering run in a background thread, one at a time per song;
+# job["video_task"] shows what it's doing (the song's status stays "done", so its page stays usable).
+VIDEO_BUSY = "it's still making a video for this song; wait for it to finish"
+
+
+def video_busy(job):
+    return bool((job.get("video_task") or {}).get("running"))
+
+
+def claim_video(job, what):
+    """Mark the job as busy with a video (call under the lock, then save)."""
+    job["video_task"] = {"running": True, "what": what, "step": "start", "text": "starting", "started": time.time(), "error": None}
+
+
+def _video_progress(jid, **kw):
+    with lock:
+        job = load(jid)
+        job["video_task"] = dict(job.get("video_task") or {}, **kw)
+        save(jid, job)
+
+
+def run_video(jid, what, fn):
+    """Run fn(progress) -> (message, main_video_changed) in a background thread; the job was claimed already."""
+    def go():
+        try:
+            msg, changed = fn(lambda step, text: _video_progress(jid, step=step, text=text))
+            with lock:
+                job = load(jid)
+                job["video_task"] = {"running": False, "what": what, "done": time.time(), "error": None, "text": msg}
+                if changed:  # out.mp4 is new: the page must fetch it again, and PiKaraoke has the old one
+                    job["video_v"] = time.time()
+                    if job.get("published"):
+                        job["unpublished_changes"] = True
+                job.setdefault("log", []).append(msg)
+                save(jid, job)
+            log.info("video %s | %s", jid, msg)
+        except Exception as e:
+            err = str(e)[:300] or e.__class__.__name__
+            log.warning("video %s | %s failed: %s", jid, what, err)
+            try:
+                with lock:
+                    job = load(jid)
+                    job["video_task"] = {"running": False, "what": what, "done": time.time(), "error": err}
+                    job.setdefault("log", []).append(f"video ({what}) failed: {err[:150]}")
+                    save(jid, job)
+            except Exception:
+                pass
+    threading.Thread(target=go, daemon=True).start()
+
+
+def rerender_later(jid, keys, what):
+    """Make these custom videos again (after a trim or remake), from their stored places in the original video."""
+    def fn(progress):
+        jd = job_path(jid)
+        done, failed, unsure, main = 0, [], 0, False
+        for k in keys:
+            d = videoswap.entry_dir(jd, k)
+            meta = videoswap.load_meta(d) or {}
+            label = "the replacement video" if k == "replace" else f"“{meta.get('name') or k}”"
+            try:
+                progress("render", f"making {label} again")
+                m = videoswap.rerender(jd, k, realign=bool(meta.get("realign")))
+                done += 1
+                main = main or k == "replace"
+                unsure += m.get("aligned") == "none"
+            except Exception as e:
+                failed.append(label)
+                if meta:
+                    meta.update(error=str(e)[:200]); videoswap.save_meta(d, meta)
+        if failed and not done:
+            raise RuntimeError("couldn't make " + ", ".join(failed) + " again")
+        msg = f"{what}: {done} made again" + (f", {', '.join(failed)} failed (Re-render to try again)" if failed else "") \
+            + (f"; {unsure} couldn't be lined up by sound: check where they start" if unsure else "")
+        return msg, main
+    run_video(jid, what, fn)
+
+
+def version_base(job, meta):
+    """A version's name in PiKaraoke: "Artist - Title (Mia's version)"."""
+    return f"{safe_name(job['artist'])} - {safe_name(job['title'])} ({safe_name(meta.get('name') or meta['slug'])})"
+
+
+def videos_listing(jid, job=None):
+    job = job or load(jid)
+    jd = job_path(jid)
+    items = []
+    for m in videoswap.entries(jd):
+        x = videoswap.public(m, jd)
+        x["v"] = round(m.get("made_at") or 0)
+        if m["mode"] == "version":
+            x["publish_name"] = version_base(job, m)
+            # lyrics edited since this version was published (publishing the song or the version updates them)
+            x["lyrics_unpublished"] = bool(m.get("published") and (job.get("edited") or 0) > max(m.get("published") or 0, m.get("lyrics_published") or 0))
+        items.append(x)
+    return {"replaced": any(x["mode"] == "replace" for x in items), "items": items, "task": job.get("video_task"),
+            "official_v": round(job.get("video_v") or job.get("finished") or 0)}
+
+
+def _video_params(b):
+    """mode, name, offset, fill, lead from a request (JSON body or query string)."""
+    mode = str(b.get("mode") or "")
+    if mode not in ("replace", "version"):
+        raise HTTPException(400, "choose: replace the official video, or add it as another version")
+    name = re.sub(r"\s+", " ", str(b.get("name") or "")).strip()[:60]
+    if mode == "version" and not name:
+        raise HTTPException(400, "give the version a name, like “Mia's version”")
+    off = b.get("offset")
+    try:
+        off = None if off in (None, "") else float(off)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "the start is in seconds")
+    if off is not None and not -3600 < off < 3600:
+        raise HTTPException(400, "that start is too far off")
+    fill = b.get("fill") if b.get("fill") in videoswap.FILLS else "hold"
+    lead = b.get("lead") if b.get("lead") in videoswap.LEADS else "hold"
+    return mode, (name if mode == "version" else None), off, fill, lead
+
+
+def _check_new_version(jid, mode, name):
+    if mode == "version" and os.path.exists(os.path.join(videoswap.version_dir(job_path(jid), videoswap.slugify(name)), "meta.json")):
+        raise HTTPException(409, "there's already a version with that name: pick another name, or remove that one first")
+
+
+def _added(mode, name, meta):
+    how = {"sound": f"lined up by sound (starts at {meta['offset']:+.2f} s, sure: {round(100 * (meta.get('confidence') or 0))}%)",
+           "manual": f"starting at {meta['offset']:+.2f} s, as given",
+           "none": "not lined up: " + (meta.get("reason") or "no match") + "; it starts with the song, nudge it into place"}[meta["aligned"]]
+    return ("replaced the official video with a custom one" if mode == "replace" else f"added the version “{name}”") + ", " + how
+
+
+@app.get("/api/jobs/{jid}/videos")
+def list_videos(jid: str):
+    return videos_listing(jid)
+
+
+@app.post("/api/jobs/{jid}/videos")
+async def add_video_link(jid: str, req: Request):
+    """Add a custom video from a YouTube (or other yt-dlp) link. Body: {url, mode: replace|version, name (versions),
+    offset (optional: seconds of the song where the video's start plays; otherwise it's lined up by sound),
+    fill: hold|loop, lead: hold|black}. Runs in the background; GET .../videos shows how it's going."""
+    check_origin(req)
+    b = await req.json()
+    url = str(b.get("url") or "").strip()
+    if not re.match(r"https?://[^\s/]+\.[^\s]+$", url):
+        raise HTTPException(400, "paste a web link to the video (https://...)")
+    mode, name, off, fill, lead = _video_params(b)
+    what = "the replacement video" if mode == "replace" else f"the version “{name}”"
+    with lock:
+        job = load(jid)
+        if job["status"] != "done":
+            raise HTTPException(400, "finish making it first")
+        if video_busy(job):
+            raise HTTPException(409, VIDEO_BUSY)
+        _check_new_version(jid, mode, name)
+        claim_video(job, what)
+        save(jid, job)
+
+    def fn(progress):
+        inc = job_path(jid, "videos", f"incoming-{int(time.time() * 1000)}")
+        try:
+            progress("download", "downloading the video")
+            src = videoswap.fetch(url, inc)
+            meta = videoswap.add(job_path(jid), mode, name, src, {"kind": "link", "url": url}, off, fill, lead, progress)
+        finally:
+            shutil.rmtree(inc, ignore_errors=True)
+        return _added(mode, name, meta), mode == "replace"
+    run_video(jid, what, fn)
+    return {"ok": True}
+
+
+@app.put("/api/jobs/{jid}/videos/upload")
+async def add_video_file(jid: str, req: Request, mode: str = "", name: str = "", offset: str = "", fill: str = "hold",
+                         lead: str = "hold", filename: str = "video.mp4"):
+    """Add a custom video from a file: the request body is the file itself (no form encoding), the rest in the query
+    string, as for a link. The file is streamed to disk; then it's lined up and rendered in the background."""
+    check_origin(req)
+    mode, name, off, fill, lead = _video_params({"mode": mode, "name": name, "offset": offset, "fill": fill, "lead": lead})
+    ext = os.path.splitext(filename or "")[1].lower()
+    if ext not in videoswap.VIDEO_EXTS:
+        raise HTTPException(400, "that doesn't look like a video file (" + ", ".join(e[1:] for e in videoswap.VIDEO_EXTS[:6]) + "…)")
+    size = int(req.headers.get("content-length") or 0)
+    if size > videoswap.MAX_SOURCE_BYTES:
+        raise HTTPException(413, "that file is too big (4 GB at most)")
+    what = "the replacement video" if mode == "replace" else f"the version “{name}”"
+    with lock:
+        job = load(jid)
+        if job["status"] != "done":
+            raise HTTPException(400, "finish making it first")
+        if video_busy(job):
+            raise HTTPException(409, VIDEO_BUSY)
+        _check_new_version(jid, mode, name)
+        claim_video(job, what)
+        job["video_task"].update(step="upload", text="receiving the file")
+        save(jid, job)
+    inc = job_path(jid, "videos", f"incoming-{int(time.time() * 1000)}")
+    path = os.path.join(inc, "upload" + ext)
+    try:
+        os.makedirs(inc, exist_ok=True)
+        got = 0
+        with open(path, "wb") as f:
+            async for chunk in req.stream():
+                got += len(chunk)
+                if got > videoswap.MAX_SOURCE_BYTES:
+                    raise HTTPException(413, "that file is too big (4 GB at most)")
+                f.write(chunk)
+        if got < 1000:
+            raise HTTPException(400, "the file didn't arrive (it's empty)")
+    except BaseException as e:
+        shutil.rmtree(inc, ignore_errors=True)
+        with lock:
+            job = load(jid)
+            job["video_task"] = {"running": False, "what": what, "done": time.time(),
+                                 "error": e.detail if isinstance(e, HTTPException) else "the upload stopped before the end"}
+            save(jid, job)
+        raise
+    shown = os.path.basename(filename)[:120]
+
+    def fn(progress):
+        try:
+            meta = videoswap.add(job_path(jid), mode, name, path, {"kind": "file", "filename": shown, "bytes": got}, off, fill, lead, progress)
+        finally:
+            shutil.rmtree(inc, ignore_errors=True)
+        return _added(mode, name, meta), mode == "replace"
+    run_video(jid, what, fn)
+    return {"ok": True, "bytes": got}
+
+
+def _entry_meta(jid, key):
+    try:
+        d = videoswap.entry_dir(job_path(jid), key)
+    except ValueError:
+        raise HTTPException(404, "no such video")
+    m = videoswap.load_meta(d)
+    if not m:
+        raise HTTPException(404, "no such video")
+    return d, m
+
+
+@app.post("/api/jobs/{jid}/videos/{key}/render")
+async def rerender_video(jid: str, key: str, req: Request):
+    """Make a custom video again. Body (all optional): {offset: seconds of the song where its start plays, or nudge:
+    seconds to move it by (+ = later), fill: hold|loop, lead: hold|black, realign: true (line it up by sound again)}.
+    With none of them, it's re-made where it was (e.g. after a failure). key: "replace" or the version's slug."""
+    check_origin(req)
+    b = await req.json()
+    with lock:
+        job = load(jid)
+        if job["status"] != "done":
+            raise HTTPException(400, "finish making it first")
+        if video_busy(job):
+            raise HTTPException(409, VIDEO_BUSY)
+        d, meta = _entry_meta(jid, key)
+        off = None
+        try:
+            if b.get("offset") not in (None, ""):
+                off = float(b["offset"])
+            elif b.get("nudge") not in (None, "", 0):
+                off = float(meta.get("start") or 0) - videoswap.trim_start(job_path(jid)) + float(b["nudge"])
+        except (TypeError, ValueError):
+            raise HTTPException(400, "offset and nudge are seconds")
+        if off is not None and not -3600 < off < 3600:
+            raise HTTPException(400, "that start is too far off")
+        what = "the replacement video" if key == "replace" else f"the version “{meta.get('name')}”"
+        claim_video(job, what)
+        save(jid, job)
+    fill, lead, realign = b.get("fill"), b.get("lead"), bool(b.get("realign"))
+
+    def fn(progress):
+        m = videoswap.rerender(job_path(jid), key, offset=off, fill=fill, lead=lead, realign=realign, progress=progress)
+        return (f"made {what} again, starting at {m['offset']:+.2f} s" + (" (lined up by sound)" if realign and m["aligned"] == "sound"
+                else " (couldn't line it up by sound)" if realign else "")), key == "replace"
+    run_video(jid, what, fn)
+    return {"ok": True}
+
+
+@app.delete("/api/jobs/{jid}/videos/{key}")
+def remove_video(jid: str, key: str, req: Request):
+    """Remove a version (its studio copy; a published copy stays in PiKaraoke, like deleting a song). For the
+    replacement, use .../videos/restore."""
+    check_origin(req)
+    if key == "replace":
+        raise HTTPException(400, "use Restore official for the replacement video")
+    with lock:
+        job = load(jid)
+        if video_busy(job):
+            raise HTTPException(409, VIDEO_BUSY)
+        _, meta = _entry_meta(jid, key)
+        videoswap.remove_version(job_path(jid), key)
+        job.setdefault("log", []).append(f"removed the version “{meta.get('name')}”")
+        save(jid, job)
+    return {"ok": True, "published_as": meta.get("published_as")}
+
+
+@app.post("/api/jobs/{jid}/videos/restore")
+async def restore_official(jid: str, req: Request):
+    """Put the official video back (the replacement and its source are removed)."""
+    check_origin(req)
+    with lock:
+        job = load(jid)
+        if video_busy(job):
+            raise HTTPException(409, VIDEO_BUSY)
+        try:
+            videoswap.restore_official(job_path(jid))
+        except RuntimeError as e:
+            raise HTTPException(400, str(e))
+        job["video_v"] = time.time()
+        if job.get("published"):
+            job["unpublished_changes"] = True
+        job.setdefault("log", []).append("the official video is back")
+        save(jid, job)
+    return {"ok": True}
+
+
+@app.get("/api/jobs/{jid}/videos/{key}/file")
+def video_file(jid: str, key: str):
+    """The official render ("official"), the song's video ("replace" = out.mp4), or a version's."""
+    jd = job_path(jid)
+    if key == "official":
+        p = videoswap.official_file(jd)
+    elif key == "replace":
+        p = os.path.join(jd, "out.mp4")
+    else:
+        _entry_meta(jid, key)
+        p = videoswap.entry_video(jd, key)
+    if not os.path.exists(p):
+        raise HTTPException(404, "not made yet")
+    return FileResponse(p, media_type="video/mp4", headers={"Cache-Control": "private, max-age=604800"})  # URLs carry ?v=
+
+
+@app.post("/api/jobs/{jid}/videos/{key}/publish")
+async def publish_version(jid: str, key: str, req: Request):
+    """Publish a version to PiKaraoke as its own song, "Artist - Title (name)", with the song's lyrics."""
+    check_origin(req)
+    with lock:
+        job = load(jid)
+        if job["status"] != "done":
+            raise HTTPException(400, "finish making it first")
+        if video_busy(job):
+            raise HTTPException(409, VIDEO_BUSY)
+        if key == "replace":
+            raise HTTPException(400, "the replacement is the song's video: publish the song")
+        d, meta = _entry_meta(jid, key)
+        if meta.get("stale"):
+            raise HTTPException(400, "the song changed since this version was made: Re-render it first")
+        base = version_base(job, meta)
+        if base == job.get("published_as") or base == final_base(job):
+            raise HTTPException(400, "give the version a name that's different from the song's")
+        if os.path.exists(f"{MV_DIR}/{base}.mp4") and base != meta.get("published_as"):
+            raise HTTPException(400, "a song with that name is already in PiKaraoke")
+        os.makedirs(MV_DIR, exist_ok=True)
+        for src, ext in ((videoswap.entry_video(job_path(jid), key), ".mp4"), (job_path(jid, "lyrics.ass"), ".ass")):
+            tmp = f"{MV_DIR}/.{base}{ext}.part"
+            shutil.copyfile(src, tmp)
+            os.replace(tmp, f"{MV_DIR}/{base}{ext}")
+        meta.update(published=time.time(), published_as=base, unpublished_changes=False, lyrics_published=time.time())
+        videoswap.save_meta(d, meta)
+        log.info("published %s version %s as %s", jid, key, base)
+        job.setdefault("log", []).append(f"published the version “{meta.get('name')}” as '{base}'")
+        save(jid, job)
+    msg = pk_rescan()
+    return {"name": base, "message": msg}
 
 
 @app.get("/api/jobs/{jid}/peaks")
@@ -1070,6 +1499,18 @@ async def rename(jid: str, req: Request):
                     os.replace(f"{MV_DIR}/{old}{ext}", f"{MV_DIR}/{new}{ext}")
             job["published_as"] = new
             moved = True
+        for m in videoswap.entries(job_path(jid)):  # published versions: "Artist - Title (name)" follows
+            pa = m.get("published_as")
+            if m["mode"] != "version" or not pa or not os.path.exists(f"{MV_DIR}/{pa}.mp4"):
+                continue
+            nv = version_base(job, m)
+            if nv != pa and not os.path.exists(f"{MV_DIR}/{nv}.mp4"):
+                for ext in (".mp4", ".ass"):
+                    if os.path.exists(f"{MV_DIR}/{pa}{ext}"):
+                        os.replace(f"{MV_DIR}/{pa}{ext}", f"{MV_DIR}/{nv}{ext}")
+                m["published_as"] = nv
+                videoswap.save_meta(videoswap.version_dir(job_path(jid), m["slug"]), m)
+                moved = True
         save(jid, job)
     msg = pk_rescan() if moved else "renamed"
     return {"artist": artist, "title": title, "name": new, "message": msg}
@@ -1088,6 +1529,8 @@ async def remake(jid: str, req: Request):
         job = load(jid)
         if job["status"] != "done":
             raise HTTPException(400, "only finished songs can be remade")
+        if video_busy(job):
+            raise HTTPException(409, VIDEO_BUSY)
         if gpu in ("auto", "local", "remote"):  # the card chosen on the song page (otherwise as the song was first made)
             job["gpu_pref"] = gpu
         if os.path.exists(job_path(jid, "words.json")):
@@ -1202,7 +1645,7 @@ def delete_job(jid: str, req: Request):
     check_origin(req)
     with lock:
         job = load(jid)
-        if job["status"] == "running":
+        if job["status"] == "running" or video_busy(job):
             raise HTTPException(400, "it's running; wait for it to finish")
         shutil.rmtree(job_path(jid))  # only the studio's copy; a published song stays in PiKaraoke
     log.info("deleted %s (%s - %s)", jid, job.get("artist"), job.get("title"))
@@ -1358,13 +1801,30 @@ def finish(jid, rc, err, oom, where):
             if job.get("published"):  # a remade song: PiKaraoke still has the old one until it's published again
                 job["unpublished_changes"] = True
             old = job.pop("replaces", None)  # made to replace another song: that one goes now
+            adopted = 0
             if old and ID_RE.match(old) and old != jid and os.path.exists(os.path.join(JOBS, old, "job.json")):  # it may be gone already
                 try:
                     if load(old).get("status") not in ("running", "queued"):
+                        try:  # its custom videos come along (lined up again by sound: it's a different official video)
+                            adopted = videoswap.adopt(job_path(old), job_path(jid))
+                        except Exception:
+                            log.exception("couldn't carry the custom videos of %s over", old)
                         shutil.rmtree(job_path(old))
                         log.info("replaced %s with %s", old, jid)
                 except Exception:
                     log.exception("couldn't remove the replaced song %s", old)
+            # A remake (or a song that took over another's custom videos) has a new out.mp4 made from the official
+            # video: it becomes the official copy, and every custom video is made again over it (the audio is new too).
+            # Done here, not in pipeline.py, because a remake on the helper PC never sees the custom videos.
+            try:
+                if videoswap.entries(job_path(jid)):
+                    keys = videoswap.official_changed(job_path(jid), realign=bool(adopted))
+                    what = "custom videos, taken over from the song this one replaces" if adopted else "custom videos, over the remade song"
+                    claim_video(job, what)
+                    rerender_later(jid, keys, what)
+            except Exception as e:
+                log.exception("custom videos of %s", jid)
+                job.setdefault("log", []).append(f"couldn't re-make the custom videos ({str(e)[:100]}); use Re-render on each")
             if job.get("remade") and job.get("remake_merge"):
                 try:
                     r = merge_remake(jid)
@@ -1661,6 +2121,11 @@ async def publish(jid: str, req: Request):
         job = load(jid)
         if job["status"] not in ("done",):
             raise HTTPException(400, "finish making it first")
+        if video_busy(job):
+            raise HTTPException(409, VIDEO_BUSY)
+        rm = videoswap.load_meta(videoswap.replace_dir(job_path(jid)))
+        if rm and rm.get("stale"):  # out.mp4 would be the official picture while the page says it's theirs
+            raise HTTPException(409, "your video in place of the official one needs Re-render first (or Restore official)")
         allowed = set(old_versions(job))
         if any(x not in allowed for x in remove):
             raise HTTPException(400, "can only remove the listed old versions")
@@ -1680,6 +2145,14 @@ async def publish(jid: str, req: Request):
                 if os.path.isfile(stem + ext):
                     os.remove(stem + ext)
             removed.append(name)
+        # its published versions share these lyrics: they get them too
+        for m in videoswap.entries(job_path(jid)):
+            pa = m.get("published_as")
+            if m["mode"] == "version" and pa and os.path.exists(f"{MV_DIR}/{pa}.mp4"):
+                shutil.copyfile(job_path(jid, "lyrics.ass"), f"{MV_DIR}/.{pa}.ass.part")
+                os.replace(f"{MV_DIR}/.{pa}.ass.part", f"{MV_DIR}/{pa}.ass")
+                m["lyrics_published"] = time.time()
+                videoswap.save_meta(videoswap.version_dir(job_path(jid), m["slug"]), m)
         job.update(status="done", published=time.time(), published_as=base, unpublished_changes=False)
         log.info("published %s as %s", jid, base)
         job.setdefault("log", []).append(f"published as '{base}'" + (f"; removed {len(removed)} old version(s)" if removed else ""))
@@ -1772,5 +2245,9 @@ if __name__ == "__main__":
     for j in list_jobs():
         if j["status"] == "running":
             job = load(j["id"]); job.update(status="queued", step="queued"); save(j["id"], job)
+        if (j.get("video_task") or {}).get("running"):  # not requeued: the custom videos say they need a re-render
+            job = load(j["id"])
+            job["video_task"] = dict(job["video_task"], running=False, error="the studio restarted while making it; try again (Re-render)")
+            save(j["id"], job)
     threading.Thread(target=worker, daemon=True).start()
     uvicorn.run(app, host=a.host, port=a.port, log_level="warning", proxy_headers=True, forwarded_allow_ips="*")

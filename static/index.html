@@ -130,6 +130,18 @@ details.aidone .aisug { display: block; padding: 6px 0; }
 select.sg { background: var(--bg); border: 1px solid var(--line); color: var(--text); border-radius: 6px; padding: 5px 4px; font: inherit; font-size: 13px; }
 
 
+.vids { margin-top: 14px; }
+.vids .vrow { padding: 10px 0 2px; margin-top: 8px; border-top: 1px solid var(--line); }
+.vids .vrow > .row { margin-top: 6px; }
+.vids .vadj { margin-top: 6px; }
+.vids input:not([type=radio]), .vids select { background: var(--bg); border: 1px solid var(--line); color: var(--text); border-radius: 6px; padding: 5px 7px; font: inherit; font-size: 14px; }
+.vids input.voff { width: 84px; font-variant-numeric: tabular-nums; }
+.vids #vurl { flex: 1 1 260px; }
+.vids #vname { flex: 1 1 180px; }
+.vids button.sm { padding: 5px 10px; font-size: 13px; }
+.vids button.on { color: #17121c; background: var(--gold); border-color: var(--gold); }
+.vids label.chk { display: inline-flex; gap: 6px; align-items: center; font-size: 14px; color: var(--text); margin: 0; }
+.vids a { color: var(--info); }
 </style>
 </head>
 <body>
@@ -496,7 +508,7 @@ async function openJob(id) {
     else detailTimer = setTimeout(() => { openJob(id); loadJobs(); }, 2500);
     return;
   }
-  if (document.getElementById("pv") && document.getElementById("pv").dataset.id === id) return renderPublish(id, j);
+  if (document.getElementById("pv") && document.getElementById("pv").dataset.id === id) { renderVideos(id, j); return renderPublish(id, j); }
   const r = j.result || {};
   $("#jobdetail").innerHTML = `${backLink()}
     <div class="row" style="justify-content:space-between;margin:6px 0 10px"><h2 style="margin:0">${esc(j.artist)} – ${esc(j.title)}</h2>
@@ -524,6 +536,7 @@ async function openJob(id) {
     ${j.ai_romaji && j.ai_romaji.length ? `<details class="ctl aidone"><summary><b>AI fixed ${j.ai_romaji.length} ${j.ai_romaji.some(g => g.japanese) ? "romaji reading" : "lyric line"}${j.ai_romaji.length === 1 ? "" : "s"}</b> <span class="hint">(${j.ai_romaji.some(g => g.japanese) ? "it read the Japanese, and checked special readings against the singing" : "where the lyrics differ from what's sung, checked against the vocals"}; <i>Undo all edits</i> in the editor restores the original)</span></summary>
       ${j.ai_romaji.map(g => `<div class="aisug"><span class="hint">${esc(g.japanese)}${g.how && g.how.includes("heard") ? " · confirmed by the singing" : ""}</span><br><s>${esc(g.old)}</s> → <b>${esc(g.new)}</b></div>`).join("")}</details>` : ""}
     <div class="ctl editor" id="editor"><span class="spinner"></span></div>
+    <div class="ctl vids" id="vids"><span class="spinner"></span></div>
     <div class="ctl pub" id="pub"><span class="spinner"></span></div>`;
   const v = $("#pv");
   await statusReady;
@@ -548,6 +561,7 @@ async function openJob(id) {
     }, 300);
   };
   renderPublish(id, j);
+  renderVideos(id, j);
   initEditor(id, j);
   if ($("#remake")) $("#remake").onclick = async () => {
     if (ed && ed.dirty && !confirm("You have unsaved edits; remaking replaces the timing. Remake anyway?")) return;
@@ -873,9 +887,14 @@ function renderEditor() {
       <div class="row">${ed.dirty ? '<span class="dirty">unsaved changes</span>' : ""}
         <button class="ghost" id="pastebtn" title="Paste the lyrics from a lyrics site (e.g. Genius): fixes words/readings and, from section headers like [Chorus: Name], colours lines by singer; you review every change">${ed.lines.some(l => l.orig) ? "Paste romaji" : "Paste lyrics"}</button>
         ${STATUS.romaji_ai && (ed.lines.some(l => l.orig && /[\u3040-\u30ff]/.test(l.orig)) || !ed.lines.some(l => l.orig)) ? `<button class="ghost" id="aicheck" title="Compares the lyrics with what's actually sung and suggests fixes; you review every change">${ed.lines.some(l => l.orig) ? "Check romaji with AI" : "Check lyrics with AI"}</button>` : ""}
+        <button class="ghost" id="trimbtn" title="Cut ads, an intro skit or a title card off the start of the video (or extra video off the end)">Trim video</button>
         ${ed.canReset ? '<button class="ghost" id="edreset">Undo all edits</button>' : ""}
         <button class="primary" id="edsave" ${ed.dirty ? "" : "disabled"}>Save</button></div>
     </div>
+    ${ed.trim ? (() => { const t = ed.j.trim; return `<div class="aibox"><b>Trim the video</b><div class="hint">Cut ads, an intro skit or a title card off the start, or extra video off the end. Times are in the original video${t ? ` (it's trimmed now to ${fmtT(t.start || 0)}–${t.end ? fmtT(t.end) : "the end"})` : ""}. The lyrics move with the cut, and you can change or undo it later.</div>
+      <div class="row" style="margin-top:8px;flex-wrap:wrap;gap:8px"><label>Start at <input id="trimstart" size="9" value="${fmtT(t ? t.start || 0 : 0)}"></label><button class="ghost" id="trimnow" title="The video's current position">Use the current time</button>
+        <label>End at <input id="trimend" size="9" placeholder="the end" value="${t && t.end ? fmtT(t.end) : ""}"></label></div>
+      <div class="row" style="margin-top:8px"><button class="primary" id="trimgo">Trim</button>${t ? '<button class="ghost" id="trimundo">Whole video again</button>' : ""}<button class="ghost" id="trimcancel">Cancel</button></div></div>`; })() : ""}
     ${ed.paste ? `<div class="aibox"><b>Paste lyrics</b><div class="hint">Copy the whole lyrics from a lyrics site and paste them here (for Japanese/Korean/Chinese songs, the "Romanized" version, e.g. Genius Romanizations). Line breaks don't matter: they're lined up with this song by sound. Section headers like <i>[Chorus: Bang Chan, Han]</i> colour the lines by singer. You review every change.</div>
       <textarea id="pastetext" rows="8" style="width:100%;margin-top:8px;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:8px;font:inherit"></textarea>
       <div class="row" style="margin-top:8px"><button class="primary" id="pastego">Compare</button><button class="ghost" id="pastecancel">Cancel</button></div></div>` : ""}
@@ -1117,6 +1136,26 @@ function renderEditor() {
       if (ed.j.published) renderPublish(ed.id, {...ed.j, unpublished_changes: true});
     } catch (e) { toast(e.message); $("#edsave").disabled = false; }
   };
+  const parseTT = v => { v = String(v || "").trim(); if (!v) return null; const p = v.split(":").map(Number); if (p.some(isNaN)) return NaN; return p.length === 2 ? p[0] * 60 + p[1] : p[0]; };
+  if ($("#trimbtn")) $("#trimbtn").onclick = () => { if (ed.dirty) return toast("Save your edits first"); ed.trim = !ed.trim; ed.paste = false; ed.ai = null; renderEditor(); };
+  if ($("#trimcancel")) $("#trimcancel").onclick = () => { ed.trim = false; renderEditor(); };
+  if ($("#trimnow")) $("#trimnow").onclick = () => { const pv = $("#pv"); if (pv) $("#trimstart").value = fmtT(pv.currentTime + ((ed.j.trim && ed.j.trim.start) || 0)); };
+  const doTrim = async (start, end) => {
+    const go = async drop => api(`/api/jobs/${ed.id}/trim`, {method: "POST", body: JSON.stringify({start, end, drop_lines: drop})});
+    toast("Trimming… this re-cuts the video and takes a minute", 60000);
+    try { await go(false); }
+    catch (e) {
+      if (!/sung outside/.test(e.message) || !confirm(e.message + "\n\nTrim anyway and drop those lines?")) { toast(e.message); return; }
+      try { await go(true); } catch (e2) { toast(e2.message); return; }
+    }
+    const id = ed.id; toast("Trimmed"); ed = null; closePlayer(); $("#jobdetail").innerHTML = ""; openJob(id);  // a new video: build the page again
+  };
+  if ($("#trimgo")) $("#trimgo").onclick = () => {
+    const s0 = parseTT($("#trimstart").value) || 0, e0 = parseTT($("#trimend").value);
+    if (isNaN(s0) || (e0 !== null && isNaN(e0))) return toast("Type times like 0:18 or 18.5");
+    doTrim(s0, e0);
+  };
+  if ($("#trimundo")) $("#trimundo").onclick = () => doTrim(0, null);
   if ($("#edreset")) $("#edreset").onclick = async () => {
     if (!confirm("Undo every lyric edit and go back to the automatic timing?")) return;
     try { await api(`/api/jobs/${ed.id}/lines/reset`, {method: "POST"}); reloadLyrics(); await initEditor(ed.id, ed.j); if (ed.j.published) renderPublish(ed.id, {...ed.j, unpublished_changes: true}); }
@@ -1147,7 +1186,7 @@ async function renderPublish(id, j) {
     $("#pubbtn").disabled = true;
     const remove = [...document.querySelectorAll(".old:checked")].map(c => c.value);
     if (ed && ed.dirty && !confirm("You have unsaved lyric edits; they won't be included. Publish anyway?")) { $("#pubbtn").disabled = false; return; }
-    try { const r = await api(`/api/jobs/${id}/publish`, {method: "POST", body: JSON.stringify({remove})}); toast(r.message + (r.removed.length ? ` · removed ${r.removed.length} old version(s)` : ""), 7000); loadJobs(); renderPublish(id, {...j, published: true, unpublished_changes: false}); if (ed) ed.j = {...ed.j, published: true}; }
+    try { const r = await api(`/api/jobs/${id}/publish`, {method: "POST", body: JSON.stringify({remove})}); toast(r.message + (r.removed.length ? ` · removed ${r.removed.length} old version(s)` : ""), 7000); loadJobs(); renderPublish(id, {...j, published: true, unpublished_changes: false}); renderVideos(id, j); if (ed) ed.j = {...ed.j, published: true}; }
     catch (e) { toast(e.message); $("#pubbtn").disabled = false; }
   };
   $("#del").onclick = () => delJob(id, j.published);
@@ -1155,6 +1194,146 @@ async function renderPublish(id, j) {
 async function delJob(id, published) {
   if (!confirm(published ? "Delete the studio copy? The published song stays in PiKaraoke." : "Delete this song from the studio?")) return;
   try { await api("/api/jobs/" + id, {method: "DELETE"}); location.hash = "jobs"; loadJobs(); } catch (e) { toast(e.message); }
+}
+
+// ---------- custom videos ----------
+// People's own videos for this song: the song's sound and lyrics over another picture, in place of the official video
+// or as a named second version. Lined up with the song by sound; nudge and re-render if it's off.
+let vid = {adding: false, timer: null, watching: "main", wasBusy: false, id: null};
+const VSTEP = {start: "Starting", upload: "Receiving the file", download: "Downloading the video", align: "Lining it up with the song", render: "Making the video"};
+const fmtOff = o => (o < 0 ? "−" : "+") + Math.abs(o || 0).toFixed(2) + " s";
+function vidSource(x) {
+  const s = x.source || {};
+  return s.kind === "link" ? `<a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.url.replace(/^https?:\/\/(www\.)?/, "").slice(0, 48))}</a>` : esc(s.filename || "uploaded file");
+}
+function vidHow(x) {
+  const tip = "Where your video's beginning falls in the song: + and it starts later (its first picture waits), − and its first seconds are cut";
+  const at = `<span title="${tip}">starts at ${fmtOff(x.offset)}</span>`;
+  const drift = x.drift != null && Math.abs(x.drift) > 0.3 ? ` · <span class="tag warn" title="The match moves by ${Math.abs(x.drift).toFixed(1)} s between the start and the end of the song: the video plays the song at another speed or was edited, so it can't fit everywhere">speed differs</span>` : "";
+  if (x.aligned === "none") return `<span class="tag warn">not lined up</span> ${esc(x.reason || "")}, so it ${at}. Nudge it into place.`;
+  if (x.aligned === "manual") return `${at} (set by hand)`;
+  return `lined up by sound: ${at} · sure: ${Math.round(100 * (x.confidence || 0))}%${x.aligned === "sound+nudge" ? " · nudged" : ""}${drift}`;
+}
+function watchVideo(id, url, key) {
+  const pv = $("#pv"); if (!pv) return;
+  const t = pv.currentTime, playing = !pv.paused;
+  pv.src = url;
+  pv.addEventListener("loadedmetadata", () => { pv.currentTime = t; if (playing) pv.play().catch(() => {}); }, {once: true});
+  vid.watching = key;
+  document.querySelectorAll("[data-watch]").forEach(b => b.classList.toggle("on", b.dataset.watch === key));
+}
+function uploadVideo(id, file, q) {
+  return new Promise((ok, bad) => {
+    const x = new XMLHttpRequest();
+    x.open("PUT", `/api/jobs/${id}/videos/upload?` + new URLSearchParams({...q, filename: file.name}));
+    x.setRequestHeader("Content-Type", "application/octet-stream");
+    x.upload.onprogress = e => { if (e.lengthComputable && $("#vprog")) $("#vprog").textContent = `Uploading… ${Math.round(100 * e.loaded / e.total)}%`; };
+    x.onload = () => { let b = {}; try { b = JSON.parse(x.responseText); } catch {} x.status < 300 ? ok(b) : bad(new Error(b.detail || `HTTP ${x.status}`)); };
+    x.onerror = () => bad(new Error("the upload failed"));
+    x.send(file);
+  });
+}
+async function renderVideos(id, j) {
+  const box = $("#vids"); if (!box) return;
+  clearTimeout(vid.timer);
+  if (vid.id !== id) vid = {adding: false, timer: null, watching: "main", wasBusy: false, id};
+  let v; try { v = await api(`/api/jobs/${id}/videos`); } catch (e) { box.textContent = e.message; return; }
+  if (currentJob !== id || !$("#vids")) return;
+  const t = v.task || {}, busy = !!t.running;
+  if (vid.wasBusy && !busy) {  // just finished: reload whatever is playing, it may be new; the publish box may change
+    const w = vid.watching, it = v.items.find(x => x.key === w);
+    if (w === "main") watchVideo(id, `/api/jobs/${id}/file/video.mp4?v=${v.official_v}`, "main");
+    else if (w === "official") watchVideo(id, `/api/jobs/${id}/videos/official/file?v=${v.official_v}`, "official");
+    else if (it) watchVideo(id, `/api/jobs/${id}/videos/${it.key}/file?v=${it.v}`, w);
+    try { const jj = await api("/api/jobs/" + id); if (currentJob === id) renderPublish(id, jj); } catch {}
+  }
+  vid.wasBusy = busy;
+  const rep = v.items.find(x => x.mode === "replace"), vers = v.items.filter(x => x.mode === "version");
+  const mainUrl = `/api/jobs/${id}/file/video.mp4?v=${v.official_v}`;
+  const watch = (key, url) => `<button class="ghost sm ${vid.watching === key ? "on" : ""}" data-watch="${esc(key)}" data-url="${esc(url)}">${vid.watching === key ? "Watching" : "Watch"}</button>`;
+  const adjust = x => `<div class="row vadj">
+      <span class="hint">Move it</span>${[-1, -0.1].map(d => `<button class="ghost sm" data-nudge="${d}" data-k="${esc(x.key)}">${d > -1 ? "−0.1" : "−1"} s</button>`).join("")}
+      <input class="voff" data-k="${esc(x.key)}" type="number" step="0.05" value="${(x.offset || 0).toFixed(2)}" title="Where your video's beginning falls in the song, in seconds">
+      ${[0.1, 1].map(d => `<button class="ghost sm" data-nudge="${d}" data-k="${esc(x.key)}">+${d} s</button>`).join("")}
+      <select class="vfill" data-k="${esc(x.key)}" title="When your video is shorter than the song"><option value="hold" ${x.fill !== "loop" ? "selected" : ""}>then hold its last picture</option><option value="loop" ${x.fill === "loop" ? "selected" : ""}>then play it again</option></select>
+      <button class="primary sm" data-rerender="${esc(x.key)}" ${busy ? "disabled" : ""}>Re-render</button>
+      ${x.has_audio && x.aligned !== "sound" ? `<button class="ghost sm" data-realign="${esc(x.key)}" ${busy ? "disabled" : ""} title="Find where it fits by its sound again">Line up by sound</button>` : ""}</div>`;
+  const flags = x => (x.stale ? ' <span class="tag warn" title="The song was trimmed or remade since this was made">needs Re-render</span>' : "") + (x.error ? ` <span class="tag warn" title="${esc(x.error)}">last try failed</span>` : "");
+  box.innerHTML = `<div class="row" style="justify-content:space-between"><b>Videos</b>
+      ${vid.adding || busy ? "" : '<button class="ghost sm" id="vadd" title="Someone made their own video for this song? Use it with this song\'s sound and lyrics">+ Add a video</button>'}</div>
+    ${busy ? `<div class="hint" style="margin-top:8px"><span class="spinner"></span> ${esc(VSTEP[t.step] || t.text || "Working")}: ${esc(t.what || "")}…</div>` : ""}
+    ${!busy && t.error ? `<div style="margin-top:8px"><span class="tag warn">couldn't make ${esc(t.what || "it")}</span> <span class="hint">${esc(t.error)}</span></div>` : ""}
+    ${!busy && !t.error && t.text && t.done && Date.now() / 1000 - t.done < 600 ? `<div class="hint" style="margin-top:8px">Done: ${esc(t.text)}</div>` : ""}
+    <div class="vrow"><div class="vt"><b>Official video</b><div class="hint">${rep ? "Kept: your video plays in its place. Restore it any time." : "The song's video."}</div></div>
+      <div class="row">${rep ? watch("official", `/api/jobs/${id}/videos/official/file?v=${v.official_v}`) : watch("main", mainUrl)}${rep ? `<button class="ghost sm" id="vrestore" ${busy ? "disabled" : ""}>Restore official</button>` : ""}</div></div>
+    ${rep ? `<div class="vrow"><div class="vt"><b>Your video, in place of the official one</b>${flags(rep)}<div class="hint">${vidSource(rep)} · ${vidHow(rep)}</div></div>
+      <div class="row">${watch("main", mainUrl)}</div>${adjust(rep)}</div>` : ""}
+    ${vers.map(x => `<div class="vrow"><div class="vt"><b>${esc(x.name)}</b>${flags(x)}${x.published ? ` <span class="tag good">published</span>${x.unpublished_changes || x.lyrics_unpublished ? ' <span class="tag warn">changes not published yet</span>' : ""}` : ""}
+        <div class="hint">${vidSource(x)} · ${vidHow(x)}</div><div class="hint">In PiKaraoke as <i>${esc(x.publish_name)}</i></div></div>
+      <div class="row">${watch(x.key, `/api/jobs/${id}/videos/${x.key}/file?v=${x.v}`)}<button class="ghost sm" data-vpub="${esc(x.key)}" ${busy || x.stale ? "disabled" : ""}>${x.published ? "Publish again" : "Publish"}</button><button class="ghost sm danger" data-vdel="${esc(x.key)}" ${busy ? "disabled" : ""}>Remove</button></div>${adjust(x)}</div>`).join("")}
+    ${vid.adding ? `<div class="aibox"><b>Add a video</b><div class="hint">Someone's own video for this song. It plays with this song's sound and lyrics, lined up by its sound, so pick one with the song playing in it.</div>
+      <div class="row" style="margin-top:8px"><label class="chk"><input type="radio" name="vsrc" value="link" checked> A link</label><label class="chk"><input type="radio" name="vsrc" value="file"> A file</label></div>
+      <div class="row" style="margin-top:6px"><input type="text" id="vurl" placeholder="https://www.youtube.com/watch?v=…"><input type="file" id="vfile" accept="video/*" style="display:none"></div>
+      <div class="row" style="margin-top:8px"><label class="chk"><input type="radio" name="vmode" value="version" checked> Add as another version</label><input id="vname" placeholder="Its name, like Mia's version" maxlength="60">
+        <label class="chk"><input type="radio" name="vmode" value="replace"> Replace the official video</label></div>
+      <details style="margin-top:8px"><summary class="hint">More</summary><div class="row" style="margin-top:6px">
+        <label class="chk">Starts at <input id="voffset" placeholder="by sound" size="8"> s of the song</label><span class="hint">Leave it empty to line it up by sound.</span>
+        <label class="chk">When it's shorter than the song <select id="vfill2"><option value="hold">hold its last picture</option><option value="loop">play it again</option></select></label></div></details>
+      <div class="row" style="margin-top:10px"><button class="primary" id="vgo">Add</button><button class="ghost" id="vcancel">Cancel</button><span class="hint" id="vprog"></span></div></div>` : ""}`;
+  document.querySelectorAll("[data-watch]").forEach(b => b.onclick = () => watchVideo(id, b.dataset.url, b.dataset.watch));
+  const go = async (path, opts, msg) => { try { await api(path, opts); if (msg) toast(msg); } catch (e) { toast(e.message); } renderVideos(id, j); };
+  const offOf = k => parseFloat((document.querySelector(`.voff[data-k="${k}"]`) || {}).value);
+  document.querySelectorAll("[data-nudge]").forEach(b => b.onclick = () => { const i = document.querySelector(`.voff[data-k="${b.dataset.k}"]`); i.value = (parseFloat(i.value || 0) + parseFloat(b.dataset.nudge)).toFixed(2); });
+  document.querySelectorAll("[data-rerender]").forEach(b => b.onclick = () => {
+    const k = b.dataset.rerender, o = offOf(k);
+    if (isNaN(o)) return toast("Type the start in seconds, like 1.5 or -3");
+    go(`/api/jobs/${id}/videos/${k}/render`, {method: "POST", body: JSON.stringify({offset: o, fill: document.querySelector(`.vfill[data-k="${k}"]`).value})}, "Re-rendering… takes a minute");
+  });
+  document.querySelectorAll("[data-realign]").forEach(b => b.onclick = () => go(`/api/jobs/${id}/videos/${b.dataset.realign}/render`, {method: "POST", body: JSON.stringify({realign: true})}, "Lining it up again…"));
+  document.querySelectorAll("[data-vdel]").forEach(b => b.onclick = () => {
+    const x = vers.find(y => y.key === b.dataset.vdel);
+    if (!confirm(x.published ? `Remove “${x.name}” from the studio? Its published copy stays in PiKaraoke.` : `Remove “${x.name}”?`)) return;
+    if (vid.watching === x.key) watchVideo(id, mainUrl, "main");
+    go(`/api/jobs/${id}/videos/${x.key}`, {method: "DELETE"}, "Removed");
+  });
+  document.querySelectorAll("[data-vpub]").forEach(b => b.onclick = async () => {
+    b.disabled = true;
+    if (ed && ed.dirty && !confirm("You have unsaved lyric edits; they won't be included. Publish anyway?")) { b.disabled = false; return; }
+    try { const r = await api(`/api/jobs/${id}/videos/${b.dataset.vpub}/publish`, {method: "POST"}); toast(`Published as “${r.name}”. ${r.message}`, 7000); }
+    catch (e) { toast(e.message); }
+    renderVideos(id, j);
+  });
+  if ($("#vrestore")) $("#vrestore").onclick = () => { if (confirm("Put the official video back? Your video is removed.")) go(`/api/jobs/${id}/videos/restore`, {method: "POST"}, "The official video is back").then(() => watchVideo(id, `/api/jobs/${id}/file/video.mp4?v=${Date.now()}`, "main")); };
+  if ($("#vadd")) $("#vadd").onclick = () => { vid.adding = true; renderVideos(id, j); };
+  if ($("#vcancel")) $("#vcancel").onclick = () => { vid.adding = false; renderVideos(id, j); };
+  document.querySelectorAll('[name="vsrc"]').forEach(r => r.onchange = () => { const f = r.value === "file" && r.checked; $("#vfile").style.display = f ? "" : "none"; $("#vurl").style.display = f ? "none" : ""; });
+  document.querySelectorAll('[name="vmode"]').forEach(r => r.onchange = () => { $("#vname").disabled = document.querySelector('[name="vmode"]:checked').value !== "version"; });
+  if ($("#vgo")) $("#vgo").onclick = async () => {
+    const src = document.querySelector('[name="vsrc"]:checked').value, mode = document.querySelector('[name="vmode"]:checked').value;
+    const name = $("#vname").value.trim(), offTxt = $("#voffset").value.trim();
+    const neg = /^[-−]/.test(offTxt), absT = offTxt ? parseT(offTxt.replace(/^[-−+]/, "")) : null;
+    if (offTxt && absT == null) return toast("Type the start like 1.5, -3 or 0:12");
+    const offset = absT == null ? null : neg ? -absT : absT;
+    if (mode === "version" && !name) return toast("Give the version a name, like Mia's version");
+    if (mode === "replace" && rep && !confirm("Your other video in place of the official one goes away. Go on?")) return;
+    const q = {mode, name: mode === "version" ? name : "", offset: offset ?? "", fill: $("#vfill2").value};
+    $("#vgo").disabled = true;
+    try {
+      if (src === "file") {
+        const f = $("#vfile").files[0];
+        if (!f) { $("#vgo").disabled = false; return toast("Choose a video file"); }
+        $("#vprog").textContent = "Uploading…";
+        await uploadVideo(id, f, q);
+      } else {
+        const url = $("#vurl").value.trim();
+        if (!/^https?:\/\//.test(url)) { $("#vgo").disabled = false; return toast("Paste a link to the video (https://…)"); }
+        await api(`/api/jobs/${id}/videos`, {method: "POST", body: JSON.stringify({...q, url, offset})});
+      }
+      vid.adding = false;
+    } catch (e) { toast(e.message); }
+    renderVideos(id, j);
+  };
+  if (busy) vid.timer = setTimeout(() => renderVideos(id, j), 2500);
 }
 
 // ---------- library ----------

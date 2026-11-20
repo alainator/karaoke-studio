@@ -8,3 +8,4 @@ __pycache__/
 venv/
 static/octopus/*
 !static/octopus/.gitkeep
+.before-*/
