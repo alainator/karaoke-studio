@@ -1,0 +1,35 @@
+{
+  "name": "unlinked",
+  "about": "A token the Studio doesn't know (unlinked, or wrong): every call answers 401.",
+  "request": {
+    "method": "POST",
+    "path": "/api/encore/plays",
+    "headers": {
+      "Authorization": "Bearer fixture-token-revoked-00000000000"
+    },
+    "body": {
+      "plays": [
+        {
+          "pid": "3d4e5f6a-7b8c-4d9e-9f0a-2b3c4d5e6f7a",
+          "id": "20261101-120000-nova-lane-paper-lanterns",
+          "base": "Nova Lane - Paper Lanterns (Music Video)",
+          "at": 1794399840,
+          "seconds": 33,
+          "result": "finished",
+          "singers": 1,
+          "style": null,
+          "party": "Friday at Ken's"
+        }
+      ]
+    },
+    "schema": "plays.post.request.schema.json"
+  },
+  "response": {
+    "status": 401,
+    "headers": {},
+    "body": {
+      "error": "Unknown player token (not linked, or unlinked by the Studio)."
+    },
+    "schema": "error.schema.json"
+  }
+}

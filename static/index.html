@@ -170,6 +170,32 @@ a.lnk:hover { text-decoration: underline; }
 #dupwarn { flex-basis: 100%; } #dupwarn:empty { display: none; }
 #dupwarn .aibox { margin: 0; border-color: #ffb020; background: rgba(255,176,32,.07); }
 .libtable td:first-child { overflow-wrap: anywhere; }
+.nbadge { display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 5px; border-radius: 99px; background: var(--gold); color: var(--gold-ink); font-size: 12px; font-weight: 700; line-height: 18px; text-align: center; }
+.nbadge:empty { display: none; }
+.reqs { display: flex; flex-direction: column; gap: 8px; }
+.req { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px; }
+.req .t { font-weight: 600; overflow-wrap: anywhere; }
+.req .m { color: var(--dim); font-size: 13px; }
+.req .note { margin-top: 4px; font-size: 14px; }
+.req .acts { margin-top: 8px; }
+.req.done { opacity: .75; }
+.rstat { font-size: 12px; font-weight: 700; padding: 1px 8px; border-radius: 99px; background: var(--panel2); color: var(--dim); white-space: nowrap; }
+.rstat.open { background: rgba(255,201,77,.16); color: var(--gold); }
+.rstat.making, .rstat.ready { background: rgba(143,182,255,.15); color: var(--info); }
+.rstat.published, .rstat.have { background: rgba(95,211,154,.15); color: var(--ok); }
+.rstat.declined, .rstat.failed { background: rgba(255,122,133,.14); color: var(--bad); }
+.pickbox { margin-top: 8px; }
+.pickbox input { width: 100%; padding: 9px 12px; font-size: 15px; }
+.pickbox .list { max-height: 260px; overflow: auto; margin-top: 6px; }
+.pickbox .card { padding: 6px 10px; }
+.paircode { font: 700 34px/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: 4px; color: var(--gold); user-select: all; }
+.ptable { width: 100%; border-collapse: collapse; font-size: 14px; }
+.ptable th, .ptable td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.ptable th { color: var(--dim); font-weight: 600; font-size: 13px; }
+@media (max-width: 600px) { .ptable .c-opt { display: none; } }
+.eflags { border-color: #ffb020; }
+.eflags .fl { padding: 7px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+.eflags .fl:last-child { border-bottom: 0; }
 .libmeta { display: none; margin-top: 4px; font-size: 13px; color: var(--dim); }
 @media (max-width: 600px) {
   /* phones: the kind and play count go under the song's name, so the name gets the room */
@@ -188,6 +214,8 @@ a.lnk:hover { text-decoration: underline; }
     <button data-v="make" class="on">Make</button>
     <button data-v="jobs">Songs</button>
     <button data-v="lib">Library</button>
+    <button data-v="requests" title="Songs guests asked for in Encore">Requests<span class="nbadge" id="reqbadge"></span></button>
+    <button data-v="players" title="Players linked to the studio (Encore)">Players</button>
   </nav>
   <div id="gpu"></div>
 </header>
@@ -232,6 +260,17 @@ a.lnk:hover { text-decoration: underline; }
     <div id="lib"></div>
     <button class="ghost more" id="lmore" style="display:none"></button>
   </section>
+
+  <section id="v-requests" class="view">
+    <div class="chips" id="rchips" style="margin:0 0 10px"></div>
+    <p class="hint">Songs guests asked for in Encore. <b>Find and make</b> searches for it on the Make tab, and the request follows the song you make (being made, ready, published); <b>We have it</b> points it at a song already made; <b>Decline</b> tells the guest no, with a reason.</p>
+    <div class="reqs" id="reqs"></div>
+    <div id="otherflags"></div>
+  </section>
+
+  <section id="v-players" class="view">
+    <div id="players"></div>
+  </section>
 </main>
 <div class="toast" id="toast"></div>
 
@@ -254,6 +293,8 @@ function show(v) {
   document.querySelectorAll(".view").forEach(s => s.classList.toggle("on", s.id === "v-" + v));
   if (v === "jobs") loadJobs();
   if (v === "lib") loadLib();
+  if (v === "requests") loadRequests();
+  if (v === "players") loadPlayers(); else clearInterval(PL.timer);
   if (v !== "jobs") closePlayer();
 }
 document.querySelectorAll("nav button").forEach(b => b.onclick = () => { if (leaveOk()) { ed = null; location.hash = b.dataset.v; } });
@@ -270,7 +311,7 @@ window.onhashchange = () => {
 let FONTS = [], STATUS = {};
 async function status() {
   try {
-    const s = await api("/api/status"); STATUS = s; $("#gpu").textContent = `GPU ${s.gpu_free_gb} GB free`; FONTS = s.fonts || ["/static/octopus/Arial.ttf", "/static/octopus/DroidSansFallback.ttf"];
+    const s = await api("/api/status"); STATUS = s; $("#gpu").textContent = `GPU ${s.gpu_free_gb} GB free`; $("#reqbadge").textContent = s.requests_open || ""; FONTS = s.fonts || ["/static/octopus/Arial.ttf", "/static/octopus/DroidSansFallback.ttf"];
     if (s.renderer === false) toast("Lyrics preview needs the renderer: run  python get_renderer.py  on the server", 15000);
   } catch {}
 }
@@ -283,6 +324,7 @@ const statusReady = status(); setInterval(async () => {
 // ---------- search ----------
 let pick = {video: null, lyr: null, data: null};
 let PENDING_REPLACE = null;  // set by "Change video or lyrics" on a song: the next search is for replacing it
+let PENDING_REQUEST = null;  // set by "Find and make" on a song request: the song made from this search answers it
 function changePicks(j) {
   if (!leaveOk()) return;
   PENDING_REPLACE = {id: j.id, name: `${j.artist} – ${j.title}`, artist: j.artist, title: j.title, yt: j.yt, lyr: `${j.lyrics_source || "lrclib"}:${j.lrc_id}`};
@@ -296,8 +338,9 @@ $("#sform").onsubmit = async e => {
   $("#sbtn").disabled = true;
   $("#results").innerHTML = `<p class="hint"><span class="spinner"></span> Searching YouTube and LRCLIB…</p>`;
   const replaces = PENDING_REPLACE || (pick && pick.replaces) || null; PENDING_REPLACE = null;
-  try { pick = {video: null, lyr: null, replaces, data: await api("/api/search?q=" + encodeURIComponent(q))}; renderResults(); }
-  catch (err) { $("#results").innerHTML = `<div class="empty">${esc(err.message)}</div>`; if (replaces) pick = {video: null, lyr: null, data: null, replaces}; }
+  const request = PENDING_REQUEST || (pick && pick.request) || null; PENDING_REQUEST = null;
+  try { pick = {video: null, lyr: null, replaces, request, data: await api("/api/search?q=" + encodeURIComponent(q))}; renderResults(); }
+  catch (err) { $("#results").innerHTML = `<div class="empty">${esc(err.message)}</div>`; if (replaces || request) pick = {video: null, lyr: null, data: null, replaces, request}; }
   $("#sbtn").disabled = false;
 };
 // timed lyrics, or plain ones (placed by listening), or pasted ones
@@ -383,7 +426,8 @@ function renderResults() {
   if (!pick.names || !pick.names.edited) pick.names = autoNames(d);
   const notes = (d.notes || []).map(n => `<div class="empty" style="padding:10px;margin-top:10px">${esc(n)}</div>`).join("");
   const repl = pick.replaces ? `<div class="aibox" style="margin-bottom:10px;border-color:#ffb020"><b>Changing “${esc(pick.replaces.name)}”.</b> Pick the video and lyrics again; when you press Make, the new song replaces it. <button class="ghost" id="unreplace" style="padding:3px 8px;font-size:12px">Keep it and make a separate song</button></div>` : "";
-  $("#results").innerHTML = `${notes}${repl}
+  const forReq = pick.request ? `<div class="aibox" style="margin-bottom:10px"><b>For ${esc(pick.request.by || "a guest")}'s request: ${esc(pick.request.label)}.</b> The song you make now answers it (the guest sees it being made, then ready). <button class="ghost" id="unrequest" style="padding:3px 8px;font-size:12px">Not for the request</button></div>` : "";
+  $("#results").innerHTML = `${notes}${repl}${forReq}
     <div class="cols">
       <div><h2>Music video</h2><div class="list">${vids}</div></div>
       <div><h2>Lyrics</h2><div class="list">${lyrsAll}</div></div>
@@ -427,6 +471,7 @@ function renderResults() {
   });
   document.querySelectorAll(".lyrview").forEach(v => v.onclick = e => e.stopPropagation());
   if ($("#unreplace")) $("#unreplace").onclick = () => { pick.replaces = null; renderResults(); };
+  if ($("#unrequest")) $("#unrequest").onclick = () => { pick.request = null; renderResults(); };
   $("#make").onclick = () => makeJob(false);
 }
 function gpuMenu(id = "gpupick") {
@@ -503,7 +548,7 @@ async function makeJob(force) {
     if (like.length) { $("#make").disabled = false; return showDup(like); }
   }
   try {
-    const r = await api("/api/jobs", {method: "POST", body: JSON.stringify({yt: pick.video.id, lrc_id: pick.lyr.id, lyrics_source: pick.lyr.source, ...(pick.lyr.source === "pasted" ? {lyrics_text: pick.lyr.text} : {}), artist, title, video_title: pick.video.title, gpu: $("#gpupick") ? $("#gpupick").value : "auto", ...(pick.replaces ? {replace: pick.replaces.id} : {})})});
+    const r = await api("/api/jobs", {method: "POST", body: JSON.stringify({yt: pick.video.id, lrc_id: pick.lyr.id, lyrics_source: pick.lyr.source, ...(pick.lyr.source === "pasted" ? {lyrics_text: pick.lyr.text} : {}), artist, title, video_title: pick.video.title, gpu: $("#gpupick") ? $("#gpupick").value : "auto", ...(pick.replaces ? {replace: pick.replaces.id} : {}), ...(pick.request ? {request: pick.request.rid} : {})})});
     // the search is done with: start the Make tab fresh next time
     $("#q").value = ""; $("#results").innerHTML = ""; pick = {video: null, lyr: null, data: null};
     location.hash = "jobs/" + r.id;
@@ -522,6 +567,10 @@ function stepBar(j) {
 // were heard right where they sit.
 function confTag(j) {
   if (j.status !== "done") return "";
+  const fl = j.encore_flags ? ` <span class="tag" style="color:#ffb020" title="Guests flagged its lyrics in Encore; the song's page lists them">⚑ flagged in Encore (${j.encore_flags})</span>` : "";
+  return fl + confTagOwn(j);
+}
+function confTagOwn(j) {
   const c = (j.result || {}).confidence;
   if (j.reviewed && !j.to_check) return ` <span class="tag" title="You played it through and marked it as good">✓ checked by you</span>`;
   if (!c) return "";  // made before lines were checked by ear: its old marks aren't reliable enough to count
@@ -594,7 +643,7 @@ window.addEventListener("resize", fixHeaderHeight); fixHeaderHeight();
 // ---- Songs
 const SONG_FILTERS = [
   ["all", "All", j => true],
-  ["fix", "Needs fixing", j => j.status === "done" && j.to_check > 0],
+  ["fix", "Needs fixing", j => j.status === "done" && (j.to_check > 0 || j.encore_flags > 0)],
   ["made", "Made, not published", j => j.status === "done" && !j.published],
   ["pub", "Published", j => j.status === "done" && !!j.published],
   ["changes", "Unpublished changes", j => !!j.published && !!j.unpublished_changes],
@@ -605,7 +654,7 @@ const SONG_FILTERS = [
 const SONG_SORTS = {
   new: (a, b) => (b.created || 0) - (a.created || 0),
   az: (a, b) => String(a.artist).localeCompare(b.artist, undefined, {sensitivity: "base"}) || String(a.title).localeCompare(b.title, undefined, {sensitivity: "base"}),
-  fix: (a, b) => (b.to_check || 0) - (a.to_check || 0) || (b.created || 0) - (a.created || 0),
+  fix: (a, b) => (b.to_check || 0) + (b.encore_flags || 0) - (a.to_check || 0) - (a.encore_flags || 0) || (b.created || 0) - (a.created || 0),
   pub: (a, b) => (b.published || 0) - (a.published || 0) || (b.created || 0) - (a.created || 0),
 };
 let SF = lsGet("ks.songs", {q: "", f: "all", sort: "new", lang: ""}), SF_N = PAGE, JOBS_ALL = null;
@@ -724,6 +773,7 @@ async function openJob(id) {
     </div>
     ${j.ai_romaji && j.ai_romaji.length ? `<details class="ctl aidone"><summary><b>AI fixed ${j.ai_romaji.length} ${j.ai_romaji.some(g => g.japanese) ? "romaji reading" : "lyric line"}${j.ai_romaji.length === 1 ? "" : "s"}</b> <span class="hint">(${j.ai_romaji.some(g => g.japanese) ? "it read the Japanese, and checked special readings against the singing" : "where the lyrics differ from what's sung, checked against the vocals"}; <i>Undo all edits</i> in the editor restores the original)</span></summary>
       ${j.ai_romaji.map(g => `<div class="aisug"><span class="hint">${esc(g.japanese)}${g.how && g.how.includes("heard") ? " · confirmed by the singing" : ""}</span><br><s>${esc(g.old)}</s> → <b>${esc(g.new)}</b></div>`).join("")}</details>` : ""}
+    <div class="ctl eflags" id="eflags" style="display:none;margin-bottom:12px"></div>
     <div class="ctl editor" id="editor"><span class="spinner"></span></div>
     <div class="ctl vids" id="vids"><span class="spinner"></span></div>
     <div class="ctl pub" id="pub"><span class="spinner"></span></div>`;
@@ -762,6 +812,7 @@ async function openJob(id) {
   renderPublish(id, j);
   renderVideos(id, j);
   initEditor(id, j);
+  renderFlags(id, j);
   if ($("#remake")) $("#remake").onclick = async () => {
     if (ed && ed.dirty && !confirm("You have unsaved edits; remaking replaces the timing. Remake anyway?")) return;
 
@@ -782,7 +833,7 @@ async function openJob(id) {
   $("#rnbtn").onclick = async () => {
     try {
       const r = await api(`/api/jobs/${id}/rename`, {method: "POST", body: JSON.stringify({artist: $("#rn-artist").value, title: $("#rn-title").value})});
-      toast(r.message === "renamed" ? `Renamed to “${r.name}”` : `Renamed to “${r.name}” in PiKaraoke too`); location.reload();
+      toast(r.message === "renamed" ? `Renamed to “${r.name}”` : r.message === "renamed in the library" ? `Renamed to “${r.name}”, its published files too` : `Renamed to “${r.name}” in PiKaraoke too`); location.reload();
     } catch (e) { toast(e.message); }
   };
 }
@@ -1555,7 +1606,7 @@ const LIB_SORTS = {
   plays: (a, b) => (b.plays || 0) - (a.plays || 0) || a.title.localeCompare(b.title, undefined, {sensitivity: "base"}),
   az: (a, b) => a.title.localeCompare(b.title, undefined, {sensitivity: "base"}),
   added: (a, b) => (b.added || 0) - (a.added || 0),
-  sung: (a, b) => String(b.last_played || "").localeCompare(String(a.last_played || "")) || (b.plays || 0) - (a.plays || 0),
+  sung: (a, b) => (b.last_played || 0) - (a.last_played || 0) || (b.plays || 0) - (a.plays || 0),
 };
 function libAction(x) {
   if (x.folder === "Music Videos") return x.job ? `<a class="lnk" href="#jobs/${esc(x.job.id)}">song page →</a>` : "";
@@ -1616,6 +1667,163 @@ async function loadLib() {
   if (!LIB_ALL) $("#lib").innerHTML = `<p class="hint"><span class="spinner"></span></p>`;
   try { LIB_ALL = (await api("/api/library")).songs; renderLib(); }
   catch (e) { $("#lib").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+}
+
+// ---------- requests (songs guests asked for in Encore) ----------
+const REQ_STATUS = {open: "Waiting", making: "Being made", ready: "Made, not published", published: "Published", have: "We have it",
+  declined: "Declined", failed: "Failed"};
+const REQ_FILTERS = [
+  ["open", "Waiting", r => r.status === "open"],
+  ["moving", "Being made", r => r.status === "making" || r.status === "ready"],
+  ["done", "Answered", r => ["published", "have", "declined", "failed"].includes(r.status)],
+  ["all", "All", r => true],
+];
+const whenT = t => t ? new Date(t * 1000).toLocaleString(undefined, {day: "numeric", month: "short", hour: "2-digit", minute: "2-digit"}) : "";
+let RQ = lsGet("ks.reqs", {f: "open"}), REQS = null;
+async function loadRequests() {
+  if (!REQS) $("#reqs").innerHTML = `<p class="hint"><span class="spinner"></span></p>`;
+  try { REQS = await api("/api/requests"); $("#reqbadge").textContent = REQS.open || ""; renderRequests(); }
+  catch (e) { $("#reqs").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+}
+const reqName = r => `${r.artist ? r.artist + " – " : ""}${r.title}`;
+function reqCard(r) {
+  const done = ["published", "have", "declined", "failed"].includes(r.status);
+  const song = r.song ? `<a class="lnk" href="#jobs/${esc(r.song.id)}">${esc(r.song.artist)} – ${esc(r.song.title)} →</a>` : r.base ? `<span class="hint">${esc(r.base)}</span>` : "";
+  const acts = r.status === "open"
+    ? `<button class="primary sm" data-make="${esc(r.rid)}">Find and make</button><button class="ghost sm" data-have="${esc(r.rid)}">We have it</button><button class="ghost sm danger" data-decline="${esc(r.rid)}">Decline</button>`
+    : done ? `<button class="ghost sm" data-reopen="${esc(r.rid)}" title="Back to the waiting list">Reopen</button>`
+    : `<button class="ghost sm" data-reopen="${esc(r.rid)}" title="Stop following this song: the request waits again">Not this song</button>`;
+  return `<div class="req${done ? " done" : ""}">
+    <div class="row" style="justify-content:space-between"><div class="t">${esc(reqName(r))}</div><span class="rstat ${esc(r.status)}">${esc(REQ_STATUS[r.status] || r.status)}</span></div>
+    <div class="m">asked by <b>${esc(r.by)}</b>${r.party ? ` at ${esc(r.party)}` : ""} · ${esc(whenT(r.at || r.created))} · from ${esc(r.player)}${r.auto ? " · auto-make" : ""}</div>
+    ${r.note ? `<div class="note">“${esc(r.note)}”</div>` : ""}
+    ${r.reason ? `<div class="m">${r.status === "declined" ? "Declined" : "Why"}: ${esc(r.reason)}</div>` : ""}
+    ${song ? `<div class="m" style="margin-top:4px">${song}</div>` : ""}
+    <div class="row acts">${acts}</div><div class="pickbox" id="pick-${esc(r.rid)}" style="display:none"></div></div>`;
+}
+function renderRequests() {
+  const all = REQS.requests, counts = REQ_FILTERS.map(f => all.filter(f[2]).length);
+  const cur = REQ_FILTERS.find(f => f[0] === RQ.f) || REQ_FILTERS[0], list = all.filter(cur[2]);
+  $("#rchips").innerHTML = chipsHtml(REQ_FILTERS, counts, cur[0]);
+  $("#reqs").innerHTML = !all.length ? `<div class="empty">No requests yet. Guests ask for songs in Encore (link one on the Players tab).</div>`
+    : list.length ? list.map(reqCard).join("") : `<div class="empty">None here.</div>`;
+  const fl = REQS.flags || [];
+  $("#otherflags").innerHTML = fl.length ? `<h2>Flags on songs the studio doesn't have</h2><div class="hint">Lyric flags from Encore for songs whose studio copy is gone (or that it never made). Nothing to mark; they're kept so you know.</div>
+    <div class="reqs" style="margin-top:8px">${fl.map(f => `<div class="req"><div class="t">${esc(f.base)}</div><div class="m">${esc(FLAG_KIND[f.kind] || f.kind)}${f.t != null ? " at " + fmtT(f.t) : ""} · ${esc(f.by)}${f.party ? ", " + esc(f.party) : ""} · ${esc(whenT(f.at))}</div>${f.note ? `<div class="note">“${esc(f.note)}”</div>` : ""}<div class="row acts"><button class="ghost sm" data-fdone="${esc(f.fid)}">Done</button></div></div>`).join("")}</div>` : "";
+  document.querySelectorAll("#rchips [data-f]").forEach(b => b.onclick = () => { RQ.f = b.dataset.f; lsSet("ks.reqs", RQ); renderRequests(); });
+  const byId = rid => all.find(r => r.rid === rid);
+  document.querySelectorAll("#reqs [data-make]").forEach(b => b.onclick = () => {
+    const r = byId(b.dataset.make);
+    PENDING_REQUEST = {rid: r.rid, label: reqName(r), by: r.by};
+    location.hash = "make";
+    $("#q").value = r.artist ? `${r.artist} - ${r.title}` : r.title;
+    $("#sform").requestSubmit();
+  });
+  document.querySelectorAll("#reqs [data-have]").forEach(b => b.onclick = () => pickHave(byId(b.dataset.have)));
+  document.querySelectorAll("#reqs [data-decline]").forEach(b => b.onclick = async () => {
+    const reason = prompt("Why not? A few words; the guest sees them.", "Not this time");
+    if (!reason) return;
+    await reqAction(b.dataset.decline, "decline", {reason});
+  });
+  document.querySelectorAll("#reqs [data-reopen]").forEach(b => b.onclick = () => reqAction(b.dataset.reopen, "reopen", {}));
+  document.querySelectorAll("#otherflags [data-fdone]").forEach(b => b.onclick = async () => {
+    try { await api("/api/flags/dismiss", {method: "POST", body: JSON.stringify({fids: [b.dataset.fdone]})}); } catch (e) { toast(e.message); }
+    loadRequests();
+  });
+}
+async function reqAction(rid, action, body) {
+  try { await api(`/api/requests/${rid}/${action}`, {method: "POST", body: JSON.stringify(body)}); } catch (e) { toast(e.message); }
+  loadRequests(); status();
+}
+async function pickHave(r) {
+  const box = $("#pick-" + r.rid);
+  if (box.style.display !== "none") { box.style.display = "none"; return; }
+  box.style.display = "";
+  box.innerHTML = `<input type="text" placeholder="Which song? Type to find it" value="${esc(r.title)}"><div class="list"></div>`;
+  let songs = JOBS_ALL;
+  if (!songs) { try { songs = JOBS_ALL = await api("/api/jobs?brief=1"); } catch (e) { box.innerHTML = esc(e.message); return; } }
+  const made = songs.filter(j => j.status === "done" || j.status === "queued" || j.status === "running");
+  const inp = box.querySelector("input"), out = box.querySelector(".list");
+  const draw = () => {
+    const hits = made.filter(j => matches(songHay(j), inp.value)).slice(0, 30);
+    out.innerHTML = hits.length ? hits.map(j => `<div class="card" data-pj="${esc(j.id)}"><div style="flex:1;min-width:0"><div class="t">${esc(j.artist)} – ${esc(j.title)}</div><div class="m">${esc(jobState(j))}</div></div></div>`).join("")
+      : `<div class="hint">No song matches; try fewer words.</div>`;
+    out.querySelectorAll("[data-pj]").forEach(c => c.onclick = () => reqAction(r.rid, "have", {job: c.dataset.pj}));
+  };
+  inp.oninput = draw; draw(); inp.focus();
+}
+
+// ---------- players: connect (pair) and linked players ----------
+let PL = {timer: null, code: null, expires: 0, address: ""};
+async function loadPlayers() {
+  try { renderPlayers(await api("/api/players")); } catch (e) { $("#players").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+}
+const ago = t => { if (!t) return "never"; const s = Date.now() / 1000 - t; return s < 90 ? "just now" : s < 5400 ? Math.round(s / 60) + " min ago" : s < 129600 ? Math.round(s / 3600) + " h ago" : whenT(t); };
+function codeLeft() {
+  const left = Math.max(0, Math.round(PL.expires - Date.now() / 1000));
+  return left ? `valid for ${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}, for one player` : "expired: make a new one";
+}
+function renderPlayers(d) {
+  PL.address = d.address;
+  if (PL.code && (!d.code || PL.expires <= Date.now() / 1000)) PL.code = null;  // used, replaced or expired
+  const codeBox = PL.code ? `<div class="aibox" style="margin-top:12px">
+      <div class="hint">In Encore: <b>station → System → Karaoke Studio</b> (or the host area on a phone). Type this address and code, and a name for that player.</div>
+      <div class="row" style="margin-top:8px;align-items:baseline;gap:18px"><div><div class="hint">Studio address</div><div style="font-weight:600;font-size:17px;user-select:all">${esc(PL.address)}</div></div>
+      <div><div class="hint">Pairing code</div><div class="paircode" id="paircode">${esc(PL.code.slice(0, 4))}-${esc(PL.code.slice(4))}</div></div></div>
+      <div class="row"><span class="hint" id="codeleft">${codeLeft()}</span><button class="ghost sm" id="nocode">Cancel the code</button></div></div>` : "";
+  const ps = d.players;
+  $("#players").innerHTML = `<div class="ctl" style="margin-bottom:18px">
+      <div class="row" style="justify-content:space-between"><b style="font-size:16px">Connect a player</b><button class="primary sm" id="newcode">${PL.code ? "New code" : "Connect a player"}</button></div>
+      <div class="hint" style="margin-top:6px">Link an Encore (the party app) to ${esc(d.studio_name)}: it sends song requests, lyric flags and what was sung, and gets the requests' answers back. Each player gets its own key; nobody copies keys around. A code works once, for 10 minutes.</div>${codeBox}</div>
+    <h2>Linked players</h2>
+    ${ps.length ? `<table class="ptable"><thead><tr><th>Player</th><th>Last seen</th><th class="c-opt">Encore</th><th class="c-opt">Waiting to send</th><th class="c-opt">Linked</th><th></th></tr></thead><tbody>
+      ${ps.map(p => `<tr><td><b>${esc(p.name)}</b>${p.preset ? ' <span class="tag" title="ENCORE_TOKEN in the studio\'s settings">preset (server config)</span>' : ""}<div class="hint">${esc(p.player.slice(0, 8))}${p.contract && p.contract.split(".")[0] !== d.contract.split(".")[0] ? ` · <span style="color:var(--bad)">contract ${esc(p.contract)}: update one of them</span>` : ""}</div></td>
+        <td>${esc(ago(p.last_seen))}</td><td class="c-opt">${esc(p.encore || "?")}</td><td class="c-opt">${p.backlog == null ? '<span class="hint">not reported</span>' : p.backlog ? `${p.backlog} item${p.backlog === 1 ? "" : "s"}` : "nothing"}</td>
+        <td class="c-opt">${esc(whenT(p.created))}</td>
+        <td>${p.preset ? "" : `<button class="ghost danger sm" data-unlink="${esc(p.player)}" data-name="${esc(p.name)}">Unlink</button>`}</td></tr>`).join("")}</tbody></table>`
+      : `<div class="empty">No players linked yet. <b>Connect a player</b> above.</div>`}
+    <p class="hint">Unlink stops a player's key at once: it then shows "This Studio unlinked us; link again" and keeps what it hadn't sent.</p>`;
+  $("#newcode").onclick = async () => {
+    try { const r = await api("/api/players/code", {method: "POST"}); PL.code = r.code; PL.expires = r.expires; PL.address = r.address; loadPlayers(); }
+    catch (e) { toast(e.message); }
+  };
+  if ($("#nocode")) $("#nocode").onclick = async () => { try { await api("/api/players/code", {method: "DELETE"}); } catch {} PL.code = null; loadPlayers(); };
+  document.querySelectorAll("[data-unlink]").forEach(b => b.onclick = async () => {
+    if (!confirm(`Unlink “${b.dataset.name}”? It stops sending and receiving at once (it can be linked again with a new code).`)) return;
+    try { await api("/api/players/" + encodeURIComponent(b.dataset.unlink), {method: "DELETE"}); toast("Unlinked"); } catch (e) { toast(e.message); }
+    loadPlayers();
+  });
+  clearInterval(PL.timer);
+  if (PL.code) PL.timer = setInterval(() => {
+    const el = $("#codeleft"); if (!el) return clearInterval(PL.timer);
+    el.textContent = codeLeft();
+    if (PL.expires <= Date.now() / 1000 || Math.round(Date.now() / 1000) % 5 === 0) loadPlayers();  // used or expired: the list shows the new player
+  }, 1000);
+}
+
+// ---------- the song page: flagged in Encore ----------
+const FLAG_KIND = {late: "words light up late", early: "words light up early", words: "wrong words", missing: "missing lyrics", other: "something else"};
+async function renderFlags(id, j) {
+  const box = $("#eflags");
+  if (!box || !j.encore_flags) { if (box) box.style.display = "none"; return; }
+  let d;
+  try { d = await api(`/api/jobs/${id}/encore-flags`); } catch { return; }
+  if (currentJob !== id) return;
+  const open = d.flags.filter(f => !f.dismissed);
+  if (!open.length) { box.style.display = "none"; return; }
+  box.style.display = "";
+  box.innerHTML = `<div class="row" style="justify-content:space-between"><b>⚑ Flagged in Encore (${open.length})</b><button class="ghost sm" id="flagsdone" title="You've looked at all of them: they stop counting as needing a fix">All done</button></div>
+    <div class="hint" style="margin:4px 0 6px">Guests said the lyrics were off while singing. Their lines are marked ⚠ in the editor below (timing and words weren't changed). Fix what's wrong, then mark them done.</div>
+    ${open.map(f => `<div class="fl"><b>${f.line_no ? "Line " + f.line_no : f.t == null && f.line == null ? "The whole song" : "Line not found"}</b>${f.t != null ? ` · at ${fmtT(f.t)}` : ""} · ${esc(FLAG_KIND[f.kind] || f.kind)} · ${esc(f.by)}${f.party ? ", " + esc(f.party) : ""}${f.version ? ` · sung in “${esc(f.version)}”` : ""} · <span class="hint">${esc(whenT(f.at))}</span>
+      ${f.t != null ? `<button class="ib" data-fplay="${f.t}" title="Play from just before it">▶</button>` : ""}<button class="ghost sm" data-fdone="${esc(f.fid)}" style="padding:2px 8px;font-size:12px">Done</button>${f.note ? `<div>“${esc(f.note)}”</div>` : ""}</div>`).join("")}`;
+  const after = async body => {
+    try { await api(`/api/jobs/${id}/encore-flags/dismiss`, {method: "POST", body: JSON.stringify(body)}); } catch (e) { return toast(e.message); }
+    j.encore_flags = 0; const r = await api("/api/jobs/" + id).catch(() => null); if (r) j.encore_flags = r.encore_flags;
+    renderFlags(id, j); if (!ed || !ed.dirty) initEditor(id, j);
+  };
+  $("#flagsdone").onclick = () => after({});
+  box.querySelectorAll("[data-fdone]").forEach(b => b.onclick = () => after({fids: [b.dataset.fdone]}));
+  box.querySelectorAll("[data-fplay]").forEach(b => b.onclick = () => { const v = $("#pv"); if (!v) return; v.currentTime = Math.max(0, +b.dataset.fplay - 2); v.play().catch(() => {}); });
 }
 
 window.onhashchange();

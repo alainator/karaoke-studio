@@ -1,0 +1,37 @@
+{
+  "name": "request-auto",
+  "about": "§2.2b (reserved): a party with auto-make on; the guest is already queued with a placeholder. The Studio keeps auto and queue; until it makes songs by itself, it answers like any request.",
+  "request": {
+    "method": "POST",
+    "path": "/api/encore/requests",
+    "headers": {
+      "Authorization": "Bearer <token from pairing>"
+    },
+    "body": {
+      "rid": "f7d5a3e6-5b8c-4dae-8f1a-6c3b4e5f7a8b",
+      "artist": "June Arbor",
+      "title": "Copper Moon",
+      "note": "",
+      "by": "Jo",
+      "party": "Friday at Ken's",
+      "at": 1794484860,
+      "auto": true,
+      "queue": {
+        "eid": "q3f9a1c2d4e",
+        "uid": "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d"
+      }
+    },
+    "schema": "requests.post.request.schema.json"
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "rid": "f7d5a3e6-5b8c-4dae-8f1a-6c3b4e5f7a8b",
+      "status": "open",
+      "id": null,
+      "base": null
+    },
+    "schema": "requests.post.response.schema.json"
+  }
+}

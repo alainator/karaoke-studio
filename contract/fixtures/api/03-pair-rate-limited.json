@@ -1,0 +1,27 @@
+{
+  "name": "pair-rate-limited",
+  "about": "More than 5 pairing tries a minute from one address.",
+  "request": {
+    "method": "POST",
+    "path": "/api/encore/pair",
+    "headers": {},
+    "body": {
+      "code": "K7M3PQ9Z",
+      "name": "Encore on kit-01",
+      "player": "6f1c2a90-3b7e-4c1d-9e55-0a7b8c9d1e2f",
+      "encore": "0.4",
+      "contract": "1"
+    },
+    "schema": "pair.request.schema.json"
+  },
+  "response": {
+    "status": 429,
+    "headers": {
+      "Retry-After": "60"
+    },
+    "body": {
+      "error": "Too many tries. Wait a minute, then try again."
+    },
+    "schema": "error.schema.json"
+  }
+}

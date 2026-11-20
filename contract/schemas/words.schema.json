@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:encore-studio:contract:words.schema.json",
+  "title": "<base>.words.json",
+  "description": "Line and word times in VIDEO time (the job's offset applied), like the published .ass.",
+  "type": "object",
+  "required": [
+    "version",
+    "base",
+    "parts",
+    "lines"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "job": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "base": {
+      "type": "string"
+    },
+    "duration": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "parts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "key",
+          "name",
+          "color",
+          "color_name",
+          "lines"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "pattern": "^(m[0-7]|s[12])$",
+            "description": "m0..m7: group members (named cast); s1/s2: Part 1/2 of a duet."
+          },
+          "name": {
+            "type": "string"
+          },
+          "color": {
+            "type": "string",
+            "pattern": "^#[0-9a-f]{6}$"
+          },
+          "color_name": {
+            "type": "string"
+          },
+          "lines": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "together": {
+      "type": "boolean"
+    },
+    "together_color": {
+      "type": "string",
+      "pattern": "^#[0-9a-f]{6}$"
+    },
+    "lines": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "i",
+          "start",
+          "end",
+          "words",
+          "parts"
+        ],
+        "properties": {
+          "i": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "1-based line number; the API's flag 'line' refers to this."
+          },
+          "start": {
+            "type": "number"
+          },
+          "end": {
+            "type": "number"
+          },
+          "words": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "minItems": 3,
+              "maxItems": 3
+            }
+          },
+          "parts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "[] = not assigned (everyone)."
+          },
+          "word_parts": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "orig": {
+            "type": "string"
+          },
+          "backing": {
+            "const": true
+          }
+        }
+      }
+    }
+  }
+}

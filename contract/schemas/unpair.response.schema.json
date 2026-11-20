@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:encore-studio:contract:unpair.response.schema.json",
+  "title": "POST /api/encore/unpair: 200",
+  "description": "Unpairing an already revoked token answers 401; Encore forgets the link either way.",
+  "type": "object",
+  "required": [
+    "ok"
+  ],
+  "properties": {
+    "ok": {
+      "const": true
+    }
+  }
+}

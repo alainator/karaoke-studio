@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:encore-studio:contract:pitch.schema.json",
+  "title": "<base>.pitch.json (§1.1)",
+  "description": "The lead vocal's melody in VIDEO time.",
+  "type": "object",
+  "required": [
+    "version",
+    "base",
+    "duration",
+    "hop",
+    "notes",
+    "range"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "base": {
+      "type": "string"
+    },
+    "duration": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "hop": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "prefixItems": [
+          {
+            "type": "number",
+            "minimum": 0
+          },
+          {
+            "type": "number",
+            "minimum": 0
+          },
+          {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 127
+          }
+        ],
+        "minItems": 3,
+        "maxItems": 3,
+        "description": "[start, end, midi]; midi 60.0 = middle C, fractions allowed."
+      }
+    },
+    "range": {
+      "oneOf": [
+        {
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "minItems": 2,
+          "maxItems": 2
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "[lowest, highest] midi sung; null only when notes is empty."
+    }
+  }
+}

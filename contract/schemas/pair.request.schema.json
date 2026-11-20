@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:encore-studio:contract:pair.request.schema.json",
+  "title": "POST /api/encore/pair (no bearer)",
+  "type": "object",
+  "required": [
+    "code",
+    "name",
+    "player",
+    "encore",
+    "contract"
+  ],
+  "properties": {
+    "code": {
+      "type": "string",
+      "pattern": "^[A-Z0-9]{8}$",
+      "description": "As shown by the Studio; Encore uppercases it and drops spaces and dashes."
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 60
+    },
+    "player": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "description": "A UUID made by Encore (lowercase, as Python's str(uuid4()))."
+    },
+    "encore": {
+      "type": "string"
+    },
+    "contract": {
+      "type": "string"
+    }
+  }
+}

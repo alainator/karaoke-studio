@@ -1,0 +1,30 @@
+{
+  "name": "file-range",
+  "about": "A file the catalog lists, with a range (§2.0b); body = the first 16 bytes of that file.",
+  "request": {
+    "method": "GET",
+    "path": "/api/encore/files/Music%20Videos/Nova%20Lane%20-%20Paper%20Lanterns%20(Music%20Video).mp4",
+    "headers": {
+      "Range": "bytes=0-15",
+      "Authorization": "Bearer <token from pairing>"
+    },
+    "body": null,
+    "schema": null
+  },
+  "response": {
+    "status": 206,
+    "headers": {
+      "ETag": "\"75cb9a9288f16992e81f1014\"",
+      "Accept-Ranges": "bytes",
+      "Content-Range": "bytes 0-15/96"
+    },
+    "body": {
+      "$file": "library/Music Videos/Nova Lane - Paper Lanterns (Music Video).mp4",
+      "$range": [
+        0,
+        15
+      ]
+    },
+    "schema": null
+  }
+}

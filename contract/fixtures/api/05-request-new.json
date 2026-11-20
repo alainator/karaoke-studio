@@ -1,0 +1,32 @@
+{
+  "name": "request-new",
+  "about": "A song the library doesn't have.",
+  "request": {
+    "method": "POST",
+    "path": "/api/encore/requests",
+    "headers": {
+      "Authorization": "Bearer <token from pairing>"
+    },
+    "body": {
+      "rid": "b3f1c9a2-1d4e-4f6a-8b7c-2e9d0a1b3c4d",
+      "artist": "Lumen Coast",
+      "title": "Glass Orchard",
+      "note": "the music video one",
+      "by": "Mia",
+      "party": "Friday at Ken's",
+      "at": 1794398460
+    },
+    "schema": "requests.post.request.schema.json"
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "rid": "b3f1c9a2-1d4e-4f6a-8b7c-2e9d0a1b3c4d",
+      "status": "open",
+      "id": null,
+      "base": null
+    },
+    "schema": "requests.post.response.schema.json"
+  }
+}

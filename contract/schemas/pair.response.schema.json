@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:encore-studio:contract:pair.response.schema.json",
+  "title": "POST /api/encore/pair: 200",
+  "description": "403 = wrong, used or expired code; 429 = too many tries (per address).",
+  "type": "object",
+  "required": [
+    "token",
+    "studio",
+    "contract",
+    "studio_id",
+    "studio_name"
+  ],
+  "properties": {
+    "token": {
+      "type": "string",
+      "minLength": 16
+    },
+    "studio": {
+      "type": "string"
+    },
+    "contract": {
+      "type": "string"
+    },
+    "studio_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "description": "The Studio's own id (a uuid it makes once, §2.8.9). Encore ties every outbox item to it."
+    },
+    "studio_name": {
+      "type": "string"
+    },
+    "studio_url": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  }
+}

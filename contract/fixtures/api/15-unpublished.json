@@ -1,0 +1,29 @@
+{
+  "name": "unpublished",
+  "about": "Made but not published (the host's view links to the Studio's web app).",
+  "request": {
+    "method": "GET",
+    "path": "/api/encore/unpublished",
+    "headers": {
+      "Authorization": "Bearer <token from pairing>"
+    },
+    "body": null,
+    "schema": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "songs": [
+        {
+          "job": "20261111-120500-lumen-coast-glass-orchard",
+          "artist": "Lumen Coast",
+          "title": "Glass Orchard",
+          "made": 1794400440.0
+        }
+      ],
+      "studio_url": "https://studio.example.lan"
+    },
+    "schema": "unpublished.get.response.schema.json"
+  }
+}

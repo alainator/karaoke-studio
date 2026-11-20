@@ -1,0 +1,25 @@
+{
+  "name": "hello",
+  "about": "Connection check (System view).",
+  "request": {
+    "method": "GET",
+    "path": "/api/encore/hello",
+    "headers": {
+      "Authorization": "Bearer <token from pairing>"
+    },
+    "body": null,
+    "schema": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "api": 1,
+      "contract": "1",
+      "studio": "2026.11.20",
+      "catalog_version": 2,
+      "studio_id": "9c1e7b42-5d3a-4f86-a0b9-2e4c6d8f1a3b"
+    },
+    "schema": "hello.response.schema.json"
+  }
+}

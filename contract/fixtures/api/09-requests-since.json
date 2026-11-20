@@ -1,0 +1,40 @@
+{
+  "name": "requests-since",
+  "about": "Everything from this player updated after a time.",
+  "request": {
+    "method": "GET",
+    "path": "/api/encore/requests?since=1794398800",
+    "headers": {
+      "Authorization": "Bearer <token from pairing>"
+    },
+    "body": null,
+    "schema": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "requests": [
+        {
+          "rid": "e6c4f2d5-4a7b-4c9d-9e0f-5b2a3d4e6f7a",
+          "status": "declined",
+          "job": null,
+          "id": null,
+          "base": null,
+          "reason": "No usable video yet",
+          "updated": 1794399000.0
+        },
+        {
+          "rid": "d5b3e1c4-3f6a-4b8c-8d9e-4a1f2c3d5e6f",
+          "status": "published",
+          "job": "20261103-183000-mika-sol-neon-harbor",
+          "id": "20261103-183000-mika-sol-neon-harbor",
+          "base": "Mika Sol - Neon Harbor (Music Video)",
+          "reason": null,
+          "updated": 1794399600.0
+        }
+      ]
+    },
+    "schema": "requests.get.response.schema.json"
+  }
+}

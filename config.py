@@ -20,8 +20,10 @@ env = os.environ.get
 # PiKaraoke song folder; published songs go to "<library>/Music Videos/"
 LIBRARY = env("KARAOKE_LIBRARY", os.path.join(HERE, "data", "library"))
 MV_DIR = os.path.join(LIBRARY, env("KARAOKE_MV_FOLDER", "Music Videos"))
-# PiKaraoke: URL for the library rescan, admin password (if one is set), and its database for play counts
-PIKARAOKE_URL = env("PIKARAOKE_URL", "http://127.0.0.1:5555").rstrip("/")
+# PiKaraoke (optional): URL for the library rescan, admin password (if one is set), and its database for play counts.
+# Leave PIKARAOKE_URL and PIKARAOKE_DB empty when there's no PiKaraoke (only Encore plays the songs): publishing then
+# skips the rescan, and play counts come from Encore alone.
+PIKARAOKE_URL = env("PIKARAOKE_URL", "").rstrip("/")
 PIKARAOKE_PASSWORD = env("PIKARAOKE_ADMIN_PASSWORD", "")
 PIKARAOKE_DB = env("PIKARAOKE_DB", "")
 # working folders: jobs (previews), download/stem cache, separation model weights
@@ -45,6 +47,21 @@ GPU_HELPER_NAME = env("GPU_HELPER_NAME", "helper PC")
 HELPER_TOKEN = env("HELPER_TOKEN", "")      # shared secret, the same value on both machines
 USE_LOCAL_GPU = env("USE_LOCAL_GPU", "1") != "0"   # 0 = send every job to the helper (testing)
 USER_AGENT = env("STUDIO_USER_AGENT", "karaoke-studio/0.1 (+https://github.com/alainator/karaoke-studio)")
+
+# ---- players (Encore; contract/ENCORE-STUDIO.md) ----
+# where the studio keeps what players send (linked players, song requests, lyric flags, plays): encore.db in here
+DATA = env("KARAOKE_DATA", os.path.dirname(env("KARAOKE_LOGS", os.path.join(HERE, "data", "logs"))))
+# the web app's own address, given to linked players so their host view can link here (empty: no link)
+STUDIO_PUBLIC_URL = env("STUDIO_PUBLIC_URL", "").strip().rstrip("/")
+STUDIO_NAME = env("STUDIO_NAME", "Karaoke Studio").strip()[:80] or "Karaoke Studio"
+# the address a player types in, shown by "Connect a player": for Encore in Docker on the same machine, the studio's
+# name on the network the two share (README: "Players")
+ENCORE_STUDIO_ADDRESS = env("ENCORE_STUDIO_ADDRESS", "http://karaoke-studio:5570").strip().rstrip("/")
+# optional preset player for Docker setups: this token is accepted as one more linked player ("preset")
+ENCORE_TOKEN = env("ENCORE_TOKEN", "").strip()
+# optional: networks (CIDR, comma-separated) that may only use the player API (/api/encore/): set it to the network the
+# studio shares with Encore, so a player can't reach the rest of the studio, which has no login of its own
+ENCORE_ONLY_NETS = env("ENCORE_ONLY_NETS", "").strip()
 
 
 # how the lyrics look (assgen.py); 1 = on, 0 = off. Existing songs change when their lyrics are next saved, or all at

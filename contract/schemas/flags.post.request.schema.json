@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:encore-studio:contract:flags.post.request.schema.json",
+  "title": "POST /api/encore/flags",
+  "type": "object",
+  "required": [
+    "fid",
+    "id",
+    "base",
+    "t",
+    "line",
+    "kind",
+    "note",
+    "by",
+    "at"
+  ],
+  "properties": {
+    "fid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "description": "A UUID made by Encore (lowercase, as Python's str(uuid4()))."
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Catalog song id (= job id). A song Encore only found by scanning the folders has an 'f-...' id; the Studio may match it by base."
+    },
+    "base": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The version played (the song's own base or a version's)."
+    },
+    "t": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0,
+      "description": "Video time of that version, seconds; null = the whole song (flagged afterwards from Last songs)."
+    },
+    "line": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 1,
+      "description": "The words.json line's 'i' (1-based) at t; null when unknown or for the whole song."
+    },
+    "kind": {
+      "enum": [
+        "late",
+        "early",
+        "words",
+        "missing",
+        "other"
+      ]
+    },
+    "note": {
+      "type": "string",
+      "maxLength": 300
+    },
+    "by": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40
+    },
+    "party": {
+      "type": "string",
+      "maxLength": 80,
+      "description": "The party name, for the Studio's mark text 'Encore: <kind> (<by>, <party>)'."
+    },
+    "at": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Unix time, whole seconds."
+    },
+    "uid": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "description": "Optional, for user profiles (§2.6, planned): the profile uuid of the person, when a user (not a guest) did it."
+    }
+  }
+}

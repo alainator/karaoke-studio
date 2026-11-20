@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:encore-studio:contract:unpublished.get.response.schema.json",
+  "title": "GET /api/encore/unpublished",
+  "type": "object",
+  "required": [
+    "songs",
+    "studio_url"
+  ],
+  "properties": {
+    "songs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "job",
+          "artist",
+          "title",
+          "made"
+        ],
+        "properties": {
+          "job": {
+            "type": "string"
+          },
+          "artist": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "made": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Unix time, seconds."
+          }
+        }
+      }
+    },
+    "studio_url": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^https?://"
+    }
+  }
+}

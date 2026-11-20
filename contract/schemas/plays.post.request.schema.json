@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:encore-studio:contract:plays.post.request.schema.json",
+  "title": "POST /api/encore/plays",
+  "type": "object",
+  "required": [
+    "plays"
+  ],
+  "properties": {
+    "plays": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "pid",
+          "id",
+          "base",
+          "at",
+          "seconds",
+          "result",
+          "singers",
+          "style",
+          "party"
+        ],
+        "properties": {
+          "pid": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "description": "A UUID made by Encore (lowercase, as Python's str(uuid4()))."
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "base": {
+            "type": "string",
+            "minLength": 1
+          },
+          "at": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "When it ended."
+          },
+          "seconds": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Video position reached (finished: the length)."
+          },
+          "result": {
+            "enum": [
+              "finished",
+              "skipped",
+              "stopped"
+            ]
+          },
+          "singers": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "style": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The lyric mode shown (both, original, romaji, kana) or null (the song's one plain .ass)."
+          },
+          "party": {
+            "type": "string",
+            "maxLength": 80
+          },
+          "uid": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "description": "Optional, for user profiles (§2.6, planned): the profile uuid of the person, when a user (not a guest) did it."
+          }
+        }
+      },
+      "minItems": 1,
+      "maxItems": 200
+    }
+  }
+}

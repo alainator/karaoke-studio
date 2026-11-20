@@ -1,0 +1,155 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:encore-studio:contract:requests.get.response.schema.json",
+  "title": "GET /api/encore/requests?rids=a,b,c (or ?since=<unix>)",
+  "description": "rids: up to 40 per call (Encore chunks). Unknown rids are left out. since: requests from this player updated after that time.",
+  "type": "object",
+  "required": [
+    "requests"
+  ],
+  "properties": {
+    "requests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "rid",
+          "status",
+          "job",
+          "id",
+          "base",
+          "reason",
+          "updated"
+        ],
+        "properties": {
+          "rid": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "description": "A UUID made by Encore (lowercase, as Python's str(uuid4()))."
+          },
+          "status": {
+            "enum": [
+              "open",
+              "making",
+              "ready",
+              "published",
+              "have",
+              "declined",
+              "failed"
+            ]
+          },
+          "job": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "base": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why it was declined or failed (short text); null otherwise."
+          },
+          "updated": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Unix time, seconds."
+          },
+          "auto": {
+            "type": "boolean",
+            "description": "§2.2b party auto-make (reserved; built later)."
+          },
+          "stage": {
+            "enum": [
+              "finding",
+              "downloading",
+              "making",
+              "publishing",
+              null
+            ],
+            "description": "§2.2b: where an auto-make is (null when not running)."
+          },
+          "eta": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "§2.2b: unix time the song should be ready, or null."
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "enum": [
+                    "published",
+                    "have"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "base": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "making"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "job": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "enum": [
+                    "declined",
+                    "failed"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "reason": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

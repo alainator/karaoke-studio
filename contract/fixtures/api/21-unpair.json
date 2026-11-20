@@ -1,0 +1,21 @@
+{
+  "name": "unpair",
+  "about": "Unlink from Encore's side (the token stops working).",
+  "request": {
+    "method": "POST",
+    "path": "/api/encore/unpair",
+    "headers": {
+      "Authorization": "Bearer <token from pairing>"
+    },
+    "body": {},
+    "schema": "unpair.request.schema.json"
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "ok": true
+    },
+    "schema": "unpair.response.schema.json"
+  }
+}

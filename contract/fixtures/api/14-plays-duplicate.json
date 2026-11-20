@@ -1,0 +1,58 @@
+{
+  "name": "plays-duplicate",
+  "about": "The same batch again (a retry): stored counts them again, nothing is added.",
+  "request": {
+    "method": "POST",
+    "path": "/api/encore/plays",
+    "headers": {
+      "Authorization": "Bearer <token from pairing>"
+    },
+    "body": {
+      "plays": [
+        {
+          "pid": "3d4e5f6a-7b8c-4d9e-9f0a-2b3c4d5e6f7a",
+          "id": "20261101-120000-nova-lane-paper-lanterns",
+          "base": "Nova Lane - Paper Lanterns (Music Video)",
+          "at": 1794399840,
+          "seconds": 33,
+          "result": "finished",
+          "singers": 1,
+          "style": null,
+          "party": "Friday at Ken's"
+        },
+        {
+          "pid": "4e5f6a7b-8c9d-4e0f-8a1b-3c4d5e6f7a8b",
+          "id": "20261102-090000-the-quiet-arcade-two-small-rivers",
+          "base": "The Quiet Arcade - Two Small Rivers (Music Video)",
+          "at": 1794399900,
+          "seconds": 9,
+          "result": "skipped",
+          "singers": 2,
+          "style": "romaji",
+          "party": "Friday at Ken's"
+        },
+        {
+          "pid": "5f6a7b8c-9d0e-4f1a-9b2c-4d5e6f7a8b9c",
+          "id": "20261103-183000-mika-sol-neon-harbor",
+          "base": "Mika Sol - Neon Harbor (Mia's version)",
+          "at": 1794399960,
+          "seconds": 18,
+          "result": "stopped",
+          "singers": 1,
+          "style": null,
+          "party": "Friday at Ken's",
+          "uid": "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d"
+        }
+      ]
+    },
+    "schema": "plays.post.request.schema.json"
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "stored": 3
+    },
+    "schema": "plays.post.response.schema.json"
+  }
+}

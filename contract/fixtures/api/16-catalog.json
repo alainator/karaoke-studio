@@ -1,0 +1,23 @@
+{
+  "name": "catalog",
+  "about": "The catalog for a remote player (§2.0b); body = fixtures/library/catalog.json.",
+  "request": {
+    "method": "GET",
+    "path": "/api/encore/catalog",
+    "headers": {
+      "Authorization": "Bearer <token from pairing>"
+    },
+    "body": null,
+    "schema": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "ETag": "\"d23dededf32d120fa9231a4d\""
+    },
+    "body": {
+      "$file": "library/catalog.json"
+    },
+    "schema": "catalog.schema.json"
+  }
+}

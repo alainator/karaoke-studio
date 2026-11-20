@@ -1,0 +1,22 @@
+{
+  "name": "catalog-not-modified",
+  "about": "Unchanged since the ETag the player has.",
+  "request": {
+    "method": "GET",
+    "path": "/api/encore/catalog",
+    "headers": {
+      "If-None-Match": "\"d23dededf32d120fa9231a4d\"",
+      "Authorization": "Bearer <token from pairing>"
+    },
+    "body": null,
+    "schema": null
+  },
+  "response": {
+    "status": 304,
+    "headers": {
+      "ETag": "\"d23dededf32d120fa9231a4d\""
+    },
+    "body": null,
+    "schema": null
+  }
+}

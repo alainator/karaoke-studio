@@ -1,0 +1,27 @@
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 1920
+PlayResY: 1080
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Main,Arial,76,&H0000D7FF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,5.2,2.0,7,0,0,0,1
+Style: Orig,Droid Sans Fallback,89,&H0000D7FF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,6.1,2.0,7,0,0,0,1
+Style: Kana,Droid Sans Fallback,89,&H0000D7FF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,6.1,2.0,7,0,0,0,1
+Style: Back,Arial,60,&H0000D7FF,&H00FFFFFF,&H00000000,&H80000000,-1,-1,0,0,100,100,0,0,1,4.1,2.0,7,0,0,0,1
+Style: Dots,Arial,45,&H0000D7FF,&H0000D7FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3.1,2.0,7,0,0,0,1
+Style: Note,Arial,51,&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3.5,2.0,7,0,0,0,1
+Style: Card,Arial,89,&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,6.1,2.0,7,0,0,0,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 2,0:00:00.40,0:00:06.50,Card,,0,0,0,,{\an5\pos(960,454)\fad(500,500)}{\fs89\fscx100}Neon Harbor\N{\fs56\fscx100}Mika Sol
+Dialogue: 0,0:00:07.00,0:00:13.92,Main,,0,0,0,,{\an1\pos(110,935)\fs76}{\k300}{\kf50}la {\kf50}da {\kf50}na {\kf42}doo
+Dialogue: 1,0:00:07.60,0:00:08.20,Dots,,0,0,0,,{\an1\pos(110,870)\1c&H00D7FF&}●●●●
+Dialogue: 1,0:00:08.20,0:00:08.80,Dots,,0,0,0,,{\an1\pos(110,870)\1c&H00D7FF&}●●●
+Dialogue: 1,0:00:08.80,0:00:09.40,Dots,,0,0,0,,{\an1\pos(110,870)\1c&H00D7FF&}●●
+Dialogue: 1,0:00:09.40,0:00:10.00,Dots,,0,0,0,,{\an1\pos(110,870)\1c&H00D7FF&}●
+Dialogue: 0,0:00:12.00,0:00:17.92,Main,,0,0,0,,{\an3\pos(1810,1028)\fs76}{\k200}{\kf50}da {\kf50}na {\kf50}doo {\kf42}ba
+Dialogue: 0,0:00:16.50,0:00:22.92,Main,,0,0,0,,{\an1\pos(110,935)\fs76}{\k200}{\kf50}na {\kf50}doo {\kf50}ba {\kf50}oh {\kf42}la

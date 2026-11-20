@@ -19,10 +19,12 @@ for k, v in {
     "KARAOKE_MV_FOLDER": "Music Videos", "PIKARAOKE_URL": "http://127.0.0.1:9", "PIKARAOKE_ADMIN_PASSWORD": "",
     "PIKARAOKE_DB": "", "OLLAMA_URL": "", "GPU_HELPER_URL": "", "GPU_HELPER_NAME": "test helper",
     "HELPER_TOKEN": "test-token-" + "x" * 30, "HELPER_ALLOW": "", "USE_LOCAL_GPU": "1", "MIN_GPU_FREE_MIB": "0",
-    "STUDIO_ORIGINS": "", "NODE_BIN": "",
+    "STUDIO_ORIGINS": "", "NODE_BIN": "", "KARAOKE_DATA": f"{ROOT}/data", "STUDIO_PUBLIC_URL": "", "STUDIO_NAME": "Test Studio",
+    "ENCORE_TOKEN": "preset-token-" + "p" * 30, "ENCORE_ONLY_NETS": "", "ENCORE_STUDIO_ADDRESS": "http://studio.test:5570",
+    "KARAOKE_LYRICS_FONT": "classic",
 }.items():
     os.environ[k] = v
-for d in ("jobs", "work", "models", "logs", "fonts", "library/Music Videos"):
+for d in ("jobs", "work", "models", "logs", "fonts", "data", "library/Music Videos"):
     os.makedirs(f"{ROOT}/{d}", exist_ok=True)
 sys.path.insert(0, REPO)
 FAKE = os.path.join(HERE, "fake_pipeline.py")

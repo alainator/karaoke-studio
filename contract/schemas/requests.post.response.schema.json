@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:encore-studio:contract:requests.post.response.schema.json",
+  "title": "POST /api/encore/requests: 200",
+  "description": "The same rid sent again answers what it answered the first time.",
+  "type": "object",
+  "required": [
+    "rid",
+    "status"
+  ],
+  "properties": {
+    "rid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "description": "A UUID made by Encore (lowercase, as Python's str(uuid4()))."
+    },
+    "status": {
+      "enum": [
+        "open",
+        "have"
+      ]
+    },
+    "id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "base": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "auto": {
+      "type": "boolean",
+      "description": "§2.2b party auto-make (reserved; built later)."
+    },
+    "stage": {
+      "enum": [
+        "finding",
+        "downloading",
+        "making",
+        "publishing",
+        null
+      ],
+      "description": "§2.2b: where an auto-make is (null when not running)."
+    },
+    "eta": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "description": "§2.2b: unix time the song should be ready, or null."
+    }
+  },
+  "if": {
+    "properties": {
+      "status": {
+        "const": "have"
+      }
+    }
+  },
+  "then": {
+    "required": [
+      "id",
+      "base"
+    ],
+    "properties": {
+      "id": {
+        "type": "string"
+      },
+      "base": {
+        "type": "string"
+      }
+    }
+  }
+}

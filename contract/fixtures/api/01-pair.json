@@ -1,0 +1,30 @@
+{
+  "name": "pair",
+  "about": "Linking: the host typed the Studio's address and the code it shows (no bearer).",
+  "request": {
+    "method": "POST",
+    "path": "/api/encore/pair",
+    "headers": {},
+    "body": {
+      "code": "K7M3PQ9X",
+      "name": "Encore on kit-01",
+      "player": "6f1c2a90-3b7e-4c1d-9e55-0a7b8c9d1e2f",
+      "encore": "0.4",
+      "contract": "1"
+    },
+    "schema": "pair.request.schema.json"
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "token": "fixture-token-0123456789abcdef",
+      "studio": "2026.11.20",
+      "contract": "1",
+      "studio_name": "Karaoke Studio",
+      "studio_id": "9c1e7b42-5d3a-4f86-a0b9-2e4c6d8f1a3b",
+      "studio_url": "https://studio.example.lan"
+    },
+    "schema": "pair.response.schema.json"
+  }
+}

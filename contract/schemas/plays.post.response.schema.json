@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:encore-studio:contract:plays.post.response.schema.json",
+  "title": "POST /api/encore/plays: 200",
+  "description": "stored = how many plays of this call the Studio has now (new or already stored), so a retried batch answers the same.",
+  "type": "object",
+  "required": [
+    "stored"
+  ],
+  "properties": {
+    "stored": {
+      "type": "integer",
+      "minimum": 0
+    }
+  }
+}

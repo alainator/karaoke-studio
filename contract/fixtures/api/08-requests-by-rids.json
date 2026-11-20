@@ -1,0 +1,49 @@
+{
+  "name": "requests-by-rids",
+  "about": "Polling the requests still moving (up to 40 rids a call).",
+  "request": {
+    "method": "GET",
+    "path": "/api/encore/requests?rids=b3f1c9a2-1d4e-4f6a-8b7c-2e9d0a1b3c4d,d5b3e1c4-3f6a-4b8c-8d9e-4a1f2c3d5e6f,e6c4f2d5-4a7b-4c9d-9e0f-5b2a3d4e6f7a",
+    "headers": {
+      "Authorization": "Bearer <token from pairing>"
+    },
+    "body": null,
+    "schema": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "requests": [
+        {
+          "rid": "b3f1c9a2-1d4e-4f6a-8b7c-2e9d0a1b3c4d",
+          "status": "making",
+          "job": "20261111-120500-lumen-coast-glass-orchard",
+          "id": null,
+          "base": null,
+          "reason": null,
+          "updated": 1794398700.0
+        },
+        {
+          "rid": "d5b3e1c4-3f6a-4b8c-8d9e-4a1f2c3d5e6f",
+          "status": "published",
+          "job": "20261103-183000-mika-sol-neon-harbor",
+          "id": "20261103-183000-mika-sol-neon-harbor",
+          "base": "Mika Sol - Neon Harbor (Music Video)",
+          "reason": null,
+          "updated": 1794399600.0
+        },
+        {
+          "rid": "e6c4f2d5-4a7b-4c9d-9e0f-5b2a3d4e6f7a",
+          "status": "declined",
+          "job": null,
+          "id": null,
+          "base": null,
+          "reason": "No usable video yet",
+          "updated": 1794399000.0
+        }
+      ]
+    },
+    "schema": "requests.get.response.schema.json"
+  }
+}

@@ -8,12 +8,13 @@ Search (YouTube + LRCLIB) -> job (pipeline.py subprocess, one at a time on the G
 library (optionally deleting the older YouTube lyric version) and ask PiKaraoke to rescan.
 There is no login of its own: put it behind an authenticating reverse proxy, or keep it on 127.0.0.1.
 """
-import argparse, asyncio, http.cookiejar, json, math, os, re, shutil, sqlite3, subprocess, sys, threading, time
+import argparse, asyncio, hashlib, http.cookiejar, ipaddress, json, math, os, queue, re, shutil, sqlite3, subprocess, sys
+import threading, time
 import logging, logging.handlers
 import unicodedata, urllib.error, urllib.parse, urllib.request
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -25,6 +26,9 @@ import versions  # noqa: E402
 import catalog  # noqa: E402
 import trimtools  # noqa: E402
 import videoswap  # noqa: E402
+import encore  # noqa: E402
+import pitch as pitchmod  # noqa: E402
+import schemalite  # noqa: E402
 
 # what the studio did and when: data/logs/studio.log (5 files of 2 MB kept)
 os.makedirs(C.LOGS, exist_ok=True)
@@ -123,7 +127,7 @@ def rebuild_lyrics(jid, job, lines=None, cast=None, offset=None):
 # a published song in PiKaraoke's folder: base.mp4, base.ass (its lyrics in the song's display mode) and, for songs
 # with original-script lines, base.<mode>.ass per display mode (PiKaraoke only reads base.ass and doesn't list .ass
 # files as songs, so these sit there unused until a player lets the singer pick)
-LIB_EXTS = (".mp4", ".ass") + tuple(f".{m}.ass" for m in MODES) + (catalog.WORDS_EXT,)
+LIB_EXTS = (".mp4", ".ass") + tuple(f".{m}.ass" for m in MODES) + (catalog.WORDS_EXT, catalog.PITCH_EXT)
 
 
 def publish_lyrics(jid, base):
@@ -149,6 +153,9 @@ def publish_lyrics(jid, base):
 def update_catalog():
     """Rewrite catalog.json in the library root (catalog.py) after a published song changed; never raises."""
     catalog.refresh(JOBS, LIB, MV_DIR, log)
+
+
+catalog.PLAYS = lambda: encore.play_rows(STORE)  # the catalog's play counts: this process's player store
 
 
 def final_base(job):
@@ -445,8 +452,21 @@ async def create_job(req: Request):
     # the old song is still there). Only the studio's copy is removed; a published file stays in PiKaraoke until the
     # new song is published over it.
     old = str(b.get("replace") or "")
+    rids = []
     if ID_RE.match(old) and old != jid and os.path.exists(os.path.join(JOBS, old, "job.json")):
         set_job(jid, replaces=old)
+        try:
+            rids = list(load(old).get("encore_rids") or [])
+        except Exception:
+            pass
+    rid = str(b.get("request") or "")
+    if rid:  # "Find and make" on a song request (Requests): the request follows this song from now on
+        r = STORE.get_request(rid)
+        if r and r["status"] not in ("declined",):
+            rids.append(rid)
+    if rids:
+        set_job(jid, encore_rids=sorted(set(rids)))
+        refresh_requests()
     wake.set()
     return {"id": jid}
 
@@ -475,6 +495,7 @@ def summary(job):
     out["can_undo_remake"] = bool(job.get("remade")) and not job.get("remake_undone") and job.get("status") == "done" \
         and os.path.exists(job_path(job["id"], "words.before-remake.json"))
     out["remake_note"] = job.get("remake_note")
+    out["encore_flags"] = flag_counts().get(job["id"], 0)
     return out
 
 
@@ -499,7 +520,7 @@ def list_jobs(brief: int = 0):
 
 
 BRIEF_KEYS = ("id", "artist", "title", "yt", "status", "step", "created", "finished", "error", "published", "waiting",
-              "unpublished_changes", "gpu", "reviewed", "to_check", "cancel_requested")
+              "unpublished_changes", "gpu", "reviewed", "to_check", "cancel_requested", "encore_flags", "published_as")
 
 
 def brief_summary(s):
@@ -523,7 +544,7 @@ def job_index():
                 continue
             if j.get("artist") and j.get("title"):
                 out.append({k: j.get(k) for k in ("id", "artist", "title", "status", "published", "published_as",
-                                                  "created", "finished", "cancel_requested")})
+                                                  "created", "finished", "cancel_requested", "encore_rids", "error")})
     return out
 
 
@@ -1119,7 +1140,8 @@ async def publish_version(jid: str, key: str, req: Request):
         job.setdefault("log", []).append(f"published the version “{meta.get('name')}” as '{base}'")
         save(jid, job)
         update_catalog()
-    msg = pk_rescan()
+    pitch_later(jid)
+    msg = pk_rescan() or "published"
     return {"name": base, "message": msg}
 
 
@@ -1615,7 +1637,9 @@ async def rename(jid: str, req: Request):
         save(jid, job)
         if moved:
             update_catalog()
-    msg = pk_rescan() if moved else "renamed"
+    if moved:
+        pitch_later(jid)  # the pitch files say their song's name: written again (from the cache, quick)
+    msg = (pk_rescan() or "renamed in the library") if moved else "renamed"
     return {"artist": artist, "title": title, "name": new, "message": msg}
 
 
@@ -2323,16 +2347,6 @@ def run_remote(jid):
 
 
 # ---------------- PiKaraoke ----------------
-def pk_rows(sql, args=()):
-    if not PK_DB or not os.path.exists(PK_DB):
-        return []
-    c = sqlite3.connect(f"file:{PK_DB}?mode=ro", uri=True, timeout=5)
-    try:
-        return c.execute(sql, args).fetchall()
-    finally:
-        c.close()
-
-
 FILLER = {"karaoke", "version", "versions", "lyrics", "lyric", "with", "instrumental", "official", "video", "hd", "hq",
           "original", "key", "songs", "song", "sing", "king", "karafun", "along", "backing", "track", "no", "vocals",
           "vocal", "minus", "one", "the", "by", "in", "style", "of", "zoom", "lower", "higher", "4k", "1080p", "720p"}
@@ -2413,22 +2427,39 @@ def old_versions(job):
 
 
 def pk_rescan():
-    """Log in as PiKaraoke admin (if a password is configured) and start a library sync."""
+    """Ask PiKaraoke to rescan its library (optional: skipped when PIKARAOKE_URL isn't set). PiKaraoke 1.23: POST /auth
+    (form: admin_password, next) sets a signed session cookie when the password is right (it answers with a redirect
+    either way, and says "Incorrect admin password!" on the page it redirects to); POST /sync_library then needs that
+    cookie (403 without it). No CSRF token. A 403 gets one more try with a fresh login (PiKaraoke restarted between the
+    two, or another client set a new password, which logs every session out)."""
+    if not PK_URL:
+        return None
     pw = C.PIKARAOKE_PASSWORD
-    jar = http.cookiejar.CookieJar()
-    op = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
-    try:
-        if pw:
-            op.open(urllib.request.Request(f"{PK_URL}/auth", data=urllib.parse.urlencode(
-                {"admin_password": pw, "next": "/"}).encode()), timeout=15).read()
-        r = op.open(urllib.request.Request(f"{PK_URL}/sync_library", data=b""), timeout=15)
-        return "PiKaraoke is rescanning; the song shows up in a few seconds"
-    except urllib.error.HTTPError as e:
-        if e.code in (401, 403):
-            return "saved, but PiKaraoke refused the rescan (admin password missing or wrong); it appears after PiKaraoke's next restart"
-        return f"saved, but the rescan failed (HTTP {e.code}); it appears after PiKaraoke's next restart"
-    except Exception as e:
-        return f"saved, but PiKaraoke didn't answer ({str(e)[:80]}); it appears after its next restart"
+    for attempt in (1, 2):
+        jar = http.cookiejar.CookieJar()
+        op = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+        try:
+            if pw:
+                page = op.open(urllib.request.Request(f"{PK_URL}/auth", data=urllib.parse.urlencode(
+                    {"admin_password": pw, "next": "/"}).encode()), timeout=15).read().decode("utf-8", "replace")
+                if "Incorrect admin password" in page:
+                    log.warning("PiKaraoke rescan: PiKaraoke refused the admin password (PIKARAOKE_ADMIN_PASSWORD)")
+                    return "saved, but PiKaraoke refused the admin password (PIKARAOKE_ADMIN_PASSWORD); it appears after PiKaraoke's next restart"
+                if not any(c.name == "session" for c in jar):
+                    log.warning("PiKaraoke rescan: no session cookie after logging in")
+            op.open(urllib.request.Request(f"{PK_URL}/sync_library", data=b""), timeout=15).read()
+            return "PiKaraoke is rescanning; the song shows up in a few seconds"
+        except urllib.error.HTTPError as e:
+            if e.code in (401, 403) and attempt == 1:
+                continue
+            log.warning("PiKaraoke rescan: HTTP %s%s", e.code, " (not logged in as admin)" if e.code in (401, 403) else "")
+            if e.code in (401, 403):
+                return ("saved, but PiKaraoke refused the rescan (" + ("its admin login didn't hold" if pw else
+                        "it has an admin password: set PIKARAOKE_ADMIN_PASSWORD") + "); it appears after PiKaraoke's next restart")
+            return f"saved, but the rescan failed (HTTP {e.code}); it appears after PiKaraoke's next restart"
+        except Exception as e:
+            log.warning("PiKaraoke rescan: %s", str(e)[:120])
+            return f"saved, but PiKaraoke didn't answer ({str(e)[:80]}); it appears after its next restart"
 
 
 def remove_lib_file(name):
@@ -2486,7 +2517,8 @@ async def publish(jid: str, req: Request):
         job.setdefault("log", []).append(f"published as '{base}'" + (f"; removed {len(removed)} old version(s)" if removed else ""))
         save(jid, job)
         update_catalog()
-    msg = pk_rescan()
+    pitch_later(jid)
+    msg = pk_rescan() or "published"
     return {"name": base, "removed": removed, "message": msg}
 
 
@@ -2495,13 +2527,12 @@ JOB_RANK = {"done": 0, "running": 1, "queued": 2, "failed": 3}  # which of sever
 
 
 def library_songs():
+    """Every song file in the library. plays/last_played (unix time): PiKaraoke's history plus Encore's plays that
+    count (finished, or stopped after more than half), by file name."""
     plays = {}
-    try:
-        for title, n, last in pk_rows("select song_title, count(*), max(played_at) from plays "
-                                      "where performer != 'claude-test' group by song_title"):
-            plays[title] = (n, last)
-    except Exception:
-        pass
+    for _, title, last, n in encore.play_rows(STORE):
+        p = plays.get(title, (0, None))
+        plays[title] = (p[0] + n, max(x for x in (p[1], last) if x is not None) if (p[1] or last) else None)
     songs = []
     for d, _, files in os.walk(LIB):
         for f in files:
@@ -2570,7 +2601,7 @@ async def remove_old(req: Request):
         if not remove_lib_file(name):
             raise HTTPException(404, "it's gone already")
     log.info("library: removed old version %s (the music video %s stays)", name, s.get("mv_title"))
-    return {"ok": True, "message": pk_rescan()}
+    return {"ok": True, "message": pk_rescan() or "The library is up to date"}
 
 
 @app.get("/api/status")
@@ -2580,6 +2611,7 @@ def status():
     hh = helper_seen["health"] or {}
     return {"helper_free_gb": round(hh.get("free_mib", 0) / 1024, 1) if hh else None, "helper_gpu": (hh.get("gpu") or "").replace("NVIDIA GeForce ", "") or None,"gpu_free_gb": round(gpu_free_mib() / 1024, 1), "need_gb": NEED_GPU_MIB // 1024,
             "pikaraoke_password": bool(C.PIKARAOKE_PASSWORD), "romaji_ai": bool(C.OLLAMA_URL),
+            "requests_open": STORE.q("select count(*) from requests where status='open'")[0][0],
             "gpus": {"local": LOCAL_GPU, "local_busy": slots["local"] is not None,
                      "helper": C.GPU_HELPER_NAME if C.GPU_HELPER_URL else None,
                      "helper_online": bool(helper_seen["health"]) if C.GPU_HELPER_URL else None,
@@ -2605,6 +2637,691 @@ def recover_jobs():
             if (job.get("video_task") or {}).get("running"):  # not requeued: the custom videos say they need a re-render
                 job["video_task"] = dict(job["video_task"], running=False, error="the studio restarted while making it; try again (Re-render)")
                 save(j["id"], job)
+
+
+# ---------------- players (Encore): contract/ENCORE-STUDIO.md ----------------
+# /api/encore/* is the player API: a bearer token per linked player (pairing: "Connect a player" on the Players page),
+# JSON bodies of at most 64 KB checked against contract/schemas, errors as {"error": "..."}. The admin pages
+# (/api/players, /api/requests, flags on the song page) are the web app's own, behind its login like the rest.
+STORE = encore.Store(preset_token=C.ENCORE_TOKEN or None)
+MAX_BODY = 64 * 1024
+PAIR_LIMIT = encore.RateLimit(5, 60)          # pairing tries per address and minute
+BAD_TOKENS = encore.RateLimit(20, 60)         # wrong tokens per address and minute, then 429 until it calms down
+_ONLY_NETS = []
+for _n in C.ENCORE_ONLY_NETS.split(","):
+    if _n.strip():
+        try:
+            _ONLY_NETS.append(ipaddress.ip_network(_n.strip(), strict=False))
+        except ValueError:
+            log.error("ENCORE_ONLY_NETS: %r isn't a network (like 10.42.0.0/24); ignored", _n.strip())
+UA_RE = re.compile(r"^\S+?/(\S+)\s+contract/(\S+)")
+
+
+class EncoreError(Exception):
+    def __init__(self, status, msg):
+        super().__init__(msg)
+        self.status, self.msg = status, msg
+
+
+def _err(status, msg, headers=None):
+    return JSONResponse({"error": msg}, status_code=status, headers=headers)
+
+
+def _addr(req):
+    return req.client.host if req.client else "?"
+
+
+def _only_player_api(req):
+    """The request came in on a network that may use only the player API (ENCORE_ONLY_NETS; by the studio's own
+    address on that network, which a client can't fake)."""
+    try:
+        ip = ipaddress.ip_address((req.scope.get("server") or ("",))[0])
+    except ValueError:
+        return False
+    return any(ip in n for n in _ONLY_NETS)
+
+
+@app.middleware("http")
+async def encore_gate(req: Request, call_next):
+    path = req.url.path
+    if not path.startswith("/api/encore/"):
+        if _ONLY_NETS and _only_player_api(req):
+            return _err(403, "only the player API (/api/encore/) answers on this network")
+        return await call_next(req)
+    try:
+        if int(req.headers.get("content-length") or 0) > MAX_BODY:
+            return _err(413, "the body is too big (64 KB at most)")
+    except ValueError:
+        return _err(400, "bad Content-Length")
+    if path != "/api/encore/pair":
+        addr = _addr(req)
+        if BAD_TOKENS.over(addr):
+            return _err(429, "too many wrong tokens; wait a minute", {"Retry-After": "60"})
+        auth = req.headers.get("authorization") or ""
+        player = STORE.auth(auth[7:].strip()) if auth[:7].lower() == "bearer " else None
+        if not player:
+            BAD_TOKENS.hit(addr)
+            return _err(401, "Unknown player token (not linked, or unlinked by the Studio).")
+        req.state.player = player
+        m = UA_RE.match(req.headers.get("user-agent") or "")
+        backlog = req.headers.get("x-encore-outbox")
+        try:
+            STORE.seen(player, encore=m.group(1)[:40] if m else None, contract=m.group(2)[:20] if m else None,
+                       backlog=max(0, int(backlog)) if backlog not in (None, "") else None)
+        except (ValueError, sqlite3.Error):
+            pass
+    try:
+        return await call_next(req)
+    except EncoreError as e:  # (normally turned into an answer by the handler below)
+        return _err(e.status, e.msg)
+
+
+@app.exception_handler(EncoreError)
+async def _encore_error(req: Request, e: EncoreError):
+    return _err(e.status, e.msg, {"Retry-After": "60"} if e.status == 429 else None)
+
+
+from starlette.exceptions import HTTPException as _StarletteHTTPException  # noqa: E402
+from fastapi.exception_handlers import http_exception_handler as _default_http_handler  # noqa: E402
+
+
+@app.exception_handler(_StarletteHTTPException)
+async def _http_error(req: Request, e):
+    if req.url.path.startswith("/api/encore/"):  # the player API's errors: {"error": "..."} (unknown paths too)
+        return _err(e.status_code, str(e.detail))
+    return await _default_http_handler(req, e)
+
+
+async def _body(req, schema):
+    raw = await req.body()
+    if len(raw) > MAX_BODY:
+        raise EncoreError(413, "the body is too big (64 KB at most)")
+    try:
+        b = json.loads(raw or b"null")
+    except ValueError:
+        raise EncoreError(400, "the body isn't JSON")
+    errs = schemalite.errors(schema, b)
+    if errs:
+        raise EncoreError(422, "; ".join(errs[:6]))
+    return b
+
+
+def _guard(fn):
+    """A player API handler: an unexpected failure answers 500 {"error"} (and is logged)."""
+    import functools
+
+    @functools.wraps(fn)
+    async def wrap(*a, **kw):
+        try:
+            if asyncio.iscoroutinefunction(fn):
+                return await fn(*a, **kw)
+            from starlette.concurrency import run_in_threadpool
+            return await run_in_threadpool(fn, *a, **kw)  # (reads files: not on the event loop)
+        except (EncoreError, HTTPException):
+            raise
+        except Exception:
+            log.exception("player API: %s failed", fn.__name__)
+            raise EncoreError(500, "the Studio hit an error; it's in its log")
+    return wrap
+
+
+# ---- the catalog as players see it (cached until catalog.json changes) ----
+_CAT = {"key": None}
+
+
+def catalog_view():
+    """{"songs", "by_base": base -> (song, version name or None), "by_id", "files": paths players may fetch}."""
+    p = os.path.join(LIB, catalog.CATALOG)
+    try:
+        st = os.stat(p)
+        key = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        key = None
+    if key != _CAT["key"] or key is None:
+        data = catalog.read_catalog(LIB) or {"songs": []}
+        songs = [e for e in data.get("songs", []) if isinstance(e, dict) and e.get("base")]
+        by_base, files = {}, set()
+        for e in songs:
+            by_base.setdefault(e["base"], (e, None))
+            for v in e.get("versions") or []:
+                if v.get("base"):
+                    by_base.setdefault(v["base"], (e, v.get("name")))
+            files |= catalog.files_of(e)
+        _CAT.update(key=key, songs=songs, by_base=by_base, by_id={e["id"]: e for e in songs}, files=files)
+    return _CAT
+
+
+_CAT_TIMER = {"t": None}
+
+
+def catalog_soon(delay=20.0):
+    """Rewrite catalog.json shortly (plays arrive in bursts: one rewrite for the lot)."""
+    with lock:
+        if _CAT_TIMER["t"] is None:
+            def run():
+                _CAT_TIMER["t"] = None
+                update_catalog()
+            _CAT_TIMER["t"] = threading.Timer(delay, run)
+            _CAT_TIMER["t"].daemon = True
+            _CAT_TIMER["t"].start()
+
+
+# ---- pitch files (pitch.py), written in the background after a publish ----
+_PITCH_Q = queue.Queue()
+_PITCH = {"thread": None}
+
+
+def pitch_later(jid):
+    """Write the published song's <base>.pitch.json (and its versions') soon; never holds up the publish."""
+    if _PITCH["thread"] is None or not _PITCH["thread"].is_alive():
+        _PITCH["thread"] = threading.Thread(target=_pitch_worker, daemon=True, name="pitch")
+        _PITCH["thread"].start()
+    _PITCH_Q.put(jid)
+
+
+def published_bases(jid, job):
+    out = []
+    if job.get("published_as") and os.path.exists(f"{MV_DIR}/{job['published_as']}.mp4"):
+        out.append(job["published_as"])
+    for m in videoswap.entries(job_path(jid)):
+        pa = m.get("published_as")
+        if m.get("mode") == "version" and pa and os.path.exists(f"{MV_DIR}/{pa}.mp4"):
+            out.append(pa)
+    return out
+
+
+def write_pitch(jid):
+    job = load(jid)
+    bases = published_bases(jid, job)
+    if not bases:
+        return []
+    try:
+        files = pitchmod.write(job_path(jid), job, MV_DIR, bases, log)
+        log.info("pitch: wrote %s", ", ".join(files))
+        return files
+    finally:
+        update_catalog()
+
+
+def _pitch_worker():
+    while True:
+        jid = _PITCH_Q.get()
+        try:
+            write_pitch(jid)
+        except HTTPException:
+            pass  # the song was deleted meanwhile
+        except Exception as e:
+            log.warning("pitch: no pitch file for %s (%s)", jid, str(e)[:200])
+
+
+# ---- requests: matching and statuses ----
+def link_request(jid, rid):
+    """The song remembers the request (its status follows the song; kept when the song is made again in place)."""
+    with lock:
+        job = load(jid)
+        rids = set(job.get("encore_rids") or [])
+        if rid not in rids:
+            job["encore_rids"] = sorted(rids | {rid})
+            save(jid, job)
+
+
+def unlink_request(rid):
+    for j in job_index():
+        if rid in (j.get("encore_rids") or []):
+            with lock:
+                job = load(j["id"])
+                job["encore_rids"] = [x for x in job.get("encore_rids") or [] if x != rid]
+                save(j["id"], job)
+
+
+def match_song(artist, title, jobs=None):
+    """What the studio has of a requested song: (status, job id, song id, base) with status have (published: id and
+    base), ready (made, not published), making (waiting or being made) or open (nothing). Case- and accent-
+    insensitive, either name order; without an artist, a title only matches when one artist has it."""
+    artist, title = (artist or "").strip(), (title or "").strip()
+    if not title:
+        return ("open", None, None, None)
+    jobs = job_index() if jobs is None else jobs
+
+    def same(a, t):
+        if artist:
+            return same_song(a, t, artist, title) or same_song(a, t, title, artist)
+        return bool(loose(t)) and loose(t) == loose(title)
+    cands = [j for j in jobs if same(j["artist"], j["title"])]
+    cat = [e for e in catalog_view()["songs"] if e.get("job_deleted") and same(e.get("artist"), e.get("title"))]
+    if not artist and len({loose(x["artist"]) for x in cands} | {loose(e["artist"]) for e in cat}) > 1:
+        return ("open", None, None, None)  # "Hello", sung by several: the admin picks
+    pub = [j for j in cands if j.get("published") and j.get("published_as") and os.path.exists(f"{MV_DIR}/{j['published_as']}.mp4")]
+    if pub:
+        j = max(pub, key=lambda j: j.get("published") or 0)
+        return ("have", j["id"], j["id"], j["published_as"])
+    if cat:
+        return ("have", None, cat[0]["id"], cat[0]["base"])
+    for st, name in (("done", "ready"), ("running", "making"), ("queued", "making")):
+        c = [j for j in cands if j["status"] == st]
+        if c:
+            return (name, max(c, key=lambda j: j.get("created") or 0)["id"], None, None)
+    return ("open", None, None, None)
+
+
+def _job_status(j):
+    if j["status"] in ("queued", "running"):
+        return ("making", j["id"], None, None)
+    if j["status"] == "done":
+        if j.get("published") and j.get("published_as"):
+            return ("published", j["id"], j["id"], j["published_as"])
+        return ("ready", j["id"], None, None)
+    return None  # failed or cancelled: open again (Retry or another make picks it up)
+
+
+def refresh_requests():
+    """Bring the requests still moving (open, making, ready) up to date with the studio's songs. Returns how many
+    changed. A request follows the newest song that remembers it; an open one that a song now matches (made without
+    "Find and make") follows that song too."""
+    moving = STORE.requests(statuses=("open", "making", "ready"))
+    if not moving:
+        return 0
+    jobs = job_index()
+    by_id, by_rid = {j["id"]: j for j in jobs}, {}
+    for j in sorted(jobs, key=lambda j: j.get("created") or 0):
+        for rid in j.get("encore_rids") or []:
+            by_rid[rid] = j
+    changed = 0
+    for r in moving:
+        j = by_rid.get(r["rid"]) or (by_id.get(r["job"]) if r["job"] else None)
+        st = _job_status(j) if j else None
+        if st is None and r["status"] == "open" and not j and not r.get("detached"):
+            m = match_song(r["artist"], r["title"], jobs)
+            if m[0] != "open":
+                st = ("published" if m[0] == "have" else m[0], m[1], m[2], m[3])
+                if m[1]:
+                    link_request(m[1], r["rid"])
+        st = st or ("open", None, None, None)
+        changed += STORE.set_request(r["rid"], status=st[0], job=st[1], song_id=st[2], base=st[3], reason=None)
+    return changed
+
+
+# ---- flags: the ⚠ marks ----
+_FC = {"at": 0.0, "v": {}}
+
+
+def flag_counts():
+    """job id -> Encore flags not dismissed (cached for 2 s: the Songs list asks for every song)."""
+    if time.time() - _FC["at"] > 2:
+        _FC.update(at=time.time(), v=STORE.flag_counts())
+    return _FC["v"]
+
+
+def _spans(lines, off):
+    return [(min(w[0] for w in l["words"]) + off, max(w[1] for w in l["words"]) + off, " ".join(w[2] for w in l["words"]))
+            for l in lines]
+
+
+def _published_lines(base):
+    """[(start, end, text)] of the words file the players have for this base (video time), or None."""
+    try:
+        d = json.load(open(os.path.join(MV_DIR, base + catalog.WORDS_EXT), encoding="utf-8"))
+        return [(l["start"], l["end"], " ".join(w[2] for w in l["words"])) for l in d["lines"]]
+    except Exception:
+        return None
+
+
+def remark_line(jid, idx):
+    """(under the lock) Line idx's ⚠ mark from the Encore flags on it that aren't dismissed: set, stacked with a
+    count, or taken off again (only Encore's part: the studio's own reason and a ks note stay). Timing and words are
+    never touched. True if words.json changed."""
+    wp = job_path(jid, "words.json")
+    lines = load_lines(wp)
+    if not 0 <= idx < len(lines):
+        return False
+    mine = [f for f in STORE.flags(job=jid, open_only=True) if f["mapped"] == idx]
+    l = lines[idx]
+    old = l.get("why") if l.get("weak") else None
+    if mine:
+        why = encore.merge_why(old, mine)
+        if l.get("weak") and old == why:
+            return False
+        l.update(weak=True, ok=False, why=why)
+    else:
+        if not (old or "").startswith(encore.ENCORE_TAG):
+            return False
+        rest = encore.merge_why(old, [])
+        l.update(weak=bool(rest), why=rest or None)
+    save_lines(wp, lines)
+    return True
+
+
+def flag_song(b):
+    """(status, job id, version name, line index) for a flag (§2.3, §2.8): marked when the studio has the song's job
+    (on the line it's about; on the whole song when it gives no time and no line, or when no line fits: the song page
+    lists it either way), noted when the song is known (catalog id or base) but its job is gone, unknown_song when
+    neither is known. Songs a player found by scanning folders ("f-..." ids) are matched by base."""
+    jid = b["id"] if ID_RE.match(b["id"]) and os.path.isfile(os.path.join(JOBS, b["id"], "job.json")) else None
+    cv = catalog_view()
+    hit = cv["by_base"].get(b["base"])
+    if not jid and hit and ID_RE.match(hit[0]["id"]) and os.path.isfile(os.path.join(JOBS, hit[0]["id"], "job.json")):
+        jid = hit[0]["id"]
+    if not jid:
+        if hit or b["id"] in cv["by_id"]:
+            return ("noted", None, hit[1] if hit else None, None)
+        return ("unknown_song", None, None, None)
+    job = load(jid)
+    version = None
+    if b["base"] != job.get("published_as"):
+        version = next((m.get("name") for m in videoswap.entries(job_path(jid)) if m.get("published_as") == b["base"]),
+                       hit[1] if hit and hit[0]["id"] == jid else None)
+    if b.get("t") is None and b.get("line") is None:
+        return ("marked", jid, version, None)
+    if job.get("status") != "done" or not os.path.exists(job_path(jid, "words.json")):
+        return ("marked", jid, version, None)  # being made again: listed on its page, no line to mark yet
+    # a custom-video version plays over the song's own sound and timing (videoswap.py), so its video time is the
+    # song's: the same lines, the same offset
+    cur = _spans(load_lines(job_path(jid, "words.json")), float(job.get("offset") or 0.0))
+    idx = encore.map_line(cur, b.get("t"), b.get("line"), _published_lines(b["base"]))
+    return ("marked", jid, version, idx)
+
+
+# ---- the player API ----
+@app.post("/api/encore/pair")
+@_guard
+async def encore_pair(req: Request):
+    if not PAIR_LIMIT.hit(_addr(req)):
+        raise EncoreError(429, "Too many tries. Wait a minute, then try again.")
+    b = await _body(req, "pair.request.schema.json")
+    name = " ".join(b["name"].split())[:60]
+    try:
+        token = STORE.pair(b["code"], name, b["player"], b["encore"], b["contract"])
+    except encore.PairError as e:
+        log.warning("players: pairing refused (%s) from %s", "wrong or expired code", _addr(req))
+        raise EncoreError(e.status, str(e))
+    _FC["at"] = 0
+    log.info("players: linked %r (player %s…, Encore %s, contract %s)", name, b["player"][:8], b["encore"][:20], b["contract"][:10])
+    out = {"token": token, "studio": encore.VERSION, "contract": encore.CONTRACT, "studio_name": C.STUDIO_NAME,
+           "studio_id": STORE.studio_id()}
+    if C.STUDIO_PUBLIC_URL:
+        out["studio_url"] = C.STUDIO_PUBLIC_URL
+    return out
+
+
+@app.post("/api/encore/unpair")
+@_guard
+async def encore_unpair(req: Request):
+    await _body(req, "unpair.request.schema.json")
+    p = req.state.player
+    try:
+        STORE.unlink(p)
+    except encore.PairError as e:
+        raise EncoreError(e.status, str(e))
+    log.info("players: %s… unlinked itself", p[:8])
+    return {"ok": True}
+
+
+@app.get("/api/encore/hello")
+@_guard
+def encore_hello(req: Request):
+    return {"api": encore.API, "contract": encore.CONTRACT, "studio": encore.VERSION, "catalog_version": catalog.VERSION,
+            "studio_id": STORE.studio_id()}
+
+
+@app.post("/api/encore/requests")
+@_guard
+async def encore_request(req: Request):
+    b = await _body(req, "requests.post.request.schema.json")
+    old = STORE.get_request(b["rid"])
+    if old:
+        return json.loads(old["answer"])
+    st, jid, sid, base = match_song(b.get("artist") or "", b["title"])
+    ans, new = STORE.add_request(req.state.player, b, (st, jid, sid, base))
+    if new:
+        if jid and st in ("ready", "making"):
+            link_request(jid, b["rid"])
+        log.info("players: request %s… %r - %r from %s: %s", b["rid"][:8], b.get("artist"), b["title"], b["by"], st)
+    return ans
+
+
+@app.get("/api/encore/requests")
+@_guard
+def encore_requests(req: Request, rids: str = "", since: str = ""):
+    if not rids and since == "":
+        raise EncoreError(400, "give rids=a,b,c or since=<unix time>")
+    ids = None
+    if rids:
+        ids = [x for x in rids.split(",") if encore.UUID_RE.match(x.strip().lower())][:200]
+    try:
+        t = float(since) if since != "" else None
+    except ValueError:
+        raise EncoreError(400, "since is a unix time")
+    refresh_requests()
+    rows = STORE.requests(player=req.state.player, rids=ids, since=t)
+    if ids is not None:  # in the order asked for
+        at = {x: i for i, x in enumerate(ids)}
+        rows.sort(key=lambda r: at.get(r["rid"], 1e9))
+    else:                # oldest change first: a player can keep the last `updated` as its next `since`
+        rows.sort(key=lambda r: r["updated"])
+    return {"requests": [STORE.public_request(r) for r in rows]}
+
+
+@app.post("/api/encore/flags")
+@_guard
+async def encore_flag(req: Request):
+    b = await _body(req, "flags.post.request.schema.json")
+    old = STORE.get_flag(b["fid"])
+    if old:
+        return {"fid": b["fid"], "status": old["status"]}
+    st, jid, version, idx = flag_song(b)
+    with lock:
+        if STORE.get_flag(b["fid"]):  # the same flag arrived twice at once
+            return {"fid": b["fid"], "status": STORE.get_flag(b["fid"])["status"]}
+        STORE.add_flag(req.state.player, b, st, job=jid, version=version, mapped=idx)
+        _FC["at"] = 0
+        if st == "marked" and idx is not None:
+            try:
+                remark_line(jid, idx)
+            except Exception:
+                log.exception("players: couldn't mark line %s of %s", idx + 1, jid)
+    log.info("players: flag %s… %s on %s%s%s from %s: %s", b["fid"][:8], b["kind"], jid or b["base"][:60],
+             f" ({version})" if version else "", f" line {idx + 1}" if idx is not None else "", b["by"], st)
+    return {"fid": b["fid"], "status": st}
+
+
+@app.post("/api/encore/plays")
+@_guard
+async def encore_plays(req: Request):
+    b = await _body(req, "plays.post.request.schema.json")
+    cv = catalog_view()
+
+    def duration_of(sid, base):
+        e = (cv["by_base"].get(base) or (None,))[0] or cv["by_id"].get(sid)
+        return (e or {}).get("duration")
+    before = STORE.q("select count(*) from plays where counted=1")[0][0]
+    n = STORE.add_plays(req.state.player, b["plays"], duration_of)
+    if STORE.q("select count(*) from plays where counted=1")[0][0] != before:
+        catalog_soon()
+    return {"stored": n}
+
+
+@app.get("/api/encore/unpublished")
+@_guard
+def encore_unpublished(req: Request):
+    songs = [{"job": j["id"], "artist": j["artist"], "title": j["title"], "made": j.get("finished") or j.get("created") or 0}
+             for j in job_index() if j["status"] == "done" and not j.get("published")]
+    songs.sort(key=lambda s: -s["made"])
+    return {"songs": songs, "studio_url": C.STUDIO_PUBLIC_URL or None}
+
+
+def _etag_match(req, etag):
+    inm = req.headers.get("if-none-match")
+    if not inm:
+        return False
+    tags = [x.strip() for x in inm.split(",")]
+    return "*" in tags or etag in tags or ("W/" + etag) in tags
+
+
+@app.get("/api/encore/catalog")
+@_guard
+def encore_catalog(req: Request):
+    p = os.path.join(LIB, catalog.CATALOG)
+    if not os.path.exists(p):
+        update_catalog()
+    try:
+        raw = open(p, "rb").read()
+    except OSError:
+        raise EncoreError(503, "the Studio has no catalog yet")
+    etag = '"' + hashlib.sha256(raw).hexdigest()[:24] + '"'
+    h = {"ETag": etag, "Cache-Control": "no-cache"}
+    if _etag_match(req, etag):
+        return Response(status_code=304, headers=h)
+    return Response(raw, media_type="application/json", headers=h)
+
+
+TYPES = {".mp4": "video/mp4", ".ass": "text/plain; charset=utf-8", ".json": "application/json"}
+
+
+@app.get("/api/encore/files/{path:path}")
+@_guard
+def encore_file(path: str, req: Request):
+    """A library file the catalog names (exact path, '/'-separated, relative to the library root); Range and ETag."""
+    if path not in catalog_view()["files"]:
+        raise EncoreError(404, "not found")
+    root = os.path.realpath(LIB)
+    full = os.path.realpath(os.path.join(root, *path.split("/")))
+    if not full.startswith(root + os.sep) or not os.path.isfile(full):
+        raise EncoreError(404, "not found")
+    st = os.stat(full)
+    etag = '"' + hashlib.sha256(f"{path}|{st.st_size}|{st.st_mtime_ns}".encode()).hexdigest()[:24] + '"'
+    h = {"ETag": etag, "Cache-Control": "no-cache", "Accept-Ranges": "bytes"}
+    if _etag_match(req, etag):
+        return Response(status_code=304, headers=h)
+    ext = ".json" if full.endswith(".json") else os.path.splitext(full)[1].lower()
+    return FileResponse(full, media_type=TYPES.get(ext, "application/octet-stream"), headers=h, stat_result=st)
+
+
+# ---- the admin pages (the web app, behind its own login) ----
+@app.get("/api/players")
+def players_list():
+    return {"players": STORE.players(), "code": STORE.code_state(), "address": C.ENCORE_STUDIO_ADDRESS,
+            "studio_name": C.STUDIO_NAME, "contract": encore.CONTRACT, "studio": encore.VERSION,
+            "preset": bool(C.ENCORE_TOKEN)}
+
+
+@app.post("/api/players/code")
+async def players_code(req: Request):
+    """A new one-time pairing code (shown only here, never logged); the previous one stops working."""
+    check_origin(req)
+    code, expires = STORE.new_code()
+    log.info("players: a pairing code was made (valid 10 minutes)")
+    return {"code": code, "expires": expires, "address": C.ENCORE_STUDIO_ADDRESS}
+
+
+@app.delete("/api/players/code")
+def players_code_cancel(req: Request):
+    check_origin(req)
+    STORE.cancel_code()
+    return {"ok": True}
+
+
+@app.delete("/api/players/{player}")
+def players_unlink(player: str, req: Request):
+    check_origin(req)
+    try:
+        ok = STORE.unlink(player)
+    except encore.PairError as e:
+        raise HTTPException(e.status, str(e))
+    if not ok:
+        raise HTTPException(404, "no such player")
+    log.info("players: unlinked %s… from the studio", player[:8])
+    return {"ok": True}
+
+
+def _request_row(r, names, jobs):
+    j = jobs.get(r["job"]) if r["job"] else None
+    if not j and r["song_id"]:
+        j = jobs.get(r["song_id"])
+    return {"rid": r["rid"], "artist": r["artist"], "title": r["title"], "note": r["note"], "by": r["by_name"],
+            "party": r["party"], "at": r["at"], "status": r["status"], "reason": r["reason"], "job": r["job"],
+            "song_id": r["song_id"], "base": r["base"], "updated": r["updated"], "created": r["created"],
+            "auto": bool(r["auto"]), "player": names.get(r["player"]) or ("Preset player" if r["player"] == encore.PRESET else "an unlinked player"),
+            "song": {"id": j["id"], "artist": j["artist"], "title": j["title"], "status": j["status"],
+                     "published": bool(j.get("published"))} if j else None}
+
+
+@app.get("/api/requests")
+def requests_list():
+    refresh_requests()
+    names = STORE.player_names()
+    jobs = {j["id"]: j for j in job_index()}
+    rows = [_request_row(r, names, jobs) for r in STORE.requests()]
+    return {"requests": rows, "open": sum(1 for r in rows if r["status"] == "open"),
+            "flags": [dict(f, by=f["by_name"]) for f in STORE.flags(unmatched=True, open_only=True)]}
+
+
+@app.post("/api/requests/{rid}/{action}")
+async def request_action(rid: str, action: str, req: Request):
+    """decline {reason} | have {job} (the studio has it: that song) | reopen."""
+    check_origin(req)
+    r = STORE.get_request(rid)
+    if not r:
+        raise HTTPException(404, "no such request")
+    b = await req.json() if (req.headers.get("content-length") or "0") != "0" else {}
+    if action == "decline":
+        reason = " ".join(str(b.get("reason") or "").split())[:120]
+        if not reason:
+            raise HTTPException(400, "say why, in a few words (the guest sees it)")
+        unlink_request(rid)
+        STORE.set_request(rid, status="declined", reason=reason, job=None, song_id=None, base=None)
+    elif action == "have":
+        jid = str(b.get("job") or "")
+        job = load(jid)
+        st = _job_status({**job, "id": jid})
+        if not st:
+            raise HTTPException(400, "that song failed or was cancelled; pick a made one")
+        unlink_request(rid)
+        link_request(jid, rid)
+        if st[0] == "published":
+            STORE.set_request(rid, status="have", job=jid, song_id=jid, base=job["published_as"], reason=None)
+        else:
+            STORE.set_request(rid, status=st[0], job=jid, song_id=None, base=None, reason=None)
+    elif action == "reopen":  # (also "Not this song"): waits again, and isn't matched to a song by its name any more
+        unlink_request(rid)
+        STORE.set_request(rid, status="open", reason=None, job=None, song_id=None, base=None, detached=1)
+    else:
+        raise HTTPException(404, "unknown action")
+    log.info("players: request %s… %s", rid[:8], action)
+    return {"ok": True, "status": STORE.get_request(rid)["status"]}
+
+
+@app.get("/api/jobs/{jid}/encore-flags")
+def job_flags(jid: str):
+    job_path(jid)
+    names = STORE.player_names()
+    return {"flags": [dict(f, by=f["by_name"], line_no=f["mapped"] + 1 if f["mapped"] is not None else None,
+                           player=names.get(f["player"]) or f["player"][:8]) for f in STORE.flags(job=jid)]}
+
+
+@app.post("/api/jobs/{jid}/encore-flags/dismiss")
+async def job_flags_dismiss(jid: str, req: Request):
+    """Done with these flags (or all of the song's): they stop counting, and their part of a line's ⚠ note goes."""
+    check_origin(req)
+    b = await req.json()
+    fids = [str(x) for x in (b.get("fids") or [])]
+    with lock:
+        job_path(jid)
+        lines = {f["mapped"] for f in STORE.flags(job=jid, open_only=True) if f["mapped"] is not None and (not fids or f["fid"] in fids)}
+        done = STORE.dismiss_flags(fids=fids) if fids else STORE.dismiss_flags(job=jid)
+        _FC["at"] = 0
+        if os.path.exists(job_path(jid, "words.json")):
+            for i in sorted(lines):
+                remark_line(jid, i)
+    return {"dismissed": len(done)}
+
+
+@app.post("/api/flags/dismiss")
+async def other_flags_dismiss(req: Request):
+    """Flags on songs the studio doesn't have (any more): done with them."""
+    check_origin(req)
+    b = await req.json()
+    fids = [str(x) for x in (b.get("fids") or [])]
+    return {"dismissed": len(STORE.dismiss_flags(fids=fids))}
 
 
 # ---------------- static ----------------

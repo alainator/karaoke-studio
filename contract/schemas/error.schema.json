@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:encore-studio:contract:error.schema.json",
+  "title": "An error answer (any 4xx/5xx with a JSON body)",
+  "description": "Players never rely on the text; only the status code matters. 401 = token unknown or revoked (unlinked).",
+  "type": "object",
+  "required": [
+    "error"
+  ],
+  "properties": {
+    "error": {
+      "type": "string"
+    }
+  }
+}

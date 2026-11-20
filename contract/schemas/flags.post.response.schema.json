@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:encore-studio:contract:flags.post.response.schema.json",
+  "title": "POST /api/encore/flags: 200",
+  "description": "marked: put on the line (or the song); noted: the song is known but its job is gone (kept in a flags list); unknown_song: neither id nor base is known (kept too).",
+  "type": "object",
+  "required": [
+    "fid",
+    "status"
+  ],
+  "properties": {
+    "fid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "description": "A UUID made by Encore (lowercase, as Python's str(uuid4()))."
+    },
+    "status": {
+      "enum": [
+        "marked",
+        "noted",
+        "unknown_song"
+      ]
+    }
+  }
+}

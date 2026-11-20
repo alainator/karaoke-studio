@@ -18,6 +18,7 @@ Type `Artist - Title`. The studio finds the music video on YouTube and the lyric
 - **Colours singers.** Duets, groups of up to 8 named singers, and lines shared mid-way (paint the words of each singer). Pasting a Genius page with headers like `[Chorus: Name]` colours the lines for you.
 - **Remakes safely.** Older songs show what a remake would improve. A remake keeps your edits, changes nothing if it finds nothing better, and can be undone.
 - **Uses a second GPU.** A PC on your network can take songs when the main GPU is busy, or you can choose which GPU makes each song.
+- **Works with Encore.** Link the Encore party app (or any player that speaks [the contract](contract/ENCORE-STUDIO.md)): guests' song requests land in a Requests list, lyric flags from the party mark the lines to fix, and what was sung counts in the Library. Each published song also gets its sung melody (`.pitch.json`) for singing scores.
 
 ## Languages
 
@@ -45,7 +46,7 @@ Tested with one song each in Russian, Ukrainian, Greek, Hindi, Thai, Arabic, Heb
 ## Requirements
 
 - Linux with an NVIDIA GPU (about 9 GB free per song), Python 3.12, ffmpeg and Node.js.
-- [PiKaraoke](https://github.com/vicwomg/pikaraoke) 1.23 or newer to publish to. The studio works on its own for previews.
+- A player to publish to: [PiKaraoke](https://github.com/vicwomg/pikaraoke) 1.23 or newer, and/or Encore (or anything that reads `catalog.json`). Without PiKaraoke, leave `PIKARAOKE_URL` and `PIKARAOKE_DB` empty: publishing then skips its rescan. The studio works on its own for previews.
 - Optional: [Ollama](https://ollama.com) for the AI lyrics and romaji checks.
 
 ## Setup
@@ -87,6 +88,50 @@ sudo systemctl restart karaoke-studio
 ```
 The helper only accepts the studio server, and only with the secret. It updates itself from GitHub whenever the studio runs newer code.
 
+## Players (Encore)
+
+The studio's songs are plain files (`.mp4`, `.ass`) plus a documented catalog (`catalog.json` in the library root, a
+`.words.json` and a `.pitch.json` per song), so any player can use them. Encore also talks to the studio through the
+player API (`/api/encore/`), described with JSON Schemas and sample exchanges in [`contract/`](contract/ENCORE-STUDIO.md)
+(this repo has the master copy; `contract/make_fixtures.py` regenerates the samples with the studio's own code).
+
+**Linking a player.** On the **Players** tab, *Connect a player* shows the studio's address and a one-time code (8
+characters, 10 minutes, one use). Type both into Encore (station → System → Karaoke Studio). Each player gets its own
+key, kept only as a hash here; *Unlink* stops it at once. For a Docker setup without clicking, `ENCORE_TOKEN` in `.env`
+(and the same value as `STUDIO_TOKEN` in Encore's) is one more player, "preset".
+
+**What players send.** Song requests show on the **Requests** tab (with a count in the menu): *Find and make* opens the
+Make tab with the search filled in, and the request then follows that song (being made, ready, published); *We have
+it* and *Decline* answer it. Lyric flags ("the words light up late here") put a ⚠ on that line with a note like
+"Encore: late (Sam, Friday at Ken's)" and show as *Flagged in Encore* on the song's page and in *Needs fixing*; they
+never change timing or words. Plays count in the Library's *Sung* column and in `catalog.json`, together with
+PiKaraoke's own history.
+
+**Melody files.** Publishing writes `<name>.pitch.json` in the background (CREPE on the song's separated vocals: a few
+seconds on the GPU, about 20 s on the CPU). For songs published before, run once (when nobody is singing):
+`python -I deploy/write-pitch.py --dry`, then without `--dry` (`--limit 5` to try a few first).
+
+**Networking (Docker).** Encore reaches the studio over a private network that only the two containers join:
+```yaml
+# in both compose files
+services:
+  karaoke-studio:           # (in Encore's file: the encore service)
+    networks: [karaoke_link]
+networks:
+  karaoke_link:
+    external: true          # made once: docker network create --internal karaoke_link
+```
+Encore's `STUDIO_URL` (or the address typed when linking) is then `http://karaoke-studio:5570`, which is also what
+*Connect a player* shows (`ENCORE_STUDIO_ADDRESS`). `--internal` keeps the network off the internet; the studio keeps
+its other networks. The studio has no login of its own, and a container on that network can reach all of it, not
+only `/api/encore/`. To shut the rest off there, set `ENCORE_ONLY_NETS` to that network's subnet (`docker network
+inspect karaoke_link`; give it a fixed `--subnet` when creating it): requests arriving on the studio's address in that
+subnet may then only use the player API. Check the web app still answers through your proxy afterwards (if Docker
+routes the published port over that network, the proxy gets 403 too; then leave it empty).
+A player elsewhere (a party kit on Tailscale) should get a route that forwards only `/api/encore/` to the studio.
+Settings: `STUDIO_PUBLIC_URL` (the web app's address, shown in Encore's host view), `STUDIO_NAME`, `KARAOKE_DATA`
+(where `encore.db` is kept: default the folder above the logs).
+
 ## Logs
 
 - `data/logs/studio.log`: what the studio did and when (queued, started on which card, finished, failed and why, published).
@@ -94,7 +139,7 @@ The helper only accepts the studio server, and only with the secret. It updates 
 
 ## Security
 
-**The studio has no login of its own**, and it can change your karaoke library. Keep it on `127.0.0.1`, or put it behind a reverse proxy that requires a login (Authentik, Authelia, oauth2-proxy…), and set `STUDIO_ORIGINS` to the address you use.
+**The studio has no login of its own**, and it can change your karaoke library. Keep it on `127.0.0.1`, or put it behind a reverse proxy that requires a login (Authentik, Authelia, oauth2-proxy…), and set `STUDIO_ORIGINS` to the address you use. The player API (`/api/encore/`) has its own keys (see Players): wrong keys get 401 and are rate-limited, pairing tries are limited to 5 a minute per address and a code dies after 5 wrong tries, and keys and codes are never logged.
 
 ## Notes
 

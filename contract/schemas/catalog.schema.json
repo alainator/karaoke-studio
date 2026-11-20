@@ -1,0 +1,276 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:encore-studio:contract:catalog.schema.json",
+  "title": "catalog.json (library root), version 1 or 2",
+  "description": "As written by studio/catalog.py. Unknown fields are allowed (players ignore them). Version 2 adds pitch (song and version), plays and last_played, which are then required on every song (job_deleted ones too). Also served by GET /api/encore/catalog.",
+  "type": "object",
+  "required": [
+    "version",
+    "songs"
+  ],
+  "properties": {
+    "version": {
+      "enum": [
+        1,
+        2
+      ]
+    },
+    "generated": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Unix time, seconds."
+    },
+    "songs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/song"
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "version": {
+            "const": 2
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "songs": {
+            "items": {
+              "required": [
+                "pitch",
+                "plays",
+                "last_played"
+              ],
+              "properties": {
+                "versions": {
+                  "items": {
+                    "required": [
+                      "pitch"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "song": {
+      "type": "object",
+      "required": [
+        "id",
+        "artist",
+        "title",
+        "folder",
+        "base",
+        "lyrics",
+        "versions",
+        "parts",
+        "together",
+        "group",
+        "words",
+        "lines"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The Studio's job id (= the song id in the API)."
+        },
+        "artist": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "title_orig": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lang": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "duration": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "published": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "folder": {
+          "type": "string",
+          "description": "Relative to the library root, '/' separated."
+        },
+        "base": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The .mp4/.ass names without extension."
+        },
+        "lyrics": {
+          "type": "object",
+          "required": [
+            "file",
+            "default_mode",
+            "modes"
+          ],
+          "properties": {
+            "file": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "default_mode": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "modes": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "mode (both, original, romaji, kana) -> <base>.<mode>.ass"
+            }
+          }
+        },
+        "versions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/version"
+          }
+        },
+        "parts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "key",
+              "name",
+              "color",
+              "color_name",
+              "lines"
+            ],
+            "properties": {
+              "key": {
+                "type": "string",
+                "pattern": "^(m[0-7]|s[12])$",
+                "description": "m0..m7: group members (named cast); s1/s2: Part 1/2 of a duet."
+              },
+              "name": {
+                "type": "string"
+              },
+              "color": {
+                "type": "string",
+                "pattern": "^#[0-9a-f]{6}$"
+              },
+              "color_name": {
+                "type": "string"
+              },
+              "lines": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        },
+        "together": {
+          "type": "boolean"
+        },
+        "group": {
+          "type": "string"
+        },
+        "words": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lines": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "first": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "job_deleted": {
+          "type": "boolean",
+          "description": "Only on songs whose Studio job was deleted while the files stayed."
+        },
+        "pitch": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "v2: <base>.pitch.json or null."
+        },
+        "plays": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "v2: plays counted by the Studio from every player (per song entry, all its versions together). Null allowed (§2.8); the Studio sends 0 when nothing was counted."
+        },
+        "last_played": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "v2: unix time of the last counted play, or null."
+        }
+      }
+    },
+    "version": {
+      "type": "object",
+      "required": [
+        "name",
+        "base"
+      ],
+      "properties": {
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "base": {
+          "type": "string",
+          "minLength": 1
+        },
+        "published": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "pitch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  }
+}

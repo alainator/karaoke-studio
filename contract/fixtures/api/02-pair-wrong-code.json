@@ -1,0 +1,25 @@
+{
+  "name": "pair-wrong-code",
+  "about": "A wrong, used or expired code (this one was used by the pairing above).",
+  "request": {
+    "method": "POST",
+    "path": "/api/encore/pair",
+    "headers": {},
+    "body": {
+      "code": "K7M3PQ9Y",
+      "name": "Encore on kit-01",
+      "player": "6f1c2a90-3b7e-4c1d-9e55-0a7b8c9d1e2f",
+      "encore": "0.4",
+      "contract": "1"
+    },
+    "schema": "pair.request.schema.json"
+  },
+  "response": {
+    "status": 403,
+    "headers": {},
+    "body": {
+      "error": "That pairing code isn't valid (it's wrong, used or expired)."
+    },
+    "schema": "error.schema.json"
+  }
+}

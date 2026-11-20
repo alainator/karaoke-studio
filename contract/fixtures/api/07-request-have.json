@@ -1,0 +1,32 @@
+{
+  "name": "request-have",
+  "about": "The Studio already has it (matched accent- and case-insensitively, either name order).",
+  "request": {
+    "method": "POST",
+    "path": "/api/encore/requests",
+    "headers": {
+      "Authorization": "Bearer <token from pairing>"
+    },
+    "body": {
+      "rid": "c4a2d0b3-2e5f-4a7b-9c8d-3f0e1b2c4d5e",
+      "artist": "Paper Lanterns",
+      "title": "nova lane",
+      "note": "",
+      "by": "Sam",
+      "party": "Friday at Ken's",
+      "at": 1794398520
+    },
+    "schema": "requests.post.request.schema.json"
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "rid": "c4a2d0b3-2e5f-4a7b-9c8d-3f0e1b2c4d5e",
+      "status": "have",
+      "id": "20261101-120000-nova-lane-paper-lanterns",
+      "base": "Nova Lane - Paper Lanterns (Music Video)"
+    },
+    "schema": "requests.post.response.schema.json"
+  }
+}

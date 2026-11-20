@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:encore-studio:contract:hello.response.schema.json",
+  "title": "GET /api/encore/hello",
+  "type": "object",
+  "required": [
+    "api",
+    "contract",
+    "studio",
+    "studio_id",
+    "catalog_version"
+  ],
+  "properties": {
+    "api": {
+      "const": 1
+    },
+    "contract": {
+      "type": "string"
+    },
+    "studio": {
+      "type": "string"
+    },
+    "studio_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "description": "The Studio's own id (a uuid it makes once, §2.8.9). Encore ties every outbox item to it."
+    },
+    "catalog_version": {
+      "type": "integer",
+      "minimum": 1
+    }
+  }
+}

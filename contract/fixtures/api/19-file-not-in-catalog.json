@@ -1,0 +1,21 @@
+{
+  "name": "file-not-in-catalog",
+  "about": "Only paths the catalog references are served.",
+  "request": {
+    "method": "GET",
+    "path": "/api/encore/files/catalog.json.bak",
+    "headers": {
+      "Authorization": "Bearer <token from pairing>"
+    },
+    "body": null,
+    "schema": null
+  },
+  "response": {
+    "status": 404,
+    "headers": {},
+    "body": {
+      "error": "not found"
+    },
+    "schema": "error.schema.json"
+  }
+}

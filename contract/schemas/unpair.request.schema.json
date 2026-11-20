@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:encore-studio:contract:unpair.request.schema.json",
+  "title": "POST /api/encore/unpair (bearer)",
+  "description": "An empty JSON object.",
+  "type": "object",
+  "maxProperties": 0
+}
