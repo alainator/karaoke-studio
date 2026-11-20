@@ -61,9 +61,16 @@ def http_json(url, timeout=20, tries=3):
             with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=timeout) as r:
                 return json.load(r)
         except (urllib.error.URLError, ConnectionError, TimeoutError) as e:
-            if i == tries - 1 or (isinstance(e, urllib.error.HTTPError) and e.code < 500):
+            busy = isinstance(e, urllib.error.HTTPError) and e.code == 429  # rate-limited (LRCLIB, after quick searches)
+            if i == tries - 1 or (isinstance(e, urllib.error.HTTPError) and e.code < 500 and not busy):
                 raise
-            time.sleep(1.0 + i)
+            wait = 1.0 + i
+            if busy:
+                try:
+                    wait = min(15.0, max(2.0, float(e.headers.get("Retry-After") or 0) or 3.0 * (i + 1)))
+                except (TypeError, ValueError):
+                    wait = 3.0 * (i + 1)
+            time.sleep(wait)
 
 
 def job_path(jid, *parts):
@@ -135,7 +142,8 @@ def yt_search(artist, title):
         t, ch = (e.get("title") or ""), (e.get("channel") or "")
         nt_, nch = norm(t), norm(ch)
         score = 0.0
-        if na and (na in nch or nch.replace(" ", "") in (na.replace(" ", "") + "vevo") or nch.endswith("vevo") and na.replace(" ", "") in nch.replace(" ", "")):
+        # the artist's own channel (or their VEVO); a result without a channel name proves nothing
+        if na and nch and (na in nch or nch.replace(" ", "") in (na.replace(" ", "") + "vevo") or nch.endswith("vevo") and na.replace(" ", "") in nch.replace(" ", "")):
             score += 5
         if e.get("channel_is_verified"):
             score += 1.5
@@ -181,7 +189,7 @@ def lrc_search(artist, title, extra_titles=()):
         letters = [c for c in text if c.isalpha()]
         japanese = bool(KANA.search(text))
         from romanize import script_of
-        script = script_of([text])
+        script = script_of(text.splitlines())  # by line: a line or two in another script doesn't make the song that script
         native = script != "latin"  # Japanese, Korean, Chinese and every other script the studio reads
         toks = re.findall(r"[a-z']+", text.lower())
         # (only for lyrics without Japanese: a Japanese song with a few English words isn't "English lyrics")
