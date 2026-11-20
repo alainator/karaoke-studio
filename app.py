@@ -22,6 +22,7 @@ import config as C  # noqa: E402
 from assgen import (MODES, display_modes, job_display, load_cast, load_lines, save_lines, variant_name,  # noqa: E402
                     who_of, write_lyrics)
 import versions  # noqa: E402
+import catalog  # noqa: E402
 import trimtools  # noqa: E402
 import videoswap  # noqa: E402
 
@@ -121,7 +122,7 @@ def rebuild_lyrics(jid, job, lines=None, cast=None, offset=None):
 # a published song in PiKaraoke's folder: base.mp4, base.ass (its lyrics in the song's display mode) and, for songs
 # with original-script lines, base.<mode>.ass per display mode (PiKaraoke only reads base.ass and doesn't list .ass
 # files as songs, so these sit there unused until a player lets the singer pick)
-LIB_EXTS = (".mp4", ".ass") + tuple(f".{m}.ass" for m in MODES)
+LIB_EXTS = (".mp4", ".ass") + tuple(f".{m}.ass" for m in MODES) + (catalog.WORDS_EXT,)
 
 
 def publish_lyrics(jid, base):
@@ -137,6 +138,16 @@ def publish_lyrics(jid, base):
     for m in MODES:  # a mode the song no longer has (its original lines were removed)
         if f".{m}.ass" not in have and os.path.exists(f"{MV_DIR}/{base}.{m}.ass"):
             os.remove(f"{MV_DIR}/{base}.{m}.ass")
+    # base.words.json: the lines, words and singers in video time, for Encore (catalog.py); never stops a publish
+    try:
+        catalog.write_words(job_path(jid), load(jid), MV_DIR, base)
+    except Exception:
+        log.exception("catalog: couldn't write the words file of %s", base)
+
+
+def update_catalog():
+    """Rewrite catalog.json in the library root (catalog.py) after a published song changed; never raises."""
+    catalog.refresh(JOBS, LIB, MV_DIR, log)
 
 
 def final_base(job):
@@ -996,6 +1007,8 @@ def remove_video(jid: str, key: str, req: Request):
         videoswap.remove_version(job_path(jid), key)
         job.setdefault("log", []).append(f"removed the version “{meta.get('name')}”")
         save(jid, job)
+        if meta.get("published_as"):  # its published copy stays: the catalog keeps it, from its last listing
+            update_catalog()
     return {"ok": True, "published_as": meta.get("published_as")}
 
 
@@ -1065,6 +1078,7 @@ async def publish_version(jid: str, key: str, req: Request):
         log.info("published %s version %s as %s", jid, key, base)
         job.setdefault("log", []).append(f"published the version “{meta.get('name')}” as '{base}'")
         save(jid, job)
+        update_catalog()
     msg = pk_rescan()
     return {"name": base, "message": msg}
 
@@ -1559,6 +1573,8 @@ async def rename(jid: str, req: Request):
                 and job.get("published"):
             job["unpublished_changes"] = True
         save(jid, job)
+        if moved:
+            update_catalog()
     msg = pk_rescan() if moved else "renamed"
     return {"artist": artist, "title": title, "name": new, "message": msg}
 
@@ -1693,6 +1709,8 @@ def delete_job(jid: str, req: Request):
         if job["status"] == "running" or video_busy(job):
             raise HTTPException(400, "it's running; wait for it to finish")
         shutil.rmtree(job_path(jid))  # only the studio's copy; a published song stays in PiKaraoke
+        if job.get("published"):  # and stays in the catalog, from its last listing (marked job_deleted)
+            update_catalog()
     log.info("deleted %s (%s - %s)", jid, job.get("artist"), job.get("title"))
     return {"ok": True}
 
@@ -2205,6 +2223,7 @@ async def publish(jid: str, req: Request):
         log.info("published %s as %s", jid, base)
         job.setdefault("log", []).append(f"published as '{base}'" + (f"; removed {len(removed)} old version(s)" if removed else ""))
         save(jid, job)
+        update_catalog()
     msg = pk_rescan()
     return {"name": base, "removed": removed, "message": msg}
 
