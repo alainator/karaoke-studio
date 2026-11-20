@@ -19,7 +19,8 @@ from fastapi.staticfiles import StaticFiles
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import config as C  # noqa: E402
-from assgen import load_cast, load_lines, make_ass, save_lines, who_of  # noqa: E402
+from assgen import (MODES, display_modes, job_display, load_cast, load_lines, save_lines, variant_name,  # noqa: E402
+                    who_of, write_lyrics)
 import versions  # noqa: E402
 import trimtools  # noqa: E402
 import videoswap  # noqa: E402
@@ -111,12 +112,31 @@ def gpu_free_mib():
         return 0
 
 
-def vsize(job):
-    r = job.get("result") or {}
-    if r.get("width"):
-        return (r["width"], r["height"])
-    m = re.match(r"[^,]*,(\d+),(\d+)", r.get("video") or "")
-    return (int(m.group(1)), int(m.group(2))) if m else None
+def rebuild_lyrics(jid, job, lines=None, cast=None, offset=None):
+    """Write the song's lyrics.ass in its display mode, and a lyrics.<mode>.ass per display mode (assgen.py).
+    lines/cast/offset: the new ones, if they aren't saved in words.json / the job yet. True if lyrics.ass changed."""
+    return write_lyrics(job_path(jid), job, lines=lines, cast=cast, offset=offset)
+
+
+# a published song in PiKaraoke's folder: base.mp4, base.ass (its lyrics in the song's display mode) and, for songs
+# with original-script lines, base.<mode>.ass per display mode (PiKaraoke only reads base.ass and doesn't list .ass
+# files as songs, so these sit there unused until a player lets the singer pick)
+LIB_EXTS = (".mp4", ".ass") + tuple(f".{m}.ass" for m in MODES)
+
+
+def publish_lyrics(jid, base):
+    """Copy the song's lyrics.ass and its display-mode variants next to base.mp4 in PiKaraoke's folder."""
+    have = set()
+    for src, ext in [(job_path(jid, "lyrics.ass"), ".ass")] + [(job_path(jid, variant_name(m)), f".{m}.ass") for m in MODES]:
+        if not os.path.exists(src):
+            continue
+        tmp = f"{MV_DIR}/.{base}{ext}.part"
+        shutil.copyfile(src, tmp)
+        os.replace(tmp, f"{MV_DIR}/{base}{ext}")
+        have.add(ext)
+    for m in MODES:  # a mode the song no longer has (its original lines were removed)
+        if f".{m}.ass" not in have and os.path.exists(f"{MV_DIR}/{base}.{m}.ass"):
+            os.remove(f"{MV_DIR}/{base}.{m}.ass")
 
 
 def final_base(job):
@@ -405,7 +425,8 @@ async def create_job(req: Request):
                "video_title": str(b.get("video_title", ""))[:200], "status": "queued", "step": "queued",
                "gpu_pref": b.get("gpu") if b.get("gpu") in ("local", "remote") else "auto",
                **({"lyrics_text": pasted} if source == "pasted" else {}),
-               "created": time.time(), "offset": 0.0, "log": []})
+               "created": time.time(), "offset": 0.0, "lyrics_display": C.LYRICS_DISPLAY if C.LYRICS_DISPLAY in MODES else "both",
+               "log": []})
     log.info("queued %s | video %s | lyrics %s:%s | gpu %s%s", jid, yt, source, lrc_id if source != "pasted" else f"{len(pasted)} chars",
              b.get("gpu") or "auto", f" | replaces {b.get('replace')}" if b.get("replace") else "")
     # "Change video or lyrics" on an existing song: the new one takes its place once it has been made (if it fails,
@@ -447,7 +468,8 @@ def summary(job):
 
 def _summary(job):
     keys = ("id", "artist", "title", "yt", "status", "step", "created", "finished", "error", "offset",
-            "published", "published_as", "video_title", "result", "waiting", "edited", "unpublished_changes", "lang", "gpu", "ai_romaji", "video_v", "gpu_pref", "reviewed", "lrc_id", "lyrics_source", "trim", "video_task")
+            "published", "published_as", "video_title", "result", "waiting", "edited", "unpublished_changes", "lang", "gpu", "ai_romaji", "video_v", "gpu_pref", "reviewed", "lrc_id", "lyrics_source", "trim", "video_task",
+            "lyrics_display")
     return {k: job.get(k) for k in keys}
 
 
@@ -471,11 +493,18 @@ def get_job(jid: str):
     s["steps"] = STEPS
     if job.get("status") == "done":
         s["videos"] = videos_listing(jid, job)
+        try:  # how the lyrics can be shown (songs with original-script lines), and how this song shows them
+            lines = load_lines(job_path(jid, "words.json"))
+            s["display_modes"] = display_modes(lines)
+            s["lyrics_display"] = job_display(job, lines, s["display_modes"])
+        except Exception:
+            s["display_modes"], s["lyrics_display"] = [], None
     return s
 
 
 FILES = {"video.mp4": ("out.mp4", "video/mp4"), "vocals.m4a": ("vocals.m4a", "audio/mp4"),
-         "lyrics.ass": ("lyrics.ass", "text/plain; charset=utf-8")}
+         "lyrics.ass": ("lyrics.ass", "text/plain; charset=utf-8"),
+         **{variant_name(m): (variant_name(m), "text/plain; charset=utf-8") for m in MODES}}
 
 
 @app.get("/api/jobs/{jid}/file/{name}")
@@ -488,7 +517,7 @@ def job_file(jid: str, name: str):
         raise HTTPException(404, "not made yet")
     # video and vocals never change once made (pages ask for them with ?v=<finished time>), so the browser may keep
     # what it already downloaded and jump around without fetching it again; the lyrics change on every Save
-    cache = "no-store" if name == "lyrics.ass" else "private, max-age=604800"
+    cache = "no-store" if name.endswith(".ass") else "private, max-age=604800"
     return FileResponse(p, media_type=ctype, headers={"Cache-Control": cache})
 
 
@@ -501,13 +530,34 @@ async def set_offset(jid: str, req: Request):
         raise HTTPException(400, "offset must be within ±5 s")
     with lock:
         job = load(jid)
-        open(job_path(jid, "lyrics.ass"), "w").write(make_ass(load_lines(job_path(jid, "words.json")), off, video_size=vsize(job),
-                                                              cast=load_cast(job_path(jid, "words.json"))))
+        rebuild_lyrics(jid, job, offset=off)
         if round(off, 2) != job.get("offset") and job.get("published"):
             job["unpublished_changes"] = True
         job["offset"] = round(off, 2)
         save(jid, job)
     return {"offset": job["offset"]}
+
+
+@app.post("/api/jobs/{jid}/display")
+async def set_display(jid: str, req: Request):
+    """How a song with original-script lines shows its lyrics: both (original above the romanized line), original,
+    romaji, or kana (Japanese). lyrics.ass (what is published) is drawn this way; every way is also kept as
+    lyrics.<mode>.ass for players that let the singer pick."""
+    check_origin(req)
+    mode = str((await req.json()).get("mode") or "")
+    with lock:
+        job = load(jid)
+        if job.get("status") != "done":
+            raise HTTPException(400, "finish making it first")
+        modes = display_modes(load_lines(job_path(jid, "words.json")))
+        if mode not in modes:
+            raise HTTPException(400, "this song can be shown as: " + (", ".join(modes) or "(only one way: it has no original-script lines)"))
+        job["lyrics_display"] = mode
+        if rebuild_lyrics(jid, job) and job.get("published"):
+            job["unpublished_changes"] = True
+        job.setdefault("log", []).append(f"lyrics shown as: {mode}")
+        save(jid, job)
+    return {"lyrics_display": mode, "unpublished_changes": bool(job.get("unpublished_changes"))}
 
 
 # ---------------- lyric editor ----------------
@@ -586,12 +636,7 @@ async def put_lines(jid: str, req: Request):
         if not os.path.exists(job_path(jid, "words.orig.json")):
             shutil.copyfile(job_path(jid, "words.json"), job_path(jid, "words.orig.json"))
         save_lines(job_path(jid, "words.json"), lines, cast)
-        ass_p, ass_new = job_path(jid, "lyrics.ass"), make_ass(lines, job.get("offset", 0.0), video_size=vsize(job), cast=cast)
-        try:
-            ass_same = open(ass_p).read() == ass_new
-        except OSError:
-            ass_same = False
-        open(ass_p, "w").write(ass_new)
+        ass_same = not rebuild_lyrics(jid, job, lines, cast)
         job["edited"] = time.time()
         if job.get("published") and not ass_same:  # clearing a ⚠ mark changes nothing on screen: nothing to republish
             job["unpublished_changes"] = True
@@ -1011,10 +1056,10 @@ async def publish_version(jid: str, key: str, req: Request):
         if os.path.exists(f"{MV_DIR}/{base}.mp4") and base != meta.get("published_as"):
             raise HTTPException(400, "a song with that name is already in PiKaraoke")
         os.makedirs(MV_DIR, exist_ok=True)
-        for src, ext in ((videoswap.entry_video(job_path(jid), key), ".mp4"), (job_path(jid, "lyrics.ass"), ".ass")):
-            tmp = f"{MV_DIR}/.{base}{ext}.part"
-            shutil.copyfile(src, tmp)
-            os.replace(tmp, f"{MV_DIR}/{base}{ext}")
+        tmp = f"{MV_DIR}/.{base}.mp4.part"
+        shutil.copyfile(videoswap.entry_video(job_path(jid), key), tmp)
+        os.replace(tmp, f"{MV_DIR}/{base}.mp4")
+        publish_lyrics(jid, base)
         meta.update(published=time.time(), published_as=base, unpublished_changes=False, lyrics_published=time.time())
         videoswap.save_meta(d, meta)
         log.info("published %s version %s as %s", jid, key, base)
@@ -1245,8 +1290,7 @@ def auto_romaji(jid):
             for g in sugg:
                 lines[g["i"]]["words"] = g["words"]
             save_lines(job_path(jid, "words.json"), lines)
-            open(job_path(jid, "lyrics.ass"), "w").write(make_ass(lines, job.get("offset", 0.0), video_size=vsize(job),
-                                                                  cast=load_cast(job_path(jid, "words.json"))))
+            rebuild_lyrics(jid, job, lines)
         job["ai_romaji"] = [{k: g[k] for k in ("japanese", "old", "new", "how")} for g in sugg]
         what = "lyrics" if latin else "romaji"
         job.setdefault("log", []).append(f"AI {what} check: {len(sugg)} lines fixed ({checked} looked different from what's sung)"
@@ -1441,8 +1485,7 @@ async def reset_lines(jid: str, req: Request):
         if not os.path.exists(orig):
             raise HTTPException(400, "nothing to reset")
         shutil.copyfile(orig, job_path(jid, "words.json"))
-        open(job_path(jid, "lyrics.ass"), "w").write(make_ass(load_lines(orig), job.get("offset", 0.0), video_size=vsize(job),
-                                                              cast=load_cast(orig)))
+        rebuild_lyrics(jid, job)
         job["edited"] = None
         job["ai_romaji"] = None  # back to the plain automatic romaji
         if job.get("published"):
@@ -1494,7 +1537,7 @@ async def rename(jid: str, req: Request):
         if old and old != new and os.path.exists(f"{MV_DIR}/{old}.mp4"):
             if os.path.exists(f"{MV_DIR}/{new}.mp4"):
                 raise HTTPException(400, "a song with that name is already in PiKaraoke")
-            for ext in (".mp4", ".ass"):
+            for ext in LIB_EXTS:
                 if os.path.exists(f"{MV_DIR}/{old}{ext}"):
                     os.replace(f"{MV_DIR}/{old}{ext}", f"{MV_DIR}/{new}{ext}")
             job["published_as"] = new
@@ -1505,12 +1548,16 @@ async def rename(jid: str, req: Request):
                 continue
             nv = version_base(job, m)
             if nv != pa and not os.path.exists(f"{MV_DIR}/{nv}.mp4"):
-                for ext in (".mp4", ".ass"):
+                for ext in LIB_EXTS:
                     if os.path.exists(f"{MV_DIR}/{pa}{ext}"):
                         os.replace(f"{MV_DIR}/{pa}{ext}", f"{MV_DIR}/{nv}{ext}")
                 m["published_as"] = nv
                 videoswap.save_meta(videoswap.version_dir(job_path(jid), m["slug"]), m)
                 moved = True
+        # the title card in the intro shows the new name
+        if job.get("status") == "done" and os.path.exists(job_path(jid, "words.json")) and rebuild_lyrics(jid, job) \
+                and job.get("published"):
+            job["unpublished_changes"] = True
         save(jid, job)
     msg = pk_rescan() if moved else "renamed"
     return {"artist": artist, "title": title, "name": new, "message": msg}
@@ -1564,9 +1611,7 @@ async def undo_remake(jid: str, req: Request):
         shutil.copyfile(job_path(jid, "words.before-remake.json"), job_path(jid, "words.json"))
         if os.path.exists(job_path(jid, "words.before-remake.auto.json")):
             shutil.copyfile(job_path(jid, "words.before-remake.auto.json"), job_path(jid, "words.orig.json"))
-        lines = load_lines(job_path(jid, "words.json"))
-        open(job_path(jid, "lyrics.ass"), "w").write(make_ass(lines, job.get("offset", 0.0), video_size=vsize(job),
-                                                              cast=load_cast(job_path(jid, "words.json"))))
+        rebuild_lyrics(jid, job)
         job.update(remake_undone=True, remake_note=None, edited=(job.get("pre_remake") or {}).get("edited") or time.time())
         if job.get("published"):
             job["unpublished_changes"] = True
@@ -1617,9 +1662,9 @@ async def chinese_reading(jid: str, req: Request):
         save_lines(path, lines, cast)
         if not os.path.exists(orig_p):
             shutil.copyfile(path, orig_p)
-        open(job_path(jid, "lyrics.ass"), "w").write(make_ass(lines, job.get("offset", 0.0), video_size=vsize(job), cast=cast))
         job["result"] = dict(job.get("result") or {}, lang=to)
         job["lang"] = to  # a remake keeps the choice
+        rebuild_lyrics(jid, job, lines, cast)  # (Cantonese is drawn with the traditional-character font)
         job["edited"] = time.time()
         if job.get("published"):
             job["unpublished_changes"] = True
@@ -1839,9 +1884,13 @@ def finish(jid, rc, err, oom, where):
                                           + "; lines you had moved by hand kept your timing")
                     job["edited"] = time.time()
                     job.setdefault("log", []).append("remake: " + job["remake_note"])
-                    lines = load_lines(job_path(jid, "words.json"))
-                    open(job_path(jid, "lyrics.ass"), "w").write(make_ass(lines, job.get("offset", 0.0), video_size=vsize(job),
-                                                                          cast=load_cast(job_path(jid, "words.json"))))
+            # the lyrics as the studio draws them, with the song's timing offset, display mode and title, and one file per
+            # display mode (a song made on the helper PC comes back with only its lyrics.ass)
+            try:
+                rebuild_lyrics(jid, job)
+            except Exception as e:
+                log.exception("lyrics of %s", jid)
+                job.setdefault("log", []).append(f"couldn't redraw the lyrics ({str(e)[:100]})")
         elif oom and job.get("oom_retries", 0) < 2:
             # something else grabbed the GPU mid-job (an LLM loading, another tool): wait and try again
             job.update(status="queued", step="queued", oom_retries=job.get("oom_retries", 0) + 1,
@@ -2131,10 +2180,10 @@ async def publish(jid: str, req: Request):
             raise HTTPException(400, "can only remove the listed old versions")
         base = final_base(job)
         os.makedirs(MV_DIR, exist_ok=True)
-        for src, ext in (("out.mp4", ".mp4"), ("lyrics.ass", ".ass")):
-            tmp = f"{MV_DIR}/.{base}{ext}.part"
-            shutil.copyfile(job_path(jid, src), tmp)
-            os.replace(tmp, f"{MV_DIR}/{base}{ext}")
+        tmp = f"{MV_DIR}/.{base}.mp4.part"
+        shutil.copyfile(job_path(jid, "out.mp4"), tmp)
+        os.replace(tmp, f"{MV_DIR}/{base}.mp4")
+        publish_lyrics(jid, base)
         removed = []
         for name in remove:
             p = os.path.realpath(os.path.join(LIB, name))
@@ -2149,8 +2198,7 @@ async def publish(jid: str, req: Request):
         for m in videoswap.entries(job_path(jid)):
             pa = m.get("published_as")
             if m["mode"] == "version" and pa and os.path.exists(f"{MV_DIR}/{pa}.mp4"):
-                shutil.copyfile(job_path(jid, "lyrics.ass"), f"{MV_DIR}/.{pa}.ass.part")
-                os.replace(f"{MV_DIR}/.{pa}.ass.part", f"{MV_DIR}/{pa}.ass")
+                publish_lyrics(jid, pa)
                 m["lyrics_published"] = time.time()
                 videoswap.save_meta(videoswap.version_dir(job_path(jid), m["slug"]), m)
         job.update(status="done", published=time.time(), published_as=base, unpublished_changes=False)

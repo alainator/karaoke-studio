@@ -127,6 +127,7 @@ details.aidone .aisug { display: block; padding: 6px 0; }
 .wavebar { display: flex; gap: 6px; align-items: center; justify-content: space-between; margin-bottom: 6px; flex-wrap: wrap; }
 .legend span { display: inline-flex; align-items: center; gap: 4px; margin-right: 10px; font-size: 12px; color: var(--dim); }
 .legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+.dispsel { background: var(--bg); border: 1px solid var(--line); color: var(--text); border-radius: 6px; padding: 5px 7px; font: inherit; font-size: 14px; width: 100%; }
 select.sg { background: var(--bg); border: 1px solid var(--line); color: var(--text); border-radius: 6px; padding: 5px 4px; font: inherit; font-size: 13px; }
 
 
@@ -479,6 +480,8 @@ let octopus = null, vox = null, detailTimer = null;
 // playback speed (Subtitle Edit style): slower makes it easier to hear where a line starts and stops; the guide vocals
 // follow, and the pitch stays natural
 const SPEEDS = [0.5, 0.75, 1];
+// how a song with original-script lines (Japanese, Korean, Chinese…) shows its lyrics (assgen.py display modes)
+const DISPLAY_NAMES = {both: "Original above romanized", original: "Original only", romaji: "Romanized only", kana: "Kana only (hiragana)"};
 let playSpeed = 1;
 function setSpeed(x) {
   playSpeed = x;
@@ -531,6 +534,9 @@ async function openJob(id) {
       <div class="ctl"><label><span>Lyrics timing</span><span id="offv">${j.offset >= 0 ? "+" : ""}${(j.offset || 0).toFixed(2)} s</span></label>
         <input type="range" id="offr" min="-2" max="2" step="0.05" value="${j.offset || 0}">
         <div class="hint">Drag right if the words light up too early.</div></div>
+      ${(j.display_modes || []).length ? `<div class="ctl"><label><span>Lyrics on screen</span></label>
+        <select id="dispsel" class="dispsel" title="How PiKaraoke shows this song's lyrics">${j.display_modes.map(m => `<option value="${esc(m)}"${m === j.lyrics_display ? " selected" : ""}>${esc(DISPLAY_NAMES[m] || m)}</option>`).join("")}</select>
+        <div class="hint">What PiKaraoke shows${j.published ? " (publish again after changing it)" : ""}. Every way is kept with the song, for players that let the singer pick.</div></div>` : ""}
       <div class="ctl"><div class="hint">${r.romaji === "automatic" && r.lang && r.lang !== "ja" ? `<span class="tag warn">automatic ${r.lang === "ko" ? "romanization" : "pinyin"}</span> check it against the singing<br>` : r.romaji === "automatic" ? '<span class="tag warn">automatic romaji</span> check readings in the editor below<br>' : r.romaji === "kara.moe" ? '<span class="tag good">hand-timed romaji (kara.moe)</span><br>' : ""}${r.lines ?? "?"} lines · video ${esc(r.video || "")} · made in ${r.seconds ?? "?"} s${r.gpu ? " on " + esc(r.gpu) : ""}${r.skipped && r.skipped.length ? `<br>Not sung in this video: ${r.skipped.map(s => "“" + esc(s) + "”").join(", ")}` : ""}</div></div>
     </div>
     ${j.ai_romaji && j.ai_romaji.length ? `<details class="ctl aidone"><summary><b>AI fixed ${j.ai_romaji.length} ${j.ai_romaji.some(g => g.japanese) ? "romaji reading" : "lyric line"}${j.ai_romaji.length === 1 ? "" : "s"}</b> <span class="hint">(${j.ai_romaji.some(g => g.japanese) ? "it read the Japanese, and checked special readings against the singing" : "where the lyrics differ from what's sung, checked against the vocals"}; <i>Undo all edits</i> in the editor restores the original)</span></summary>
@@ -559,6 +565,16 @@ async function openJob(id) {
       try { await api(`/api/jobs/${id}/offset`, {method: "POST", body: JSON.stringify({offset: o})}); reloadLyrics(); if (ed) renderEditor(); if (j.published) renderPublish(id, {...j, unpublished_changes: true}); }
       catch (err) { toast(err.message); }
     }, 300);
+  };
+  if ($("#dispsel")) $("#dispsel").onchange = async e => {
+    const sel = e.target, mode = sel.value;
+    sel.disabled = true;
+    try {
+      const r = await api(`/api/jobs/${id}/display`, {method: "POST", body: JSON.stringify({mode})});
+      j.lyrics_display = r.lyrics_display; reloadLyrics();
+      if (j.published) { j.unpublished_changes = r.unpublished_changes; renderPublish(id, j); }
+    } catch (err) { toast(err.message); sel.value = j.lyrics_display; }
+    sel.disabled = false;
   };
   renderPublish(id, j);
   renderVideos(id, j);

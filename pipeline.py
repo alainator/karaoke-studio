@@ -14,7 +14,7 @@ import json, os, re, shutil, subprocess, sys, time, unicodedata, urllib.parse, u
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config as C  # noqa: E402
-from assgen import make_ass, save_lines  # noqa: E402
+from assgen import save_lines, write_lyrics  # noqa: E402
 import versions  # noqa: E402
 import earcheck  # noqa: E402
 import linecheck  # noqa: E402
@@ -1441,7 +1441,7 @@ elif CONF["sure"] is not None:
     say("info", f"{CONF['sure']} of {CONF['lines']} lines heard right where they sit; none marked to check")
 save_lines(f"{job_dir}/words.json", out_lines)
 vw, vh = (int(x) for x in vinfo.split(",")[1:3])
-open(f"{job_dir}/lyrics.ass", "w").write(make_ass(out_lines, video_size=(vw, vh)))
+write_lyrics(job_dir, dict(job, result=dict(job.get("result") or {}, width=vw, height=vh, lang=lang)), lines=out_lines)
 say("info", f"{len(out_lines)} lines aligned" + (f", {len(skipped)} not sung in this video" if skipped else ""))
 
 # 5. render: video copied + instrumental; vocals separately for the preview toggle

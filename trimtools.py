@@ -11,7 +11,7 @@ import shutil
 import subprocess
 
 import config as C
-from assgen import load_cast, load_lines, make_ass, save_lines
+from assgen import load_cast, load_lines, save_lines, write_lyrics
 
 MEDIA = ("out.mp4", "vocals.m4a")
 LINE_FILES = ("words.json", "words.orig.json", "words.before-check.json", "words.before-remake.json",
@@ -116,7 +116,7 @@ def apply_trim(job_dir, new_start, new_end, old_start=0.0, fresh=False, offset=0
     r["duration"] = round(length, 1)
     r["trim"] = {"start": round(new_start, 2), "end": round(end, 2) if end else None, "full": round(full, 1)}
     json.dump(r, open(rp, "w"))
-    wp = os.path.join(job_dir, "words.json")
-    vs = (r["width"], r["height"]) if r.get("width") else None
-    open(os.path.join(job_dir, "lyrics.ass"), "w").write(make_ass(load_lines(wp), offset, video_size=vs, cast=load_cast(wp)))
+    job = json.load(open(os.path.join(job_dir, "job.json")))
+    job["result"] = r
+    write_lyrics(job_dir, job, offset=offset)
     return length

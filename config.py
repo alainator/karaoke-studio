@@ -47,12 +47,31 @@ USE_LOCAL_GPU = env("USE_LOCAL_GPU", "1") != "0"   # 0 = send every job to the h
 USER_AGENT = env("STUDIO_USER_AGENT", "karaoke-studio/0.1 (+https://github.com/alainator/karaoke-studio)")
 
 
+# how the lyrics look (assgen.py); 1 = on, 0 = off. Existing songs change when their lyrics are next saved, or all at
+# once with deploy/rebuild-lyrics.py.
+#   display: for songs with an original-script line (Japanese, Korean, Chinese…), what new songs show by default:
+#            both (original above the romanized line), original, romaji, or kana (Japanese in hiragana); each song can
+#            pick its own on its page
+#   sweep: words fill gradually as they're sung (else a whole word lights up at once)
+#   countdown: dots before the first line and after a gap, going one by one until the singing starts
+#   stagger: the top row starts at the left and the bottom row ends at the right (else both centred)
+#   cards: the title and artist during the intro, and "♪ seconds left" in long instrumental parts
+#   font: heavy (Noto Sans CJK Black, embedded in each song's subtitles) or classic (the TV's Arial / Droid Sans)
+_on = lambda name: env(name, "1").strip().lower() not in ("0", "no", "off", "false")
+LYRICS_DISPLAY = env("KARAOKE_LYRICS_DISPLAY", "both").strip().lower()
+LYRICS_SWEEP = _on("KARAOKE_LYRICS_SWEEP")
+LYRICS_COUNTDOWN = _on("KARAOKE_LYRICS_COUNTDOWN")
+LYRICS_STAGGER = _on("KARAOKE_LYRICS_STAGGER")
+LYRICS_CARDS = _on("KARAOKE_LYRICS_CARDS")
+LYRICS_FONT = env("KARAOKE_LYRICS_FONT", "heavy").strip().lower()
+
+
 # how the karaoke video is encoded (see pipeline.py, render): re-encoded, never copied from YouTube, because
 # Chrome-based browsers freeze on YouTube's stream after jumping backwards
 VENC = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-g", "48", "-pix_fmt", "yuv420p"]
 
 
-CODE_FILES = ("pipeline.py", "assgen.py", "config.py", "romanize.py", "versions.py", "albumsync.py", "fonts.py", "earcheck.py", "linecheck.py", "karamoe.py")  # the modules that make songs (pipeline.py imports these)
+CODE_FILES = ("pipeline.py", "assgen.py", "config.py", "romanize.py", "versions.py", "albumsync.py", "fonts.py", "earcheck.py", "linecheck.py", "karamoe.py", "lyricmap.py")  # the modules that make songs (pipeline.py imports these)
 
 
 def code_version():
