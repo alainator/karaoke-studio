@@ -62,6 +62,15 @@ venv/bin/python -I app.py                 # http://127.0.0.1:5570
 
 The first song downloads the models (about 4 GB). `deploy/karaoke-studio.service.example` is a systemd unit.
 
+### With Docker
+
+Needs Docker with the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/) instead of Python, ffmpeg and Node.js:
+```sh
+cp docker-compose.example.yml docker-compose.yml && cp .env.example .env   # then edit both
+docker compose up -d --build                                                 # http://127.0.0.1:5570
+```
+The image installs PyTorch for CUDA 12.8 (NVIDIA driver 570 or newer); `TORCH_INDEX` in the Dockerfile picks another build. Songs, downloads and models go to `./data`.
+
 For songs made with older versions: `venv/bin/python -I deploy/check-library.py` checks each one by ear and marks the lines to fix (about 20 s a song, changes only the marks), and `deploy/reencode-videos.py` fixes their videos for smooth seeking.
 
 ## A second GPU (optional)

@@ -1,0 +1,25 @@
+# Karaoke Studio with Docker:  cp docker-compose.example.yml docker-compose.yml && cp .env.example .env
+# (edit both), then  docker compose up -d --build   and open http://127.0.0.1:5570
+services:
+  karaoke-studio:
+    build: .
+    image: karaoke-studio
+    container_name: karaoke-studio
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      KARAOKE_LIBRARY: /library   # the container's side of the song folder below (the .env path is for running without Docker)
+    ports:
+      - "127.0.0.1:5570:5570"   # no login of its own: keep it local, or put a login proxy in front (see README)
+    volumes:
+      - ./data:/data                          # songs made, downloads, models (about 4 GB), logs
+      - /etc/localtime:/etc/localtime:ro       # your time zone, for song folder names and log times
+      - /path/to/pikaraoke/songs:/library      # PiKaraoke's song folder: published songs go to "Music Videos" in it
+    # if PiKaraoke runs in Docker too, put both on one network and set PIKARAOKE_URL=http://pikaraoke:5555
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
