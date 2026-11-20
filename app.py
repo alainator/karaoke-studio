@@ -159,7 +159,7 @@ def yt_search(artist, title):
         score += math.log10((e.get("view_count") or 0) + 1) / 3
         out.append({"id": e["id"], "title": t, "channel": ch, "duration": int(e["duration"]),
                     "views": e.get("view_count"), "verified": bool(e.get("channel_is_verified")),
-                    "official_channel": score >= 5, "flags": bad, "score": round(score, 2),
+                    "official_channel": score >= 5 and bool(nch), "flags": bad, "score": round(score, 2),
                     "thumb": f"https://i.ytimg.com/vi/{e['id']}/mqdefault.jpg"})
     out.sort(key=lambda x: -x["score"])
     return out
