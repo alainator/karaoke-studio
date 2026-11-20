@@ -71,7 +71,9 @@ LYRICS_FONT = env("KARAOKE_LYRICS_FONT", "heavy").strip().lower()
 VENC = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-g", "48", "-pix_fmt", "yuv420p"]
 
 
-CODE_FILES = ("pipeline.py", "assgen.py", "config.py", "romanize.py", "versions.py", "albumsync.py", "fonts.py", "earcheck.py", "linecheck.py", "karamoe.py", "lyricmap.py")  # the modules that make songs (pipeline.py imports these)
+# the modules that make songs (pipeline.py imports these), and the helper itself: a helper on different code is asked to
+# update (git pull) before it gets songs, so a change to helper.py reaches the helper PC once it's pushed
+CODE_FILES = ("pipeline.py", "assgen.py", "config.py", "romanize.py", "versions.py", "albumsync.py", "fonts.py", "earcheck.py", "linecheck.py", "karamoe.py", "lyricmap.py", "helper.py")
 
 
 def code_version():
@@ -89,6 +91,30 @@ def tool_env():
     if NODE_BIN:
         e["PATH"] = NODE_BIN + os.pathsep + e.get("PATH", "/usr/bin:/bin")
     return e
+
+
+def stop_group(p, grace=10.0):
+    """Stop a song being made: p is a Popen started with start_new_session=True, so the pipeline and everything it
+    started (yt-dlp, ffmpeg, the separator, the aligner) share one process group. SIGTERM the group, then SIGKILL
+    whatever is left after `grace` seconds. Returns once the group is gone (or after the SIGKILL)."""
+    import signal, time
+    pg = p.pid  # start_new_session: the group id is the pipeline's pid (reserved until p is reaped)
+    try:
+        os.killpg(pg, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        return
+    end = time.time() + grace
+    while time.time() < end:
+        p.poll()  # reap the pipeline itself once it exits (a zombie still counts as in the group)
+        try:
+            os.killpg(pg, 0)
+        except (ProcessLookupError, PermissionError):
+            return
+        time.sleep(0.2)
+    try:
+        os.killpg(pg, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
 
 
 # ---- logs ----

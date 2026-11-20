@@ -40,6 +40,7 @@ PK_DB, PK_URL = C.PIKARAOKE_DB, C.PIKARAOKE_URL
 UA = {"User-Agent": C.USER_AGENT}
 NEED_GPU_MIB = C.MIN_GPU_FREE_MIB
 BIN = os.path.dirname(sys.executable)  # yt-dlp lives in the same virtualenv
+PIPELINE = os.path.join(HERE, "pipeline.py")  # makes one song, as its own process (tests swap in a stand-in)
 STEPS = ["queued", "lyrics", "download", "separate", "align", "render", "done"]
 ID_RE = re.compile(r"^[0-9]{8}-[0-9]{6}-[a-z0-9-]{1,60}$")
 
@@ -480,20 +481,59 @@ def summary(job):
 def _summary(job):
     keys = ("id", "artist", "title", "yt", "status", "step", "created", "finished", "error", "offset",
             "published", "published_as", "video_title", "result", "waiting", "edited", "unpublished_changes", "lang", "gpu", "ai_romaji", "video_v", "gpu_pref", "reviewed", "lrc_id", "lyrics_source", "trim", "video_task",
-            "lyrics_display")
+            "lyrics_display", "cancel_requested")
     return {k: job.get(k) for k in keys}
 
 
 @app.get("/api/jobs")
-def list_jobs():
+def list_jobs(brief: int = 0):
+    """Every song, newest first. brief=1: only what the Songs list shows (about a fifth of the size)."""
     out = []
     for jid in sorted(os.listdir(JOBS), reverse=True):
         if ID_RE.match(jid) and os.path.exists(f"{JOBS}/{jid}/job.json"):
             try:
-                out.append(summary(load(jid)))
+                out.append(brief_summary(summary(load(jid))) if brief else summary(load(jid)))
             except Exception:
                 pass
     return out
+
+
+BRIEF_KEYS = ("id", "artist", "title", "yt", "status", "step", "created", "finished", "error", "published", "waiting",
+              "unpublished_changes", "gpu", "reviewed", "to_check", "cancel_requested")
+
+
+def brief_summary(s):
+    """A song as the Songs list needs it; empty fields are left out (570 songs: about 250 KB instead of 950 KB)."""
+    r = s.get("result") or {}
+    out = {k: s.get(k) for k in BRIEF_KEYS}
+    out["lang"] = s.get("lang") or r.get("lang")
+    out["result"] = {"confidence": r.get("confidence")} if r.get("confidence") else None
+    out["updates_n"] = len(s.get("updates") or [])  # improvements since it was made (the song page lists them)
+    return {k: v for k, v in out.items() if v not in (None, False, 0, "", [])}
+
+
+def job_index():
+    """Every song's name and state, straight from job.json (no lyrics files read): for matching songs by name."""
+    out = []
+    for jid in os.listdir(JOBS):
+        if ID_RE.match(jid):
+            try:
+                j = json.load(open(os.path.join(JOBS, jid, "job.json")))
+            except Exception:
+                continue
+            if j.get("artist") and j.get("title"):
+                out.append({k: j.get(k) for k in ("id", "artist", "title", "status", "published", "published_as",
+                                                  "created", "finished", "cancel_requested")})
+    return out
+
+
+@app.get("/api/jobs-like")
+def jobs_like(artist: str = "", title: str = "", exclude: str = ""):
+    """Songs already made (or waiting / being made) with this artist and title: the Make page asks before making the
+    same song again."""
+    out = [j for j in job_index() if j["id"] != exclude and j["status"] in ("done", "queued", "running")
+           and same_song(j["artist"], j["title"], artist, title)]
+    return sorted(out, key=lambda j: -(j.get("created") or 0))
 
 
 @app.get("/api/jobs/{jid}")
@@ -1609,7 +1649,8 @@ async def remake(jid: str, req: Request):
             os.replace(job_path(jid, "words.orig.json"), job_path(jid, "words.before-remake.auto.json"))
         job.update(status="queued", step="queued", error=None, log=[], waiting=None, oom_retries=0, ai_romaji=None,
                    video_v=time.time(), remade=time.time(), reviewed=None, remake_merge=merge, remake_note=None, remake_undone=False,
-                   pre_remake={k: job.get(k) for k in ("edited", "result", "offset")})
+                   pre_remake={**{k: job.get(k) for k in ("edited", "result", "offset", "reviewed", "ai_romaji", "remade", "remake_note")},
+                               "log": job.get("log", [])[-30:], "unstarted": True})
         save(jid, job)
     log.info("remake %s | gpu %s | keeps edits: %s", jid, job.get("gpu_pref", "auto"), merge)
     wake.set()
@@ -1693,10 +1734,12 @@ async def retry(jid: str, req: Request):
     check_origin(req)
     with lock:
         job = load(jid)
-        if job["status"] != "failed":
-            raise HTTPException(400, "only failed jobs can be retried")
-        job.update(status="queued", step="queued", error=None, log=[])
+        if job["status"] not in ("failed", "cancelled"):
+            raise HTTPException(400, "only failed or cancelled songs can be tried again")
+        job.pop("cancel_requested", None)
+        job.update(status="queued", step="queued", error=None, waiting=None, log=[])
         save(jid, job)
+    log.info("retry %s", jid)
     wake.set()
     return {"ok": True}
 
@@ -1706,8 +1749,11 @@ def delete_job(jid: str, req: Request):
     check_origin(req)
     with lock:
         job = load(jid)
-        if job["status"] == "running" or video_busy(job):
-            raise HTTPException(400, "it's running; wait for it to finish")
+        if job["status"] == "running":
+            raise HTTPException(400, "it's stopping; try again in a few seconds" if job.get("cancel_requested")
+                                else "it's being made; cancel it first (or wait for it to finish)")
+        if video_busy(job):
+            raise HTTPException(400, VIDEO_BUSY)
         shutil.rmtree(job_path(jid))  # only the studio's copy; a published song stays in PiKaraoke
         if job.get("published"):  # and stays in the catalog, from its last listing (marked job_deleted)
             update_catalog()
@@ -1715,11 +1761,108 @@ def delete_job(jid: str, req: Request):
     return {"ok": True}
 
 
+def _mark_cancelled(job, note="cancelled by you"):
+    """(under the lock) The song ends as cancelled: Retry makes it again from the start, Delete removes it."""
+    job.pop("cancel_requested", None)
+    job.update(status="cancelled", step="cancelled", waiting=None, error=None, finished=time.time())
+    job.setdefault("log", []).append(note)
+
+
+def _cancel_queued(jid, job):
+    """(under the lock) A song that hasn't started is cancelled; a remake that hasn't started yet goes back to the
+    song as it was (nothing of it was touched but its automatic-timing copy, which is put back)."""
+    pr = job.get("pre_remake") or {}
+    if job.get("remade") and pr.get("unstarted") and os.path.exists(job_path(jid, "out.mp4")) \
+            and os.path.exists(job_path(jid, "words.json")):
+        if os.path.exists(job_path(jid, "words.before-remake.auto.json")):
+            os.replace(job_path(jid, "words.before-remake.auto.json"), job_path(jid, "words.orig.json"))
+        job.pop("cancel_requested", None)
+        job.update(status="done", step="done", waiting=None, error=None, oom_retries=0, remake_merge=False,
+                   remake_undone=True,  # the remake overwrote what "Undo remake" would have gone back to
+                   **{k: pr.get(k) for k in ("edited", "result", "offset", "reviewed", "ai_romaji", "remade", "remake_note")})
+        job["log"] = list(pr.get("log") or []) + ["remake cancelled: the song is as it was"]
+        return "restored"
+    _mark_cancelled(job)
+    return "cancelled"
+
+
+def _helper_stop(jid, cleanup=False):
+    """Ask the GPU helper to stop this job (it kills the pipeline's process group). cleanup: also wait for it to end
+    and remove the helper's copy (a job the studio no longer follows, e.g. after a restart)."""
+    try:
+        helper_call(f"/jobs/{jid}/cancel", "POST", {}, timeout=10)
+    except urllib.error.HTTPError as e:
+        if e.code == 404:  # the helper doesn't have it (or runs code from before cancel existed)
+            return False
+        return False
+    except Exception:
+        return False
+    if cleanup:
+        for _ in range(20):
+            time.sleep(2)
+            try:
+                if helper_call(f"/jobs/{jid}", timeout=5).get("status") != "running":
+                    helper_call(f"/jobs/{jid}", "DELETE", timeout=10)
+                    break
+            except Exception:
+                break
+    return True
+
+
+@app.post("/api/jobs/{jid}/cancel")
+async def cancel_job(jid: str, req: Request):
+    """Stop making a song. Waiting: cancelled at once. Being made: the pipeline (here or on the helper PC) is stopped
+    and the song turns "cancelled" a few seconds later (Retry makes it again, Delete removes it)."""
+    check_origin(req)
+    remote = orphan = False
+    with lock:
+        job = load(jid)
+        st = job.get("status")
+        if st == "cancelled":
+            return {"ok": True, "status": "cancelled"}
+        if st == "running" and job.get("cancel_requested"):
+            return {"ok": True, "status": "stopping"}
+        if st == "queued":
+            what = _cancel_queued(jid, job)
+            save(jid, job)
+            log.info("cancel %s (it was waiting): %s", jid, what)
+            orphan = bool(C.GPU_HELPER_URL)  # after a studio restart the helper may still be making it
+            if orphan:
+                threading.Thread(target=_helper_stop, args=(jid, True), daemon=True).start()
+            return {"ok": True, "status": job["status"]}
+        if st == "done" and video_busy(job):
+            raise HTTPException(409, "the song is made; what's running is one of its videos, which can't be stopped "
+                                     "(it takes a few minutes)")
+        if st != "running":
+            raise HTTPException(400, "it isn't being made" + (" (it's finished already)" if st == "done" else ""))
+        r = runners.get(jid)
+        if r is None:  # "running" but nothing is making it (a studio restart or a crashed runner): just mark it
+            _mark_cancelled(job)
+            save(jid, job)
+            log.info("cancel %s (nothing was making it)", jid)
+            return {"ok": True, "status": "cancelled"}
+        job["cancel_requested"] = time.time()
+        job.setdefault("log", []).append("stopping…")
+        save(jid, job)
+        p = r.get("proc")
+        if p is not None and r.get("stopper") is None:
+            r["stopper"] = threading.Thread(target=C.stop_group, args=(p,), daemon=True)
+            r["stopper"].start()
+        remote = r["where"] == "remote"
+    log.info("cancel %s (it was being made on %s)", jid, "the helper" if remote else "this server")
+    if remote:  # run_remote keeps asking until the helper has stopped it, then ends the song as cancelled
+        threading.Thread(target=_helper_stop, args=(jid,), daemon=True).start()
+    return {"ok": True, "status": "stopping"}
+
+
 # ---------------- worker ----------------
 # Two slots: this machine's GPU, and optionally a GPU helper on another PC (helper.py, GPU_HELPER_URL). The oldest
 # queued job goes to the local GPU if it has room, else to the helper if it's online with room, else it waits.
 wake = threading.Event()
 slots = {"local": None, "remote": None}
+# songs being made: job id -> {"where": local|remote, "proc": the pipeline's Popen (local), "stopper": thread stopping it}.
+# Added by claim() and removed by the runner thread when it ends, both under the lock.
+runners = {}
 helper_seen = {"at": 0.0, "health": None}
 
 
@@ -1794,9 +1937,13 @@ def claim(jid, where, gpu_name):
         job = load(jid)
         if job["status"] != "queued":
             return False
+        job.pop("cancel_requested", None)
+        if job.get("pre_remake"):
+            job["pre_remake"].pop("unstarted", None)  # a remake that started can't be cancelled back to the old song
         job.update(status="running", step="lyrics", waiting=None, started=time.time(), gpu=gpu_name, log=[])
         save(jid, job)
-    slots[where] = jid
+        slots[where] = jid
+        runners[jid] = {"where": where, "proc": None, "stopper": None}
     log.info("started %s on %s (%s)", jid, gpu_name, where)
     C.job_log(job_path(jid), f"run started on {gpu_name} ({where}), code {C.code_version()}", header=True)
     return True
@@ -1853,9 +2000,23 @@ def schedule_once():
         # a song waiting for one particular card doesn't hold up songs that can use the other one
 
 
+def cancel_requested(jid):
+    try:
+        return bool(load(jid).get("cancel_requested"))
+    except Exception:
+        return False
+
+
 def finish(jid, rc, err, oom, where):
     with lock:
         job = load(jid)
+        if job.get("cancel_requested"):  # stopped by the user: not failed, not retried
+            _mark_cancelled(job)
+            save(jid, job)
+            took = f"{job['finished'] - job['started']:.0f}s" if job.get("started") else "?"
+            log.info("cancelled %s on %s after %s", jid, where, took)
+            C.job_log(job_path(jid), "run ended: cancelled by you", header=True)
+            return
         job["finished"] = time.time()
         if rc == 0 and os.path.exists(job_path(jid, "out.mp4")) and os.path.exists(job_path(jid, "result.json")):
             job.update(status="done", step="done")
@@ -2023,8 +2184,17 @@ def maybe_auto_romaji(jid, rc):
 def run_local(jid):
     rc, err, oom, crash = 1, None, False, None
     try:
-        p = subprocess.Popen([sys.executable, "-I", f"{HERE}/pipeline.py", f"{JOBS}/{jid}"], stdout=subprocess.PIPE,
-                             stderr=subprocess.STDOUT, text=True, env=dict(C.tool_env(), PYTHONUNBUFFERED="1"))
+        with lock:  # cancelled between claim and here: don't start it
+            if load(jid).get("cancel_requested"):
+                p = None
+            else:  # its own process group, so a cancel stops yt-dlp, ffmpeg and the GPU work it started too
+                p = subprocess.Popen([sys.executable, "-I", PIPELINE, f"{JOBS}/{jid}"], stdout=subprocess.PIPE,
+                                     stderr=subprocess.STDOUT, text=True, env=dict(C.tool_env(), PYTHONUNBUFFERED="1"),
+                                     start_new_session=True)
+                runners.setdefault(jid, {"where": "local", "stopper": None})["proc"] = p
+        if p is None:
+            finish(jid, 1, None, False, "local")
+            return
         for line in p.stdout:
             line = line.rstrip()
             oom = oom or "out of memory" in line.lower()
@@ -2044,42 +2214,70 @@ def run_local(jid):
                     err = text
                 save(jid, job)
         rc = p.wait()
+        with lock:  # gone: a cancel from now on (OOM wait, romaji check) has no process to stop
+            r = runners.get(jid) or {}
+            r.pop("proc", None)
+            stopper = r.get("stopper")
+        if stopper:
+            stopper.join(15)  # cancelled: wait until everything it started is gone, so the GPU is free again
         if rc != 0 and not err and not oom and crash:
             err = f"it stopped with an error ({crash})"
-        if oom:
+        if oom and not cancel_requested(jid):
             time.sleep(20)
-        maybe_auto_romaji(jid, rc)
+        if not cancel_requested(jid):
+            maybe_auto_romaji(jid, rc)
         finish(jid, rc, err, oom, "local")
     except Exception as e:
         try:
-            set_job(jid, status="failed", error=f"studio error: {str(e)[:150]}")
+            with lock:
+                job = load(jid)
+                if job.get("cancel_requested"):
+                    _mark_cancelled(job)
+                else:
+                    job.update(status="failed", error=f"studio error: {str(e)[:150]}")
+                save(jid, job)
         except Exception:
             pass
     finally:
-        slots["local"] = None
+        with lock:
+            runners.pop(jid, None)
+            slots["local"] = None
         wake.set()
 
 
 def run_remote(jid):
-    """Run the job on the GPU helper, mirror its progress, then copy the finished files here."""
+    """Run the job on the GPU helper, mirror its progress, then copy the finished files here. Cancelled: keep asking
+    the helper to stop it until it has, then end the song as cancelled (and remove the helper's copy)."""
+    asked = 0.0
     try:
         job = load(jid)
+        if job.get("cancel_requested"):  # cancelled between claim and here: don't send it
+            finish(jid, 1, None, False, "remote")
+            return
         helper_call("/jobs", "POST", {"id": jid, **{k: job.get(k) for k in ("yt", "lrc_id", "lyrics_source", "artist", "title", "lang", "lyrics_text")}})
         misses = 0
         while True:
             time.sleep(2)
+            stopping = cancel_requested(jid)
+            if stopping and time.time() - asked > 10:  # (a helper on code from before cancel existed says 404:
+                asked = time.time()                    #  the song then ends when the helper finishes it)
+                _helper_stop(jid)
             try:
                 st = helper_call(f"/jobs/{jid}")
                 misses = 0
             except Exception:
                 misses += 1
                 if misses >= 15:  # ~30 s without an answer: the PC was shut down or went to sleep
-                    set_job(jid, status="queued", step="queued", waiting="the helper PC went away; waiting for a graphics card")
+                    if stopping:
+                        finish(jid, 1, None, False, "remote")
+                    else:
+                        set_job(jid, status="queued", step="queued", waiting="the helper PC went away; waiting for a graphics card")
                     return
                 continue
             if not os.path.isdir(job_path(jid)):
                 return  # deleted meanwhile
-            set_job(jid, step=st.get("step") or "lyrics", log=st.get("log", []))
+            if not stopping:
+                set_job(jid, step=st.get("step") or "lyrics", log=st.get("log", []))
             if st["status"] == "running":
                 continue
             try:  # the helper's full pipeline output for this run, whether it worked or not
@@ -2087,7 +2285,7 @@ def run_remote(jid):
                     f.write(r.read()[-2_000_000:])
             except Exception:
                 C.job_log(job_path(jid), "(the helper's pipeline output couldn't be fetched)")
-            if st["status"] == "done":
+            if st["status"] == "done" and not stopping:
                 for name in ("out.mp4", "vocals.m4a", "words.json", "lyrics.ass", "result.json"):
                     dst = job_path(jid, name)
                     with helper_call(f"/jobs/{jid}/files/{name}", timeout=120, raw=True) as r, open(dst + ".part", "wb") as f:
@@ -2111,11 +2309,16 @@ def run_remote(jid):
             return
     except Exception as e:
         try:
-            set_job(jid, status="queued", step="queued", waiting=f"the helper PC had a problem ({str(e)[:60]}); waiting for a graphics card")
+            if cancel_requested(jid):
+                finish(jid, 1, None, False, "remote")
+            else:
+                set_job(jid, status="queued", step="queued", waiting=f"the helper PC had a problem ({str(e)[:60]}); waiting for a graphics card")
         except Exception:
             pass
     finally:
-        slots["remote"] = None
+        with lock:
+            runners.pop(jid, None)
+            slots["remote"] = None
         wake.set()
 
 
@@ -2135,21 +2338,77 @@ FILLER = {"karaoke", "version", "versions", "lyrics", "lyric", "with", "instrume
           "vocal", "minus", "one", "the", "by", "in", "style", "of", "zoom", "lower", "higher", "4k", "1080p", "720p"}
 
 
+# Library names: "Artist - Title (Karaoke Version)---<YouTube id>", "Title (Karaoke) - Artist", "Artist - Title -
+# Karaoke Version from Zoom Karaoke", "Title - Artist Karaoke", "Singer - Title (Series OP)" (Anime/), and the
+# studio's "Artist - Title (Music Video)". loose() makes the compare case- and accent-insensitive (Eslabon = Eslabón).
+OLD_YT_RE = re.compile(r"(.+)---([A-Za-z0-9_-]{11})\.(mp4|webm|mkv|mp3)")  # an old YouTube download
+KARAOKE_TAIL = {"karaoke", "version", "from", "zoom", "karafun", "lyrics", "lyric", "instrumental", "with", "hd", "hq",
+                "official", "video", "sing", "king"}
+
+
+def lib_name_parts(name, folder):
+    """The song in a library file name, as its " - " parts, without the karaoke words around it."""
+    q = re.sub(r"---[A-Za-z0-9_-]{11}$", "", name)
+    if folder == "YouTube":
+        q = re.sub(r"\s*[\(\[][^\)\]]*(karaoke|lyrics?|instrumental)[^\)\]]*[\)\]]", "", q, flags=re.I)
+        q = re.split(r"\s+_\s+", q)[0]
+    else:  # Anime/ from kara.moe: "Singer - Title (Series OP) (AI instrumental)"
+        q = re.sub(r"\s*\([^)]*\)", "", q)
+    parts = []
+    for part in re.split(r"\s+[-–—]\s+", q):
+        w = part.split()
+        for i, x in enumerate(w):  # "… Karaoke", "… Karaoke Version from Zoom Karaoke": cut from that "Karaoke" on
+            if norm(x) == "karaoke" and all(norm(y) in KARAOKE_TAIL for y in w[i + 1:]):
+                w = w[:i]
+                while w and norm(w[-1]) in ("zoom", "karafun", "from"):
+                    w.pop()
+                break
+        while w and norm(w[0]) == "karaoke":  # "Karaoke Artist - Title"
+            w = w[1:]
+        part = " ".join(w).strip(" -_|:")
+        if part:
+            parts.append(part)
+    while len(parts) > 2 and all(norm(x) in FILLER for x in parts[-1].split()):  # "… - Sing King", "… - HD"
+        parts.pop()
+    return parts
+
+
+def same_song(a1, t1, a2, t2):
+    """Two artist/title pairs name the same song: the same title, and artists alike (one contains the other, ignoring
+    case, accents and spaces: "Eslabón Armado" and "Eslabon Armado, Peso Pluma")."""
+    ta, tb, aa, ab = loose(t1), loose(t2), loose(a1), loose(a2)
+    return bool(ta) and ta == tb and bool(aa) and bool(ab) and (aa in ab or ab in aa)
+
+
+def lib_matches(parts, artist, title, strict=False):
+    """Is the library entry (lib_name_parts) the song artist/title? "Artist - Title" or "Title - Artist". In the
+    first order the title alone is enough (artists are spelt many ways), unless strict (for removing files): then the
+    artist must be alike too, as it must in the second order."""
+    t, a = loose(title), loose(artist)
+    if not t or not parts:
+        return False
+    alike = lambda x: bool(a) and bool(x) and (a in x or x in a)
+    if len(parts) == 1:
+        return loose(parts[0]) == loose(f"{artist} {title}") or (not strict and loose(parts[0]) == t)
+    if loose(" ".join(parts[1:])) == t and (not strict or alike(loose(parts[0]))):
+        return True
+    return loose(" ".join(parts[:-1])) == t and alike(loose(parts[-1]))
+
+
+def mv_name(name):
+    """(artist, title) of a studio file "Artist - Title (Music Video)" in Music Videos/ (None for other names)."""
+    m = re.fullmatch(r"(.+?) - (.+) \(Music Video\)", name)
+    return (m.group(1), m.group(2)) if m else None
+
+
 def old_versions(job):
-    """YouTube lyric versions of the same song in the library root (only clear matches)."""
-    na, nt = norm(job["artist"]), norm(job["title"])
+    """YouTube lyric versions of the same song in the library root (only clear matches: title and artist)."""
     out = []
     for name in sorted(os.listdir(LIB)):
-        m = re.fullmatch(r"(.+)---([A-Za-z0-9_-]{11})\.(mp4|webm|mkv|mp3)", name)
-        if not m or not os.path.isfile(os.path.join(LIB, name)):
-            continue
-        stem = norm(m.group(1))
-        for first, second in ((na, nt), (nt, na)):  # "Artist - Title ..." or "Title - Artist ..."
-            if na and nt and stem.startswith(first + " " + second):
-                rest = stem[len(first) + 1 + len(second):].split()
-                if all(t in FILLER for t in rest):
-                    out.append(name)
-                    break
+        m = OLD_YT_RE.fullmatch(name)
+        if m and os.path.isfile(os.path.join(LIB, name)) and \
+                lib_matches(lib_name_parts(m.group(1), "YouTube"), job["artist"], job["title"], strict=True):
+            out.append(name)
     return out
 
 
@@ -2170,6 +2429,18 @@ def pk_rescan():
         return f"saved, but the rescan failed (HTTP {e.code}); it appears after PiKaraoke's next restart"
     except Exception as e:
         return f"saved, but PiKaraoke didn't answer ({str(e)[:80]}); it appears after its next restart"
+
+
+def remove_lib_file(name):
+    """Delete an old song (and its lyrics files) from the top of PiKaraoke's library; only plain file names there."""
+    p = os.path.realpath(os.path.join(LIB, name))
+    if os.path.dirname(p) != os.path.realpath(LIB) or not os.path.isfile(p):
+        return False
+    stem = os.path.splitext(p)[0]
+    for ext in (os.path.splitext(p)[1], ".ass", ".cdg", ".ASS"):
+        if os.path.isfile(stem + ext):
+            os.remove(stem + ext)
+    return True
 
 
 @app.get("/api/jobs/{jid}/publish-info")
@@ -2202,16 +2473,7 @@ async def publish(jid: str, req: Request):
         shutil.copyfile(job_path(jid, "out.mp4"), tmp)
         os.replace(tmp, f"{MV_DIR}/{base}.mp4")
         publish_lyrics(jid, base)
-        removed = []
-        for name in remove:
-            p = os.path.realpath(os.path.join(LIB, name))
-            if os.path.dirname(p) != os.path.realpath(LIB):
-                continue
-            stem = os.path.splitext(p)[0]
-            for ext in (os.path.splitext(p)[1], ".ass", ".cdg", ".ASS"):
-                if os.path.isfile(stem + ext):
-                    os.remove(stem + ext)
-            removed.append(name)
+        removed = [name for name in remove if remove_lib_file(name)]
         # its published versions share these lyrics: they get them too
         for m in videoswap.entries(job_path(jid)):
             pa = m.get("published_as")
@@ -2228,8 +2490,11 @@ async def publish(jid: str, req: Request):
     return {"name": base, "removed": removed, "message": msg}
 
 
-@app.get("/api/library")
-def library():
+LIB_EXTS_MEDIA = (".mp4", ".webm", ".mkv", ".mp3", ".zip")
+JOB_RANK = {"done": 0, "running": 1, "queued": 2, "failed": 3}  # which of several studio songs a library song points to
+
+
+def library_songs():
     plays = {}
     try:
         for title, n, last in pk_rows("select song_title, count(*), max(played_at) from plays "
@@ -2240,32 +2505,72 @@ def library():
     songs = []
     for d, _, files in os.walk(LIB):
         for f in files:
-            if f.lower().endswith((".mp4", ".webm", ".mkv", ".mp3", ".zip", ".cdg")) and not f.startswith("."):
-                if f.lower().endswith(".cdg"):
-                    continue
+            if f.lower().endswith(LIB_EXTS_MEDIA) and not f.startswith("."):
                 rel = os.path.relpath(os.path.join(d, f), LIB)
                 folder = os.path.dirname(rel) or "YouTube"
                 title = re.sub(r"---[A-Za-z0-9_-]{11}$", "", os.path.splitext(f)[0])
                 n, last = plays.get(title, (0, None))
-                songs.append({"file": rel, "title": title, "folder": folder, "plays": n, "last_played": last,
+                try:
+                    added = os.path.getmtime(os.path.join(d, f))
+                except OSError:
+                    added = None
+                songs.append({"file": rel, "title": title, "folder": folder, "plays": n, "last_played": last, "added": added,
                               "lyrics": os.path.exists(os.path.join(d, os.path.splitext(f)[0] + ".ass"))})
-    mv_full = {loose(s["title"].replace("(Music Video)", "")) for s in songs if s["folder"] == "Music Videos"}
-    mv_titles = {loose(s["title"].replace("(Music Video)", "").split(" - ", 1)[-1]) for s in songs if s["folder"] == "Music Videos"}
+    jobs = job_index()
+    by_pub = {j["published_as"]: j for j in jobs if j.get("published_as")}
+    mvs = []  # (artist, title, library title, studio song) of every studio music video in the library
+    for s in songs:
+        if s["folder"] == "Music Videos":
+            j = by_pub.get(s["title"])
+            s["job"] = {"id": j["id"], "status": j["status"]} if j else None
+            nm = mv_name(s["title"])
+            if nm:
+                mvs.append((nm[0], nm[1], s["title"], s["job"]))
     for s in songs:
         if s["folder"] == "Music Videos":
             continue
-        if s["folder"] == "YouTube":
-            q = re.sub(r"\s*[\(\[][^\)\]]*(karaoke|lyrics?|instrumental)[^\)\]]*[\)\]]", "", s["title"], flags=re.I)
-            q = re.split(r"\s+_\s+|\s+-\s+(?=karaoke\b|lyrics?\b)", q, flags=re.I)[0].strip(" -_")
-        else:  # e.g. Anime/ from kara.moe: "Singer - Title (Series OP) (AI instrumental)"
-            q = re.sub(r"\s*\([^)]*\)", "", s["title"]).strip(" -_")
-        s["query"] = q
-        title_part = q.split(" - ", 1)[-1]
+        parts = lib_name_parts(s["title"], s["folder"])
+        s["query"] = " - ".join(parts) or s["title"]
         # an anime song whose video already IS the official (anime) music video doesn't need one
         s["official_mv"] = s["folder"] != "YouTube" and bool(re.search(r"\([^)]*\bMV\b[^)]*\)", s["title"]))
-        s["has_mv"] = loose(q) in mv_full or loose(title_part) in mv_titles
+        mv = next((m for m in mvs if lib_matches(parts, m[0], m[1])), None)
+        s["has_mv"] = bool(mv)
+        s["mv_title"], s["mv_job"] = (mv[2], (mv[3] or {}).get("id")) if mv else (None, None)
+        # an old YouTube download next to its music video: it can be removed so the song is listed once
+        s["removable"] = bool(mv) and s["folder"] == "YouTube" and bool(OLD_YT_RE.fullmatch(s["file"])) \
+            and any(lib_matches(parts, m[0], m[1], strict=True) for m in mvs)
+        s["job"] = None
+        # made in the studio but not published (or waiting, being made, failed): point there, not at Make. Artist and
+        # title must both match here: another artist's song of the same name mustn't hide the Make button.
+        if not mv:
+            cands = [j for j in jobs if j["status"] in JOB_RANK and lib_matches(parts, j["artist"], j["title"], strict=True)]
+            if cands:
+                j = min(cands, key=lambda j: (JOB_RANK[j["status"]], -(j.get("created") or 0)))
+                s["job"] = {"id": j["id"], "status": j["status"], "published": bool(j.get("published")),
+                            "when": j.get("finished") or j.get("created"), "stopping": bool(j.get("cancel_requested"))}
     songs.sort(key=lambda s: (-s["plays"], s["title"].lower()))
-    return {"songs": songs}
+    return songs
+
+
+@app.get("/api/library")
+def library():
+    return {"songs": library_songs()}
+
+
+@app.post("/api/library/remove-old")
+async def remove_old(req: Request):
+    """Remove an old YouTube karaoke download from PiKaraoke's library, when the studio's music video of the same song
+    is there (so the song is listed once). Only that file and its lyrics files go."""
+    check_origin(req)
+    name = str((await req.json()).get("file") or "")
+    with lock:
+        s = next((x for x in library_songs() if x["file"] == name), None)
+        if not s or not s.get("removable"):
+            raise HTTPException(400, "only an old YouTube karaoke file whose music video is in the library can be removed here")
+        if not remove_lib_file(name):
+            raise HTTPException(404, "it's gone already")
+    log.info("library: removed old version %s (the music video %s stays)", name, s.get("mv_title"))
+    return {"ok": True, "message": pk_rescan()}
 
 
 @app.get("/api/status")
@@ -2284,6 +2589,22 @@ def status():
             "fonts": sorted(f"/static/octopus/{f}" for f in os.listdir(f"{HERE}/static/octopus")
                             if f.lower().endswith((".ttf", ".otf")))
             if os.path.isdir(f"{HERE}/static/octopus") else []}
+
+
+def recover_jobs():
+    """At startup: a job left "running" by a crash/restart goes back in the queue, unless it was being cancelled."""
+    for j in list_jobs():
+        with lock:
+            job = load(j["id"])
+            if job.get("status") == "running":
+                if job.get("cancel_requested"):
+                    _mark_cancelled(job, "cancelled by you (the studio restarted while stopping it)")
+                else:
+                    job.update(status="queued", step="queued")
+                save(j["id"], job)
+            if (job.get("video_task") or {}).get("running"):  # not requeued: the custom videos say they need a re-render
+                job["video_task"] = dict(job["video_task"], running=False, error="the studio restarted while making it; try again (Re-render)")
+                save(j["id"], job)
 
 
 # ---------------- static ----------------
@@ -2308,13 +2629,6 @@ if __name__ == "__main__":
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=5570)
     a = ap.parse_args()
-    # a job left "running" by a crash/restart goes back in the queue
-    for j in list_jobs():
-        if j["status"] == "running":
-            job = load(j["id"]); job.update(status="queued", step="queued"); save(j["id"], job)
-        if (j.get("video_task") or {}).get("running"):  # not requeued: the custom videos say they need a re-render
-            job = load(j["id"])
-            job["video_task"] = dict(job["video_task"], running=False, error="the studio restarted while making it; try again (Re-render)")
-            save(j["id"], job)
+    recover_jobs()
     threading.Thread(target=worker, daemon=True).start()
     uvicorn.run(app, host=a.host, port=a.port, log_level="warning", proxy_headers=True, forwarded_allow_ips="*")

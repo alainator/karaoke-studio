@@ -10,8 +10,10 @@ connect (the studio's). The helper downloads the video itself, so the PC needs i
     GET    /health                 -> {"ok", "gpu", "free_mib", "busy"}
     POST   /jobs                   -> {"id"}   body: the studio's job (yt, lrc_id, lyrics_source, artist, title, lang,
                                               lyrics_text when the lyrics were pasted)
-    GET    /jobs/<id>              -> {"status": running|done|failed, "step", "log", "error"}
+    GET    /jobs/<id>              -> {"status": running|done|failed|cancelled, "step", "log", "error"}
     GET    /jobs/<id>/files/<name> -> out.mp4, vocals.m4a, words.json, lyrics.ass, result.json
+    POST   /jobs/<id>/cancel       -> {"ok", "status"}  stop it (the pipeline and everything it started); the job ends
+                                      "cancelled" a few seconds later
     DELETE /jobs/<id>
 """
 import argparse, hmac, json, os, re, shutil, subprocess, sys, threading, time
@@ -26,6 +28,7 @@ import config as C  # noqa: E402
 TOKEN = os.environ.get("HELPER_TOKEN", "")
 ALLOW = {a.strip() for a in os.environ.get("HELPER_ALLOW", "").split(",") if a.strip()}
 JOBS = os.path.join(C.JOBS, "helper")
+PIPELINE = os.path.join(HERE, "pipeline.py")  # (tests swap in a stand-in)
 FILES = ("out.mp4", "vocals.m4a", "words.json", "lyrics.ass", "result.json")
 OPTIONAL = ("heard.json",)  # what was heard (the by-ear check): sent back too, but a song is fine without it
 ID_RE = re.compile(r"^[0-9a-z-]{8,80}$")
@@ -34,6 +37,7 @@ os.makedirs(JOBS, exist_ok=True)
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 state = {"busy": None}
 jobs = {}
+procs = {}  # job id -> its running pipeline (Popen); kept out of jobs[], which is sent as JSON
 lock = threading.Lock()
 
 
@@ -69,8 +73,15 @@ def health():
 
 def run(jid):
     d = os.path.join(JOBS, jid)
-    p = subprocess.Popen([sys.executable, "-I", os.path.join(HERE, "pipeline.py"), d], stdout=subprocess.PIPE,
-                         stderr=subprocess.STDOUT, text=True, env=dict(C.tool_env(), PYTHONUNBUFFERED="1"))
+    with lock:  # cancelled before it even started: don't start it
+        if jobs[jid].get("cancel"):
+            jobs[jid].update(status="cancelled", error="cancelled")
+            state["busy"] = None
+            return
+        # its own process group, so a cancel stops yt-dlp, ffmpeg and the GPU work it started too
+        p = subprocess.Popen([sys.executable, "-I", PIPELINE, d], stdout=subprocess.PIPE, start_new_session=True,
+                             stderr=subprocess.STDOUT, text=True, env=dict(C.tool_env(), PYTHONUNBUFFERED="1"))
+        procs[jid] = p
     oom = False
     C.job_log(d, f"run started on the helper, code {C.code_version()}", header=True)
     for line in p.stdout:
@@ -88,12 +99,23 @@ def run(jid):
                 elif kind == "error":
                     j["error"] = text
     rc = p.wait()
+    with lock:  # reaped: nothing left to stop
+        procs.pop(jid, None)
+        stopper = jobs[jid].get("_stopper")
+    if stopper:
+        stopper.join(15)  # a cancel: wait until everything the pipeline started is gone (the GPU is free again)
     with lock:
+        procs.pop(jid, None)
         j = jobs[jid]
+        j.pop("_stopper", None)
         ok = rc == 0 and all(os.path.exists(os.path.join(d, f)) for f in FILES)
-        j["status"] = "done" if ok else "failed"
-        if not ok and not j.get("error"):
-            j["error"] = "the helper's GPU ran out of memory" if oom else f"pipeline exited with code {rc}"
+        if j.get("cancel"):
+            j.update(status="cancelled", error="cancelled")
+            C.job_log(d, "cancelled", header=True)
+        else:
+            j["status"] = "done" if ok else "failed"
+            if not ok and not j.get("error"):
+                j["error"] = "the helper's GPU ran out of memory" if oom else f"pipeline exited with code {rc}"
         j["oom"] = oom
         state["busy"] = None
 
@@ -151,12 +173,32 @@ async def update(req: Request):
     return {"ok": True, "version": now, "matches": now == want}
 
 
+@app.post("/jobs/{jid}/cancel")
+def cancel(jid: str):
+    """Stop a job: SIGTERM its pipeline's process group, SIGKILL after 10 s. The job turns "cancelled" once the
+    pipeline is gone (poll GET /jobs/<id>). Cancelling a finished or already-cancelled job changes nothing."""
+    with lock:
+        j = jobs.get(jid)
+        if j is None:
+            raise HTTPException(404, "no such job")
+        if j["status"] != "running":
+            return {"ok": True, "status": j["status"]}
+        first = not j.get("cancel")
+        j["cancel"] = True
+        p = procs.get(jid)
+        if first and p is not None:
+            t = threading.Thread(target=C.stop_group, args=(p,), daemon=True)
+            j["_stopper"] = t
+            t.start()
+    return {"ok": True, "status": "stopping"}
+
+
 @app.get("/jobs/{jid}")
 def status(jid: str):
     if jid not in jobs:
         raise HTTPException(404, "no such job")
     with lock:
-        return dict(jobs[jid])
+        return {k: v for k, v in jobs[jid].items() if not k.startswith("_")}
 
 
 @app.get("/jobs/{jid}/files/{name}")

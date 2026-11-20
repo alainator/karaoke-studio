@@ -58,6 +58,7 @@ h2 { font-size: 15px; margin: 26px 0 10px; color: var(--dim); font-weight: 600; 
 @keyframes pulse { to { opacity: .35; } }
 .status { font-size: 12px; font-weight: 600; }
 .status.done { color: var(--ok); } .status.failed { color: var(--bad); } .status.running, .status.queued { color: var(--info); }
+.status.cancelled { color: var(--dim); }
 .player { position: relative; background: #000; border-radius: var(--radius); overflow: hidden; }
 .player video { width: 100%; display: block; aspect-ratio: 16/9; }
 /* SubtitlesOctopus pins its layer with position:fixed (fine on a TV page, wrong on a scrolling one) */
@@ -143,6 +144,41 @@ select.sg { background: var(--bg); border: 1px solid var(--line); color: var(--t
 .vids button.on { color: #17121c; background: var(--gold); border-color: var(--gold); }
 .vids label.chk { display: inline-flex; gap: 6px; align-items: center; font-size: 14px; color: var(--text); margin: 0; }
 .vids a { color: var(--info); }
+
+/* finding songs: a search box, filter chips with counts and a sort, sticky under the header */
+.finder { position: sticky; top: var(--hdr, 58px); z-index: 4; background: var(--bg); padding: 12px 0 10px; margin-bottom: 10px; border-bottom: 1px solid var(--line); }
+.finder .frow { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.finder input[type=search] { flex: 1 1 260px; min-width: 0; background: var(--panel); border: 1px solid var(--line); color: var(--text); border-radius: 10px; padding: 11px 14px; font: inherit; font-size: 16px; }
+.finder input[type=search]:focus { outline: 2px solid var(--gold); outline-offset: -1px; }
+.finder select { background: var(--panel); border: 1px solid var(--line); color: var(--text); border-radius: 10px; padding: 10px 8px; font: inherit; font-size: 15px; max-width: 100%; }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+.chips button { background: var(--panel2); border: 1px solid var(--line); color: var(--text); border-radius: 99px; padding: 6px 13px; font: inherit; font-size: 14px; cursor: pointer; white-space: nowrap; }
+.chips button b { color: var(--dim); font-weight: 600; margin-left: 5px; }
+.chips button.on { background: var(--gold); color: var(--gold-ink); border-color: var(--gold); font-weight: 600; }
+.chips button.on b { color: var(--gold-ink); }
+.fcount { color: var(--dim); font-size: 14px; margin-top: 9px; }
+.fcount b { color: var(--text); }
+@media (max-width: 600px) { .chips { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; scrollbar-width: thin; } }
+.azbar { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 8px; }
+.azbar button { min-width: 30px; height: 30px; background: var(--panel2); border: 1px solid var(--line); color: var(--text); border-radius: 6px; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; padding: 0 6px; }
+.azbar button:hover { border-color: var(--gold); color: var(--gold); }
+button.more { display: block; margin: 16px auto 0; }
+button.sm { padding: 6px 12px; font-size: 14px; }
+.cancelbtn { flex: none; margin-left: 12px; }
+a.lnk { color: var(--info); text-decoration: none; font-weight: 600; }
+a.lnk:hover { text-decoration: underline; }
+#dupwarn { flex-basis: 100%; } #dupwarn:empty { display: none; }
+#dupwarn .aibox { margin: 0; border-color: #ffb020; background: rgba(255,176,32,.07); }
+.libtable td:first-child { overflow-wrap: anywhere; }
+.libmeta { display: none; margin-top: 4px; font-size: 13px; color: var(--dim); }
+@media (max-width: 600px) {
+  /* phones: the kind and play count go under the song's name, so the name gets the room */
+  .libtable .c-kind, .libtable .c-sung { display: none; }
+  .libmeta { display: block; }
+  .libtable td:last-child { width: 42%; }
+  /* scrolled down: only the search box (and the count) stay up top */
+  .finder.compact select, .finder.compact .chips, .finder.compact .azbar { display: none; }
+}
 </style>
 </head>
 <body>
@@ -167,13 +203,34 @@ select.sg { background: var(--bg); border: 1px solid var(--line); color: var(--t
 
   <section id="v-jobs" class="view">
     <div id="jobdetail"></div>
-    <div id="jobsindex"><h2>Your songs</h2>
-    <div class="list jobs" id="joblist"></div></div>
+    <div id="jobsindex">
+      <div class="finder" id="jobfinder">
+        <div class="frow">
+          <input type="search" id="jq" placeholder="Find a song: artist, title…   ( / )" autocomplete="off" aria-label="Find a song">
+          <select id="jsort" aria-label="Sort songs"><option value="new">Newest first</option><option value="az">A–Z by artist</option><option value="fix">Most ⚠ to fix</option><option value="pub">Recently published</option></select>
+          <select id="jlang" aria-label="Language" style="display:none"></select>
+        </div>
+        <div class="chips" id="jchips"></div>
+        <div class="fcount" id="jcount"></div>
+      </div>
+      <div class="list jobs" id="joblist"></div>
+      <button class="ghost more" id="jmore" style="display:none"></button>
+    </div>
   </section>
 
   <section id="v-lib" class="view">
-    <p class="hint">Everything in PiKaraoke, most-sung first. "Make MV version" starts a search for songs that only have a YouTube lyric video or an anime TV version.</p>
+    <div class="finder" id="libfinder">
+      <div class="frow">
+        <input type="search" id="lq" placeholder="Find in PiKaraoke: artist, title…   ( / )" autocomplete="off" aria-label="Find in the library">
+        <select id="lsort" aria-label="Sort the library"><option value="plays">Most sung</option><option value="az">A–Z</option><option value="added">Recently added</option><option value="sung">Recently sung</option></select>
+      </div>
+      <div class="chips" id="lchips"></div>
+      <div class="fcount" id="lcount"></div>
+      <div class="azbar" id="laz"></div>
+    </div>
+    <p class="hint">Everything in PiKaraoke. "Make MV version" starts a search for songs that only have an old YouTube karaoke video or an anime TV version; songs already made in the studio link to their page instead.</p>
     <div id="lib"></div>
+    <button class="ghost more" id="lmore" style="display:none"></button>
   </section>
 </main>
 <div class="toast" id="toast"></div>
@@ -332,6 +389,7 @@ function renderResults() {
       <div><h2>Lyrics</h2><div class="list">${lyrsAll}</div></div>
     </div>
     <div class="makebar">
+      <div id="dupwarn"></div>
       <input type="text" id="artist" value="${esc(pick.names.artist)}" placeholder="Artist">
       <input type="text" id="title" value="${esc(pick.names.title)}" placeholder="Title">
       <span class="hint namesrc">${pick.names.edited ? `your names <button class="ib" id="renames" title="Fill in the names from the lyrics or the video again">↺</button>` : `names from ${esc(pick.names.from)}`}</span>
@@ -369,7 +427,7 @@ function renderResults() {
   });
   document.querySelectorAll(".lyrview").forEach(v => v.onclick = e => e.stopPropagation());
   if ($("#unreplace")) $("#unreplace").onclick = () => { pick.replaces = null; renderResults(); };
-  $("#make").onclick = makeJob;
+  $("#make").onclick = () => makeJob(false);
 }
 function gpuMenu(id = "gpupick") {
   // which graphics card makes the song: Auto (whichever is free) or one you pick
@@ -425,10 +483,25 @@ function autoNames(d) {
   return {...typed, from: "your search", edited: false};
 }
 function refillNames() { pick.names = null; renderResults(); }
-async function makeJob() {
+// Already made (or waiting / being made)? Say so before making it again; making another version stays possible.
+function showDup(like) {
+  const j = like[0];
+  const when = new Date((j.finished || j.created) * 1000).toLocaleDateString(undefined, {day: "numeric", month: "short", year: "numeric"});
+  const what = j.status === "done" ? `You already made this on ${when}${j.published ? " (it's published)" : ""}` : j.status === "running" ? "This song is being made right now" : `This song is already waiting to be made (since ${when})`;
+  $("#dupwarn").innerHTML = `<div class="aibox"><b>${esc(what)}.</b> <a class="lnk" href="#jobs/${esc(j.id)}">Open it →</a>${like.length > 1 ? ` <span class="hint">(and ${like.length - 1} more of the same song in Songs)</span>` : ""}
+    <div class="row" style="margin-top:8px"><span>Make another version anyway?</span><button class="ghost sm" id="dupyes">Make another version</button><button class="ghost sm" id="dupno">Don't make it</button></div></div>`;
+  $("#dupyes").onclick = () => { $("#dupwarn").innerHTML = ""; makeJob(true); };
+  $("#dupno").onclick = () => { $("#dupwarn").innerHTML = ""; };
+}
+async function makeJob(force) {
   const artist = $("#artist").value.trim(), title = $("#title").value.trim();
   if (!artist || !title) return toast("Fill in artist and title");
   $("#make").disabled = true;
+  if (force !== true) {
+    let like = [];
+    try { like = await api(`/api/jobs-like?artist=${encodeURIComponent(artist)}&title=${encodeURIComponent(title)}&exclude=${encodeURIComponent(pick.replaces ? pick.replaces.id : "")}`); } catch {}
+    if (like.length) { $("#make").disabled = false; return showDup(like); }
+  }
   try {
     const r = await api("/api/jobs", {method: "POST", body: JSON.stringify({yt: pick.video.id, lrc_id: pick.lyr.id, lyrics_source: pick.lyr.source, ...(pick.lyr.source === "pasted" ? {lyrics_text: pick.lyr.text} : {}), artist, title, video_title: pick.video.title, gpu: $("#gpupick") ? $("#gpupick").value : "auto", ...(pick.replaces ? {replace: pick.replaces.id} : {})})});
     // the search is done with: start the Make tab fresh next time
@@ -458,20 +531,128 @@ function confTag(j) {
   return "";
 }
 
-function jobLine(j) {
-  const st = j.status === "running" ? (STEP_NAMES[j.step] || j.step) + (j.gpu ? ` · ${j.gpu}` : "") : j.status === "queued" ? (j.waiting || "Waiting") : j.status === "failed" ? "Failed" : j.published ? "Published" : "Ready to preview";
-  return `<div class="card" data-j="${esc(j.id)}">
-    <img src="https://i.ytimg.com/vi/${esc(j.yt)}/mqdefault.jpg" alt="">
-    <div style="flex:1"><div class="t">${esc(j.artist)} – ${esc(j.title)}</div>
-    <div class="status ${esc(j.status)}">${esc(st)}${j.updates && j.updates.length ? ` <span class="tag" title="Made with an older version: ${esc(j.updates.join("; "))}">↻ ${j.updates.length} improvement${j.updates.length === 1 ? "" : "s"} since</span>` : ""}${confTag(j)}</div>${j.status === "running" || j.status === "queued" ? stepBar(j) : ""}</div></div>`;
+function jobState(j) {
+  if (j.status === "running") return j.cancel_requested ? "Stopping…" : (STEP_NAMES[j.step] || j.step) + (j.gpu ? ` · ${j.gpu}` : "");
+  if (j.status === "queued") return j.waiting || "Waiting";
+  return {failed: "Failed", cancelled: "Cancelled"}[j.status] || (j.published ? "Published" : "Ready to preview");
 }
+const canCancel = j => (j.status === "queued" || j.status === "running") && !j.cancel_requested;
+function jobLine(j) {
+  const nUp = j.updates_n != null ? j.updates_n : (j.updates || []).length;
+  return `<div class="card" data-j="${esc(j.id)}">
+    <img src="https://i.ytimg.com/vi/${esc(j.yt)}/mqdefault.jpg" alt="" loading="lazy">
+    <div style="flex:1;min-width:0"><div class="t">${esc(j.artist)} – ${esc(j.title)}</div>
+    <div class="status ${esc(j.status)}">${esc(jobState(j))}${nUp ? ` <span class="tag" title="Made with an older version of the studio; the song's page lists what's better now">↻ ${nUp} improvement${nUp === 1 ? "" : "s"} since</span>` : ""}${confTag(j)}</div>${j.status === "running" || j.status === "queued" ? stepBar(j) : ""}</div>
+    ${canCancel(j) ? `<button class="ghost danger sm cancelbtn" data-cancel="${esc(j.id)}" title="Stop making this song">✕ Cancel</button>` : ""}</div>`;
+}
+async function cancelJob(id) {
+  if (!confirm("Stop making this song?")) return;
+  try {
+    const r = await api(`/api/jobs/${id}/cancel`, {method: "POST"});
+    toast(r.status === "stopping" ? "Stopping it… (a few seconds)" : r.status === "done" ? "Remake cancelled: the song is as it was" : "Cancelled");
+  } catch (e) { toast(e.message); }
+  loadJobs();
+  if (currentJob === id) openJob(id);
+}
+
+// ---- finding songs (Songs and Library): typed text matches regardless of case and accents (Eslabon = Eslabón)
+const fold = x => String(x ?? "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+function matches(hay, q) {
+  const words = fold(q).split(" ").filter(Boolean);
+  if (!words.length) return true;
+  const squashed = hay.replace(/ /g, "");
+  return words.every(w => hay.includes(w) || squashed.includes(w));
+}
+function lsGet(k, dflt) { try { return Object.assign({}, dflt, JSON.parse(localStorage.getItem(k) || "{}")); } catch { return {...dflt}; } }
+function lsSet(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} }
+const PAGE = 50;
+function chipsHtml(defs, counts, cur) {
+  return defs.map(([k, label], i) => counts[i] || k === "all" || k === cur ? `<button data-f="${k}" class="${k === cur ? "on" : ""}">${esc(label)}<b>${counts[i]}</b></button>` : "").join("");
+}
+function emptyFind(what, q, filtered) {
+  return `<div class="empty">No ${what} match${q ? ` “${esc(q)}”` : ""}${filtered ? " with this filter" : ""}. <button class="ghost sm" data-clear="1">${q && filtered ? "Clear search and filter" : q ? "Clear search" : "Show all"}</button></div>`;
+}
+document.addEventListener("keydown", e => {
+  const t = e.target, typing = t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable);
+  if (e.key === "/" && !typing && !e.ctrlKey && !e.metaKey) {
+    const box = $("#v-jobs").classList.contains("on") && $("#jobsindex").style.display !== "none" ? $("#jq") : $("#v-lib").classList.contains("on") ? $("#lq") : null;
+    if (box) { e.preventDefault(); box.focus(); box.select(); }
+  }
+});
+// phones: once scrolled down, the finders shrink to the search box (back in full near the top, or when it's focused)
+window.addEventListener("scroll", () => {
+  const y = window.scrollY;
+  document.querySelectorAll(".finder").forEach(f => {
+    if (y > 220 && document.activeElement !== f.querySelector("input")) f.classList.add("compact");
+    else if (y < 60) f.classList.remove("compact");
+  });
+}, {passive: true});
+document.querySelectorAll(".finder input").forEach(i => i.addEventListener("focus", () => i.closest(".finder").classList.remove("compact")));
+function fixHeaderHeight() { document.documentElement.style.setProperty("--hdr", $("header").offsetHeight + "px"); }
+window.addEventListener("resize", fixHeaderHeight); fixHeaderHeight();
+
+// ---- Songs
+const SONG_FILTERS = [
+  ["all", "All", j => true],
+  ["fix", "Needs fixing", j => j.status === "done" && j.to_check > 0],
+  ["made", "Made, not published", j => j.status === "done" && !j.published],
+  ["pub", "Published", j => j.status === "done" && !!j.published],
+  ["changes", "Unpublished changes", j => !!j.published && !!j.unpublished_changes],
+  ["making", "Queued / making", j => j.status === "queued" || j.status === "running"],
+  ["failed", "Failed", j => j.status === "failed"],
+  ["cancelled", "Cancelled", j => j.status === "cancelled"],
+];
+const SONG_SORTS = {
+  new: (a, b) => (b.created || 0) - (a.created || 0),
+  az: (a, b) => String(a.artist).localeCompare(b.artist, undefined, {sensitivity: "base"}) || String(a.title).localeCompare(b.title, undefined, {sensitivity: "base"}),
+  fix: (a, b) => (b.to_check || 0) - (a.to_check || 0) || (b.created || 0) - (a.created || 0),
+  pub: (a, b) => (b.published || 0) - (a.published || 0) || (b.created || 0) - (a.created || 0),
+};
+let SF = lsGet("ks.songs", {q: "", f: "all", sort: "new", lang: ""}), SF_N = PAGE, JOBS_ALL = null;
+let langName = c => c;
+try { const dn = new Intl.DisplayNames(["en"], {type: "language"}); langName = c => { try { return dn.of(c) || c; } catch { return c; } }; } catch {}
+const songHay = j => j._hay || (j._hay = fold(`${j.artist} ${j.title} ${j.id}`));
+function renderJobs() {
+  if (!JOBS_ALL) return;
+  const all = JOBS_ALL;
+  const langs = {};
+  all.forEach(j => { if (j.lang) langs[j.lang] = (langs[j.lang] || 0) + 1; });
+  const lsel = $("#jlang"), codes = Object.keys(langs).sort((a, b) => langs[b] - langs[a]);
+  if (SF.lang && !langs[SF.lang]) SF.lang = "";
+  lsel.style.display = codes.length > 1 ? "" : "none";
+  lsel.innerHTML = `<option value="">All languages</option>` + codes.map(c => `<option value="${esc(c)}">${esc(langName(c))} (${langs[c]})</option>`).join("");
+  lsel.value = SF.lang;
+  const base = all.filter(j => (!SF.lang || j.lang === SF.lang) && matches(songHay(j), SF.q));
+  const counts = SONG_FILTERS.map(([, , fn]) => base.filter(fn).length);
+  const cur = SONG_FILTERS.find(f => f[0] === SF.f) || SONG_FILTERS[0];
+  const list = base.filter(cur[2]).sort(SONG_SORTS[SF.sort] || SONG_SORTS.new);
+  $("#jchips").innerHTML = chipsHtml(SONG_FILTERS, counts, cur[0]);
+  const narrowed = SF.q || SF.lang || cur[0] !== "all";
+  $("#jcount").innerHTML = narrowed ? `<b>${list.length}</b> of ${all.length} songs` : `<b>${all.length}</b> songs`;
+  $("#joblist").innerHTML = !all.length ? `<div class="empty">Nothing made yet. Search for a song on the Make tab.</div>`
+    : list.length ? list.slice(0, SF_N).map(jobLine).join("") : emptyFind("songs", SF.q, cur[0] !== "all" || SF.lang);
+  const left = list.length - SF_N;
+  $("#jmore").style.display = left > 0 ? "" : "none";
+  $("#jmore").textContent = `Show ${Math.min(PAGE, left)} more (${left} not shown)`;
+  document.querySelectorAll("#joblist [data-j]").forEach(c => c.onclick = () => location.hash = "jobs/" + c.dataset.j);
+  document.querySelectorAll("#joblist [data-cancel]").forEach(b => b.onclick = e => { e.stopPropagation(); cancelJob(b.dataset.cancel); });
+  document.querySelectorAll("#jchips [data-f]").forEach(b => b.onclick = () => { SF.f = b.dataset.f; songsChanged(); });
+  const clr = $("#joblist [data-clear]"); if (clr) clr.onclick = () => { SF.q = ""; SF.f = "all"; SF.lang = ""; $("#jq").value = ""; songsChanged(); };
+}
+function songsChanged() { SF_N = PAGE; lsSet("ks.songs", SF); renderJobs(); }
+$("#jq").value = SF.q; $("#jsort").value = SF.sort;
+$("#jq").oninput = e => { SF.q = e.target.value; songsChanged(); };
+$("#jq").onkeydown = e => { if (e.key === "Escape") { e.target.value = ""; SF.q = ""; songsChanged(); } };
+$("#jsort").onchange = e => { SF.sort = e.target.value; songsChanged(); };
+$("#jlang").onchange = e => { SF.lang = e.target.value; songsChanged(); };
+$("#jmore").onclick = () => { SF_N += PAGE; renderJobs(); };
 async function loadJobs() {
   clearTimeout(jobsTimer);
   try {
-    const jobs = await api("/api/jobs");
-    $("#joblist").innerHTML = jobs.map(jobLine).join("") || `<div class="empty">Nothing made yet. Search for a song on the Make tab.</div>`;
-    document.querySelectorAll("[data-j]").forEach(c => c.onclick = () => location.hash = "jobs/" + c.dataset.j);
-    if (jobs.some(j => j.status === "running" || j.status === "queued")) jobsTimer = setTimeout(loadJobs, 2500);
+    JOBS_ALL = await api("/api/jobs?brief=1");
+    renderJobs();
+    const running = JOBS_ALL.some(j => j.status === "running"), queued = JOBS_ALL.some(j => j.status === "queued");
+    if ((running || queued) && $("#v-jobs").classList.contains("on")) jobsTimer = setTimeout(loadJobs, running ? 2500 : 8000);
   } catch (e) { $("#joblist").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
 }
 
@@ -503,11 +684,13 @@ async function openJob(id) {
   if (currentJob !== id) return;
   if (j.status !== "done") {
     $("#jobdetail").innerHTML = `${backLink()}<h2>${esc(j.artist)} – ${esc(j.title)}</h2>
-      <div class="ctl"><div class="status ${esc(j.status)}">${j.status === "failed" ? "Failed: " + esc(j.error) : esc(j.status === "queued" ? (j.waiting || "Waiting for its turn") : STEP_NAMES[j.step] || j.step)}</div>
-      ${stepBar(j)}<div class="m hint" style="margin-top:8px">${j.log.map(esc).join("<br>")}</div>
-      ${j.status === "failed" ? `<div class="row" style="margin-top:10px"><button class="ghost" id="retry">Try again</button><a class="tag" href="/api/jobs/${esc(id)}/log" target="_blank" rel="noopener" title="Everything the studio printed while making this song">log ↗</a><button class="ghost" id="chpicks2" title="Go back to the search for this song, pick a different video or lyrics, and make it again in place of this one">← Change video or lyrics</button><button class="ghost danger" id="del">Delete</button></div>` : j.status === "queued" ? `<div class="row" style="margin-top:10px"><button class="ghost" id="chpicks2" title="Go back to the search for this song, pick again, and make it in place of this one">← Change video or lyrics</button></div>` : ""}</div>`;
+      <div class="ctl"><div class="status ${esc(j.status)}">${j.status === "failed" ? "Failed: " + esc(j.error) : j.status === "cancelled" ? "Cancelled: you stopped it. Try again makes it from the start." : esc(j.status === "queued" ? (j.waiting || "Waiting for its turn") : j.cancel_requested ? "Stopping…" : STEP_NAMES[j.step] || j.step)}</div>
+      ${j.status === "cancelled" ? "" : stepBar(j)}<div class="m hint" style="margin-top:8px">${j.log.map(esc).join("<br>")}</div>
+      ${j.status === "failed" || j.status === "cancelled" ? `<div class="row" style="margin-top:10px"><button class="ghost" id="retry">Try again</button><a class="tag" href="/api/jobs/${esc(id)}/log" target="_blank" rel="noopener" title="Everything the studio printed while making this song">log ↗</a><button class="ghost" id="chpicks2" title="Go back to the search for this song, pick a different video or lyrics, and make it again in place of this one">← Change video or lyrics</button><button class="ghost danger" id="del">Delete</button></div>`
+        : `<div class="row" style="margin-top:10px">${j.status === "queued" ? `<button class="ghost" id="chpicks2" title="Go back to the search for this song, pick again, and make it in place of this one">← Change video or lyrics</button>` : `<a class="tag" href="/api/jobs/${esc(id)}/log" target="_blank" rel="noopener" title="Everything the studio printed while making this song">log ↗</a>`}${canCancel(j) ? `<button class="ghost danger" id="cancelmk" style="margin-left:auto" title="Stop making this song (you can try again later)">✕ Cancel making it</button>` : ""}</div>`}</div>`;
     if ($("#chpicks2")) $("#chpicks2").onclick = () => changePicks(j);
-    if (j.status === "failed") { $("#retry").onclick = async () => { await api(`/api/jobs/${id}/retry`, {method: "POST"}); openJob(id); loadJobs(); }; $("#del").onclick = () => delJob(id); }
+    if ($("#cancelmk")) $("#cancelmk").onclick = () => cancelJob(id);
+    if (j.status === "failed" || j.status === "cancelled") { $("#retry").onclick = async () => { try { await api(`/api/jobs/${id}/retry`, {method: "POST"}); } catch (e) { toast(e.message); } openJob(id); loadJobs(); }; $("#del").onclick = () => delJob(id); }
     else detailTimer = setTimeout(() => { openJob(id); loadJobs(); }, 2500);
     return;
   }
@@ -1353,18 +1536,86 @@ async function renderVideos(id, j) {
 }
 
 // ---------- library ----------
+let LF = lsGet("ks.lib", {q: "", f: "all", sort: "plays"}), LF_N = PAGE, LIB_ALL = null;
+const libHay = x => x._hay || (x._hay = fold(`${x.title} ${x.mv_title || ""}`));
+const libKind = x => x.folder === "Music Videos" ? "Music video" : x.folder === "YouTube" ? "Old YouTube karaoke" : x.folder;
+const libLetter = x => { const c = fold(x.title).charAt(0).toUpperCase(); return /[A-Z]/.test(c) ? c : "#"; };
+function libFilters(songs) {
+  const folders = [...new Set(songs.map(x => x.folder))].filter(f => f !== "Music Videos" && f !== "YouTube").sort();
+  return [
+    ["all", "All", x => true],
+    ["mv", "Music videos", x => x.folder === "Music Videos"],
+    ["old", "Old YouTube karaoke", x => x.folder === "YouTube"],
+    ...folders.map(f => ["dir:" + f, f, x => x.folder === f]),
+    ["need", "Needs an MV version", x => x.folder !== "Music Videos" && !x.has_mv && !x.official_mv && !x.job],
+    ["made", "Made, not published", x => !!x.job && x.job.status === "done"],
+  ];
+}
+const LIB_SORTS = {
+  plays: (a, b) => (b.plays || 0) - (a.plays || 0) || a.title.localeCompare(b.title, undefined, {sensitivity: "base"}),
+  az: (a, b) => a.title.localeCompare(b.title, undefined, {sensitivity: "base"}),
+  added: (a, b) => (b.added || 0) - (a.added || 0),
+  sung: (a, b) => String(b.last_played || "").localeCompare(String(a.last_played || "")) || (b.plays || 0) - (a.plays || 0),
+};
+function libAction(x) {
+  if (x.folder === "Music Videos") return x.job ? `<a class="lnk" href="#jobs/${esc(x.job.id)}">song page →</a>` : "";
+  if (x.has_mv) return `<span class="hint">replaced by the ${x.mv_job ? `<a class="lnk" href="#jobs/${esc(x.mv_job)}" title="${esc(x.mv_title)}">MV version</a>` : `<span title="${esc(x.mv_title)}">MV version</span>`}</span>`
+    + (x.removable ? ` <button class="ghost danger sm" data-rm="${esc(x.file)}" data-mv="${esc(x.mv_title)}" title="Delete this old file from PiKaraoke so the song is listed once">Remove old version</button>` : "");
+  if (x.job) {
+    const st = {done: "Made, not published", running: x.job.stopping ? "Stopping" : "Being made", queued: "Queued", failed: "Failed"}[x.job.status] || x.job.status;
+    const when = x.job.when ? new Date(x.job.when * 1000).toLocaleDateString(undefined, {day: "numeric", month: "short"}) : "";
+    return `<a class="lnk" href="#jobs/${esc(x.job.id)}" style="${x.job.status === "failed" ? "color:var(--bad)" : ""}">${esc(st)} →</a>${x.job.status === "done" && when ? ` <span class="hint">${esc(when)}</span>` : ""}`;
+  }
+  if (x.official_mv) return '<span class="hint">official anime MV</span>';
+  return `<button class="ghost sm" data-q="${esc(x.query)}">Make MV version</button>`;
+}
+function renderLib(jumpTo) {
+  if (!LIB_ALL) return;
+  const all = LIB_ALL, defs = libFilters(all);
+  const base = all.filter(x => matches(libHay(x), LF.q));
+  const counts = defs.map(([, , fn]) => base.filter(fn).length);
+  const cur = defs.find(f => f[0] === LF.f) || defs[0];
+  const list = base.filter(cur[2]).sort(LIB_SORTS[LF.sort] || LIB_SORTS.plays);
+  $("#lchips").innerHTML = chipsHtml(defs, counts, cur[0]);
+  $("#lcount").innerHTML = LF.q || cur[0] !== "all" ? `<b>${list.length}</b> of ${all.length} songs` : `<b>${all.length}</b> songs`;
+  if (jumpTo != null) LF_N = Math.max(LF_N, jumpTo + PAGE);
+  const letters = LF.sort === "az" && list.length > PAGE ? [...new Set(list.map(libLetter))] : [];
+  $("#laz").innerHTML = letters.map(l => `<button data-az="${l}">${l}</button>`).join("");
+  $("#lib").innerHTML = !all.length ? `<div class="empty">The library is empty</div>` : !list.length ? emptyFind("songs", LF.q, cur[0] !== "all")
+    : `<table class="libtable"><thead><tr><th>Song</th><th class="c-kind">Kind</th><th class="n c-sung">Sung</th><th></th></tr></thead><tbody>${list.slice(0, LF_N).map((x, i) => `
+      <tr id="lr-${i}"><td>${esc(x.title)}<div class="libmeta"><span class="tag ${x.folder === "Music Videos" ? "good" : ""}">${esc(libKind(x))}</span>${x.plays ? ` sung ${x.plays}×` : ""}</div></td>
+      <td class="c-kind"><span class="tag ${x.folder === "Music Videos" ? "good" : ""}">${esc(libKind(x))}</span></td>
+      <td class="n c-sung">${x.plays || ""}</td>
+      <td>${libAction(x)}</td></tr>`).join("")}</tbody></table>`;
+  const left = list.length - LF_N;
+  $("#lmore").style.display = left > 0 ? "" : "none";
+  $("#lmore").textContent = `Show ${Math.min(PAGE, left)} more (${left} not shown)`;
+  document.querySelectorAll("#lib [data-q]").forEach(b => b.onclick = () => { $("#q").value = b.dataset.q; location.hash = "make"; $("#sform").requestSubmit(); });
+  document.querySelectorAll("#lib [data-rm]").forEach(b => b.onclick = () => removeOld(b.dataset.rm, b.dataset.mv));
+  document.querySelectorAll("#lchips [data-f]").forEach(b => b.onclick = () => { LF.f = b.dataset.f; libChanged(); });
+  document.querySelectorAll("#laz [data-az]").forEach(b => b.onclick = () => renderLib(list.findIndex(x => libLetter(x) === b.dataset.az)));
+  const clr = $("#lib [data-clear]"); if (clr) clr.onclick = () => { LF.q = ""; LF.f = "all"; $("#lq").value = ""; libChanged(); };
+  if (jumpTo != null && jumpTo >= 0) {
+    const row = $("#lr-" + jumpTo);
+    if (row) window.scrollTo({top: row.getBoundingClientRect().top + window.scrollY - $("header").offsetHeight - $("#libfinder").offsetHeight - 8});
+  }
+}
+function libChanged() { LF_N = PAGE; lsSet("ks.lib", LF); renderLib(); }
+$("#lq").value = LF.q; $("#lsort").value = LF.sort;
+$("#lq").oninput = e => { LF.q = e.target.value; libChanged(); };
+$("#lq").onkeydown = e => { if (e.key === "Escape") { e.target.value = ""; LF.q = ""; libChanged(); } };
+$("#lsort").onchange = e => { LF.sort = e.target.value; libChanged(); };
+$("#lmore").onclick = () => { LF_N += PAGE; renderLib(); };
+async function removeOld(file, mv) {
+  if (!confirm(`Remove this old YouTube karaoke file from PiKaraoke?\n\n${file}\n\nThe music video version stays:\n${mv}`)) return;
+  try { const r = await api("/api/library/remove-old", {method: "POST", body: JSON.stringify({file})}); toast("Removed. " + r.message, 7000); }
+  catch (e) { toast(e.message); }
+  loadLib();
+}
 async function loadLib() {
-  $("#lib").innerHTML = `<p class="hint"><span class="spinner"></span></p>`;
-  try {
-    const {songs} = await api("/api/library");
-    $("#lib").innerHTML = songs.length ? `<table><thead><tr><th>Song</th><th>Kind</th><th class="n">Sung</th><th></th></tr></thead><tbody>${songs.map(s => `
-      <tr><td>${esc(s.title)}</td>
-      <td><span class="tag ${s.folder === "Music Videos" ? "good" : ""}">${esc(s.folder === "YouTube" ? "YouTube lyrics" : s.folder)}</span>${s.lyrics ? "" : ""}</td>
-      <td class="n">${s.plays || ""}</td>
-      <td>${s.folder === "Music Videos" ? "" : s.has_mv ? '<span class="hint">has MV version</span>' : s.official_mv ? '<span class="hint">official anime MV</span>' : `<button class="ghost" data-q="${esc(s.query)}">Make MV version</button>`}</td></tr>`).join("")}</tbody></table>`
-      : `<div class="empty">The library is empty</div>`;
-    document.querySelectorAll("[data-q]").forEach(b => b.onclick = () => { $("#q").value = b.dataset.q; location.hash = "make"; $("#sform").requestSubmit(); });
-  } catch (e) { $("#lib").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+  if (!LIB_ALL) $("#lib").innerHTML = `<p class="hint"><span class="spinner"></span></p>`;
+  try { LIB_ALL = (await api("/api/library")).songs; renderLib(); }
+  catch (e) { $("#lib").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
 }
 
 window.onhashchange();
