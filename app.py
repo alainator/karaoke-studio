@@ -643,7 +643,13 @@ def _make_spectro(jid, cache):
     pos = np.linspace(0, 1, len(stops))
     idx = (v * 255).astype(np.uint8)
     lut = np.stack([np.interp(np.linspace(0, 1, 256), pos, stops[:, c]) for c in range(3)], axis=1).astype(np.uint8)
-    Image.fromarray(lut[idx], "RGB").save(cache + ".tmp.webp", "WEBP", quality=80, method=4)
+    img = Image.fromarray(lut[idx], "RGB")
+    if img.width > 16383:  # WebP can't be wider (a song over about 5:27 at 50 px/s): PNG has no such limit
+        png = os.path.join(os.path.dirname(cache), "spectro.png")
+        img.save(png + ".tmp.png", "PNG", optimize=True)
+        os.replace(png + ".tmp.png", png)
+        return
+    img.save(cache + ".tmp.webp", "WEBP", quality=80, method=4)
     os.replace(cache + ".tmp.webp", cache)
 
 
@@ -666,10 +672,12 @@ def _make_onsets(jid, cache):
 async def spectrogram(jid: str):
     if not ID_RE.match(jid):
         raise HTTPException(404)
-    cache = job_path(jid, "spectro.webp")
-    if not os.path.exists(cache):
+    cache, png = job_path(jid, "spectro.webp"), job_path(jid, "spectro.png")
+    if not os.path.exists(cache) and not os.path.exists(png):
         await asyncio.to_thread(_make_spectro, jid, cache)
-    return FileResponse(cache, media_type="image/webp", headers={"Cache-Control": "private, max-age=604800", "X-Px-Per-Second": str(SPEC_PXS)})
+    if os.path.exists(png):  # long songs (see _make_spectro)
+        cache = png
+    return FileResponse(cache, media_type="image/png" if cache == png else "image/webp", headers={"Cache-Control": "private, max-age=604800", "X-Px-Per-Second": str(SPEC_PXS)})
 
 
 @app.get("/api/jobs/{jid}/onsets")
@@ -1088,7 +1096,7 @@ async def remake(jid: str, req: Request):
         merge = bool(job.get("edited")) and os.path.exists(job_path(jid, "words.orig.json"))
         if os.path.exists(job_path(jid, "words.before-remake.auto.json")):
             os.remove(job_path(jid, "words.before-remake.auto.json"))
-        for f in ("peaks.json", "spectro.webp", "onsets.json"):  # made from the old audio
+        for f in ("peaks.json", "spectro.webp", "spectro.png", "onsets.json"):  # made from the old audio
             if os.path.exists(job_path(jid, f)):
                 os.remove(job_path(jid, f))
         if os.path.exists(job_path(jid, "words.orig.json")):
