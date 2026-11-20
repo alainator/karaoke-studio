@@ -133,7 +133,7 @@ NONLATIN = re.compile("[" + "".join(v[0] for v in SCRIPTS.values()) + "\u3040-\u
 
 def script_of(texts):
     """'ja' if any kana, else 'ko' if Hangul, else 'zh' if Han characters, else another script from SCRIPTS that
-    has at least 10 letters (the most used one), else 'latin'."""
+    has at least 10 letters (the most used one), else 'latin'. texts: the lyric lines."""
     t = " ".join(texts)
     if KANA.search(t):
         return "ja"
@@ -143,7 +143,17 @@ def script_of(texts):
         return "zh"
     counts = {k: len(r.findall(t)) for k, r in SCRIPT_RE.items()}
     best = max(counts, key=counts.get)
-    return best if counts[best] >= 10 else "latin"
+    if counts[best] < 10:
+        return "latin"
+    if SCRIPTS[best][3]:
+        # a song in Latin letters with a line or two in Arabic or Hebrew letters (Queen's "Bismillah") is still a
+        # Latin-script song: those lines are shown as written, and the song isn't listened to as Arabic
+        lines = [x for x in texts if x.strip()]
+        rtl = sum(1 for x in lines if SCRIPT_RE[best].search(x))
+        latin = sum(1 for x in lines if re.search(r"[A-Za-z]", x) and not SCRIPT_RE[best].search(x))
+        if rtl < 0.4 * len(lines) and latin > 0.5 * len(lines):
+            return "latin"
+    return best
 
 
 def is_rtl(script):

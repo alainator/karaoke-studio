@@ -32,6 +32,7 @@ IMPROVEMENTS = [  # (when it landed, unix time; songs it matters for; what a rem
     (1795042180, "all", "kara.moe lyrics files with title cards or effect lines are read correctly"),
     (1795042180, "all", "a song sitting off by a fixed amount is moved as a whole when heard that way; repeated lines are matched to the nearer copy"),
     (1795042180, "latin", "romaji lyrics of songs sung in Japanese, Korean or Chinese are checked by ear in that language"),
+    (1795140467, "latin", "songs in Latin letters with a line or two in Arabic or Hebrew letters (Queen's \"Bismillah\") are timed as the Latin-script songs they are"),
 ]
 VERSION = len(IMPROVEMENTS)
 
