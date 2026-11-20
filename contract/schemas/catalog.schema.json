@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:encore-studio:contract:catalog.schema.json",
   "title": "catalog.json (library root), version 1 or 2",
-  "description": "As written by studio/catalog.py. Unknown fields are allowed (players ignore them). Version 2 adds pitch (song and version), plays and last_played, which are then required on every song (job_deleted ones too). Also served by GET /api/encore/catalog.",
+  "description": "As written by studio/catalog.py. Unknown fields are allowed (players ignore them). Version 2 adds pitch (song and version), plays and last_played, which are then required on every song (job_deleted ones too). Also served by GET /api/encore/catalog. vocals (song and version, added later in v2) is optional: missing = null.",
   "type": "object",
   "required": [
     "version",
@@ -238,6 +238,13 @@
             "null"
           ],
           "description": "v2: unix time of the last counted play, or null."
+        },
+        "vocals": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "v2: <base>.vocals.m4a (the separated lead vocal, AAC, on the video's timeline with trims applied, for guide vocals) or null. Missing = null (catalogs written before it existed)."
         }
       }
     },
@@ -269,6 +276,13 @@
             "string",
             "null"
           ]
+        },
+        "vocals": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "v2: <version base>.vocals.m4a (the song's vocals: versions share its sound) or null; missing = null."
         }
       }
     }

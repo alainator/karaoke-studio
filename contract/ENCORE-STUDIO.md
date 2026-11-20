@@ -21,6 +21,12 @@ additive only; Encore accepts 1 and 2 and ignores unknown fields):
 - `"plays": n`, `"last_played": unix time or null`: plays counted by the Studio from every player that reports
   them (Encore via §2.4, PiKaraoke's own history), so a kit that syncs the catalog sees home numbers too.
 
+- `"vocals": "<base>.vocals.m4a"` or null on each song and each version: the separated lead vocal (the track the
+  Studio removed from the video), for guide vocals in players. AAC in .m4a, same timeline as the song's video
+  (VIDEO time, trims applied), mono or stereo, ~128 kb/s. Versions share the song's audio, so a version's file is a
+  copy (or the same content) of the song's. A catalog written before this field existed has no `vocals` key: read
+  it as null.
+
 ### 1.1 `<base>.pitch.json`
 
 The lead vocal's melody, from the Studio's separated vocals, in VIDEO time (like the .ass and words.json).
@@ -72,7 +78,7 @@ than this Encore: update one of them" when the major numbers differ, and keeps w
 An Encore on the same machine reads the library folder directly (`LIBRARY_DIR`). A linked Encore elsewhere (the
 kit) syncs it over the API:
 - `GET /api/encore/catalog` → catalog.json (ETag / If-None-Match).
-- `GET /api/encore/files/<path>` → a file listed in the catalog (mp4, ass, words.json, pitch.json), with HTTP range
+- `GET /api/encore/files/<path>` → a file listed in the catalog (mp4, ass, words.json, pitch.json, vocals.m4a), with HTTP range
   support and ETag; only paths the catalog references are served.
 The kit downloads new or changed files into its own library when online (the kit phase builds the syncing; the
 Studio side serves these now).
@@ -144,6 +150,8 @@ and downloads the song as soon as it's `published`.
 {"plays": [{"pid": "uuid", "id": "<song id>", "base": "<version>", "at": 1795200000, "seconds": 212,
             "result": "finished" | "skipped" | "stopped", "singers": 2, "style": "romaji", "party": "Friday"}]}
 ```
+Optional `"guide": "off" | "low" | "medium" | "full"`: the guide vocals level the song was sung with (§1 `vocals`;
+left out when the song had none). The Studio may ignore it.
 → `{"stored": n}` (up to 200 per call). The Studio's Library "Sung" column and the catalog's `plays` count Encore
 plays (finished, or stopped after more than half) plus PiKaraoke's history.
 

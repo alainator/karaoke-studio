@@ -73,6 +73,15 @@
             "minLength": 1,
             "maxLength": 64,
             "description": "Optional, for user profiles (§2.6, planned): the profile uuid of the person, when a user (not a guest) did it."
+          },
+          "guide": {
+            "enum": [
+              "off",
+              "low",
+              "medium",
+              "full"
+            ],
+            "description": "Optional: the guide vocals level it was sung with (catalog vocals); left out when the song had none."
           }
         }
       },

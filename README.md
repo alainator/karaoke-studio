@@ -18,7 +18,7 @@ Type `Artist - Title`. The studio finds the music video on YouTube and the lyric
 - **Colours singers.** Duets, groups of up to 8 named singers, and lines shared mid-way (paint the words of each singer). Pasting a Genius page with headers like `[Chorus: Name]` colours the lines for you.
 - **Remakes safely.** Older songs show what a remake would improve. A remake keeps your edits, changes nothing if it finds nothing better, and can be undone.
 - **Uses a second GPU.** A PC on your network can take songs when the main GPU is busy, or you can choose which GPU makes each song.
-- **Works with Encore.** Link the Encore party app (or any player that speaks [the contract](contract/ENCORE-STUDIO.md)): guests' song requests land in a Requests list, lyric flags from the party mark the lines to fix, and what was sung counts in the Library. Each published song also gets its sung melody (`.pitch.json`) for singing scores.
+- **Works with Encore.** Link the Encore party app (or any player that speaks [the contract](contract/ENCORE-STUDIO.md)): guests' song requests land in a Requests list, lyric flags from the party mark the lines to fix, and what was sung counts in the Library. Each published song also gets its sung melody (`.pitch.json`) for singing scores and its separated vocals (`.vocals.m4a`) for guide vocals.
 
 ## Languages
 
@@ -91,7 +91,7 @@ The helper only accepts the studio server, and only with the secret. It updates 
 ## Players (Encore)
 
 The studio's songs are plain files (`.mp4`, `.ass`) plus a documented catalog (`catalog.json` in the library root, a
-`.words.json` and a `.pitch.json` per song), so any player can use them. Encore also talks to the studio through the
+`.words.json`, a `.pitch.json` and a `.vocals.m4a` per song), so any player can use them. Encore also talks to the studio through the
 player API (`/api/encore/`), described with JSON Schemas and sample exchanges in [`contract/`](contract/ENCORE-STUDIO.md)
 (this repo has the master copy; `contract/make_fixtures.py` regenerates the samples with the studio's own code).
 
@@ -110,6 +110,12 @@ PiKaraoke's own history.
 **Melody files.** Publishing writes `<name>.pitch.json` in the background (CREPE on the song's separated vocals: a few
 seconds on the GPU, about 20 s on the CPU). For songs published before, run once (when nobody is singing):
 `python -I deploy/write-pitch.py --dry`, then without `--dry` (`--limit 5` to try a few first).
+
+**Guide vocals.** Publishing also copies the song's separated lead vocal next to it as `<name>.vocals.m4a` (AAC,
+~128 kb/s, 3-5 MB a song, on the video's timeline with any trim applied; versions get the same file), so a player can
+play it quietly under the karaoke for singers who want a little help. A trim or remake changes it in the studio; the
+published copy follows on the next publish. For songs published before: `python -I deploy/write-vocals.py --dry`,
+then without `--dry` (a plain copy, no GPU; songs changed since they were published are skipped: publish them again).
 
 **Networking (Docker).** Encore reaches the studio over a private network that only the two containers join:
 ```yaml

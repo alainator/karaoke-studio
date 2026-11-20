@@ -1,6 +1,6 @@
 {
   "name": "plays",
-  "about": "A batch (up to 200). Counted: finished, or stopped after more than half (the version's 18 of 24 s); the last one carries a user profile uid (§2.6, planned).",
+  "about": "A batch (up to 200). Counted: finished, or stopped after more than half (the version's 18 of 24 s); the first one was sung with guide vocals (guide: low), the last one carries a user profile uid (§2.6, planned).",
   "request": {
     "method": "POST",
     "path": "/api/encore/plays",
@@ -18,7 +18,8 @@
           "result": "finished",
           "singers": 1,
           "style": null,
-          "party": "Friday at Ken's"
+          "party": "Friday at Ken's",
+          "guide": "low"
         },
         {
           "pid": "4e5f6a7b-8c9d-4e0f-8a1b-3c4d5e6f7a8b",

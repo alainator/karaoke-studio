@@ -28,6 +28,7 @@ import trimtools  # noqa: E402
 import videoswap  # noqa: E402
 import encore  # noqa: E402
 import pitch as pitchmod  # noqa: E402
+import guidevocals  # noqa: E402
 import schemalite  # noqa: E402
 
 # what the studio did and when: data/logs/studio.log (5 files of 2 MB kept)
@@ -126,8 +127,9 @@ def rebuild_lyrics(jid, job, lines=None, cast=None, offset=None):
 
 # a published song in PiKaraoke's folder: base.mp4, base.ass (its lyrics in the song's display mode) and, for songs
 # with original-script lines, base.<mode>.ass per display mode (PiKaraoke only reads base.ass and doesn't list .ass
-# files as songs, so these sit there unused until a player lets the singer pick)
-LIB_EXTS = (".mp4", ".ass") + tuple(f".{m}.ass" for m in MODES) + (catalog.WORDS_EXT, catalog.PITCH_EXT)
+# files as songs, so these sit there unused until a player lets the singer pick), and for players like Encore:
+# base.words.json, base.pitch.json and base.vocals.m4a (the guide vocals; PiKaraoke doesn't list .m4a files)
+LIB_EXTS = (".mp4", ".ass") + tuple(f".{m}.ass" for m in MODES) + (catalog.WORDS_EXT, catalog.PITCH_EXT, catalog.VOCALS_EXT)
 
 
 def publish_lyrics(jid, base):
@@ -1134,6 +1136,7 @@ async def publish_version(jid: str, key: str, req: Request):
         shutil.copyfile(videoswap.entry_video(job_path(jid), key), tmp)
         os.replace(tmp, f"{MV_DIR}/{base}.mp4")
         publish_lyrics(jid, base)
+        guidevocals.write(job_path(jid), MV_DIR, [base], log)  # the song's own sound: its vocals (never stops a publish)
         meta.update(published=time.time(), published_as=base, unpublished_changes=False, lyrics_published=time.time())
         videoswap.save_meta(d, meta)
         log.info("published %s version %s as %s", jid, key, base)
@@ -2506,12 +2509,16 @@ async def publish(jid: str, req: Request):
         publish_lyrics(jid, base)
         removed = [name for name in remove if remove_lib_file(name)]
         # its published versions share these lyrics: they get them too
+        vbases = []
         for m in videoswap.entries(job_path(jid)):
             pa = m.get("published_as")
             if m["mode"] == "version" and pa and os.path.exists(f"{MV_DIR}/{pa}.mp4"):
                 publish_lyrics(jid, pa)
+                vbases.append(pa)
                 m["lyrics_published"] = time.time()
                 videoswap.save_meta(videoswap.version_dir(job_path(jid), m["slug"]), m)
+        # the guide vocals (base.vocals.m4a), the song's and its versions' (the same sound); never stops a publish
+        guidevocals.write(job_path(jid), MV_DIR, [base] + vbases, log)
         job.update(status="done", published=time.time(), published_as=base, unpublished_changes=False)
         log.info("published %s as %s", jid, base)
         job.setdefault("log", []).append(f"published as '{base}'" + (f"; removed {len(removed)} old version(s)" if removed else ""))
@@ -3174,7 +3181,7 @@ def encore_catalog(req: Request):
     return Response(raw, media_type="application/json", headers=h)
 
 
-TYPES = {".mp4": "video/mp4", ".ass": "text/plain; charset=utf-8", ".json": "application/json"}
+TYPES = {".mp4": "video/mp4", ".m4a": "audio/mp4", ".ass": "text/plain; charset=utf-8", ".json": "application/json"}
 
 
 @app.get("/api/encore/files/{path:path}")

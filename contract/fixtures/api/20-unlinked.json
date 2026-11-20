@@ -18,7 +18,8 @@
           "result": "finished",
           "singers": 1,
           "style": null,
-          "party": "Friday at Ken's"
+          "party": "Friday at Ken's",
+          "guide": "low"
         }
       ]
     },

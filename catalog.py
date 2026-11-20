@@ -7,15 +7,16 @@ Name.words.json next to each published song.
               "base": "Artist - Title (Music Video)" (the .mp4 / .ass names without extension),
               "lyrics": {"file": "<base>.ass", "default_mode": "both"|...|null, "modes": {mode: "<base>.<mode>.ass"}},
               "versions": [{"name": "Mia's version", "base": "...", "published": t, "pitch": "<base>.pitch.json"
-                          or null}]  (their lyric files are named like the song's: <version base>.ass, .<mode>.ass,
-                          .words.json),
+                          or null, "vocals": "<base>.vocals.m4a" or null}]  (their lyric files are named like the
+                          song's: <version base>.ass, .<mode>.ass, .words.json),
               "parts": [{"key": "m0"|"s1", "name", "color": "#rrggbb", "color_name", "lines": n}],
               "together": bool (lines sung by several parts), "group": normalised artist|title (two lyric-language
               versions of one song share it), "words": "<base>.words.json" or null, "lines": n, "first": seconds,
               "job_deleted": true (only on songs whose studio job was deleted while the files stayed),
               version 2 adds: "pitch": "<base>.pitch.json" or null (the sung melody, pitch.py), "plays": n and
               "last_played": unix time or null (plays of the song and its versions that count, from every player
-              that reports them: Encore, and PiKaraoke's history)}
+              that reports them: Encore, and PiKaraoke's history), "vocals": "<base>.vocals.m4a" or null (the
+              separated lead vocal on the video's timeline, trims applied, for guide vocals: guidevocals.py)}
       The contract with players (contract/ENCORE-STUDIO.md, contract/schemas/catalog.schema.json) says which changes
       are allowed: additive only; players ignore fields they don't know.
 
@@ -37,6 +38,7 @@ CATALOG = "catalog.json"
 VERSION = 2
 WORDS_EXT = ".words.json"
 PITCH_EXT = ".pitch.json"
+VOCALS_EXT = ".vocals.m4a"   # (guidevocals.EXT)
 _lock = threading.Lock()
 PLAYS = None  # () -> play rows for add_plays; set by app.py (its store); None: encore.play_rows()
 
@@ -178,6 +180,10 @@ def _pitch(mv_dir, base):
     return base + PITCH_EXT if os.path.isfile(os.path.join(mv_dir, base + PITCH_EXT)) else None
 
 
+def _vocals(mv_dir, base):
+    return base + VOCALS_EXT if os.path.isfile(os.path.join(mv_dir, base + VOCALS_EXT)) else None
+
+
 def add_plays(songs, rows):
     """Set each song's plays and last_played from play rows [(song id or None, base or file title, last, count)]: a
     row counts for the song whose id it names or one of whose files (the song's, a version's) it names."""
@@ -233,7 +239,7 @@ def entry_for(job_dir, job, lib_dir, mv_dir):
             pa = m.get("published_as")
             if m.get("mode") == "version" and pa and os.path.isfile(os.path.join(mv_dir, pa + ".mp4")):
                 versions.append({"name": m.get("name") or m.get("slug"), "base": pa, "published": m.get("published"),
-                                 "pitch": _pitch(mv_dir, pa)})
+                                 "pitch": _pitch(mv_dir, pa), "vocals": _vocals(mv_dir, pa)})
     except Exception:
         pass
     title = job.get("title") or ""
@@ -245,7 +251,8 @@ def entry_for(job_dir, job, lib_dir, mv_dir):
             "versions": versions, "parts": parts, "together": together,
             "group": group_key(job.get("artist"), title),
             "words": base + WORDS_EXT if os.path.isfile(os.path.join(mv_dir, base + WORDS_EXT)) else None,
-            "lines": n, "first": first, "pitch": _pitch(mv_dir, base), "plays": 0, "last_played": None}
+            "lines": n, "first": first, "pitch": _pitch(mv_dir, base), "plays": 0, "last_played": None,
+            "vocals": _vocals(mv_dir, base)}
 
 
 def build(jobs_dir, lib_dir, mv_dir, old=None, log=None, plays=None):
@@ -274,7 +281,8 @@ def build(jobs_dir, lib_dir, mv_dir, old=None, log=None, plays=None):
         o = old_by_id.get(e["id"])
         for v in (o or {}).get("versions", []):
             if v.get("base") not in bases and os.path.isfile(os.path.join(lib_dir, e["folder"], v["base"] + ".mp4")):
-                e["versions"].append(dict(v, pitch=_pitch(os.path.join(lib_dir, e["folder"]), v["base"])))
+                vd = os.path.join(lib_dir, e["folder"])
+                e["versions"].append(dict(v, pitch=_pitch(vd, v["base"]), vocals=_vocals(vd, v["base"])))
                 bases.add(v["base"])
     for o in (old or {}).get("songs", []):
         if not isinstance(o, dict) or o.get("id") in ids or o.get("base") in bases:
@@ -282,9 +290,9 @@ def build(jobs_dir, lib_dir, mv_dir, old=None, log=None, plays=None):
         folder = os.path.join(lib_dir, o.get("folder") or "")
         if o.get("base") and os.path.isfile(os.path.join(folder, o["base"] + ".mp4")):
             o = dict(o, job_deleted=True, lyrics=dict(_lyrics(folder, o["base"]), default_mode=(o.get("lyrics") or {}).get("default_mode")),
-                     versions=[dict(v, pitch=_pitch(folder, v["base"])) for v in o.get("versions", [])
-                               if os.path.isfile(os.path.join(folder, v.get("base", "") + ".mp4"))],
-                     pitch=_pitch(folder, o["base"]),
+                     versions=[dict(v, pitch=_pitch(folder, v["base"]), vocals=_vocals(folder, v["base"]))
+                               for v in o.get("versions", []) if os.path.isfile(os.path.join(folder, v.get("base", "") + ".mp4"))],
+                     pitch=_pitch(folder, o["base"]), vocals=_vocals(folder, o["base"]),
                      words=o["base"] + WORDS_EXT if os.path.isfile(os.path.join(folder, o["base"] + WORDS_EXT)) else None)
             if o["lyrics"]["default_mode"] not in o["lyrics"]["modes"]:
                 o["lyrics"]["default_mode"] = next(iter(o["lyrics"]["modes"]), None)
@@ -320,13 +328,13 @@ def write_catalog(jobs_dir, lib_dir, mv_dir, log=None, plays=None, now=None):
 
 def files_of(song):
     """Every library file a catalog entry names (paths relative to the library root, '/'-separated): the song's video,
-    lyrics, words and pitch, and its versions' (named like the song's: <version base>.mp4, .ass, .<mode>.ass,
-    .words.json). Players may fetch only these (GET /api/encore/files/...)."""
+    lyrics, words, pitch and vocals, and its versions' (named like the song's: <version base>.mp4, .ass, .<mode>.ass,
+    .words.json; pitch and vocals when listed). Players may fetch only these (GET /api/encore/files/...)."""
     folder = (song.get("folder") or "").strip("/")
     pre = folder + "/" if folder else ""
     lyr = song.get("lyrics") or {}
     out = {pre + song["base"] + ".mp4"}
-    for f in [lyr.get("file"), *(lyr.get("modes") or {}).values(), song.get("words"), song.get("pitch")]:
+    for f in [lyr.get("file"), *(lyr.get("modes") or {}).values(), song.get("words"), song.get("pitch"), song.get("vocals")]:
         if f:
             out.add(pre + f)
     modes = list((lyr.get("modes") or {}).keys())
@@ -335,8 +343,9 @@ def files_of(song):
         if not b:
             continue
         out.update(pre + b + ext for ext in [".mp4", ".ass", WORDS_EXT] + [f".{m}.ass" for m in modes])
-        if v.get("pitch"):
-            out.add(pre + v["pitch"])
+        for k in ("pitch", "vocals"):
+            if v.get(k):
+                out.add(pre + v[k])
     return out
 
 

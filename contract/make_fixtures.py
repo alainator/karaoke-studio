@@ -8,7 +8,8 @@ can be compared byte for byte.
     python -I contract/make_fixtures.py [OUT]       (default: contract/fixtures; run with the studio's Python, e.g.
                                                       in its image: no GPU, network or PiKaraoke needed)
 
-fixtures/library/: catalog.json and "Music Videos/" (.mp4 placeholders of a few bytes, .ass, .words.json, .pitch.json)
+fixtures/library/: catalog.json and "Music Videos/" (.mp4 placeholders of a few bytes, .ass, .words.json, .pitch.json,
+  .vocals.m4a: a real AAC file of a quarter second of silence, 782 bytes, made once with ffmpeg and kept below)
   - Nova Lane - Paper Lanterns: a solo (the last line a backing line)
   - The Quiet Arcade - Two Small Rivers: a duet with named singers (Ada, Bram), a line sung together, a line shared
     word by word; sung in Japanese with an original-script row (placeholder kana), so it has every lyric mode
@@ -20,7 +21,7 @@ fixtures/api/NN-name.json: {"name", "about", "request": {method, path, headers, 
 The pitch files come from the Studio's note maker (pitch.notes) fed a made-up melody (the CREPE step needs real
 vocals), cached the way pitch.py caches it.
 """
-import json, os, shutil, sys, tempfile, time, uuid
+import base64, json, os, shutil, sys, tempfile, time, uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
@@ -72,6 +73,18 @@ PID = ["3d4e5f6a-7b8c-4d9e-9f0a-2b3c4d5e6f7a", "4e5f6a7b-8c9d-4e0f-8a1b-3c4d5e6f
 UID = "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d"
 SYLL = ["la", "da", "na", "doo", "ba", "oh"]
 KANA = {"la": "ら", "da": "だ", "na": "な", "doo": "どう", "ba": "ば", "oh": "お"}
+VOCALS_M4A = base64.b64decode(
+    "AAAAHGZ0eXBNNEEgAAACAE00QSBpc29taXNvMgAAAtZtb292AAAAbG12aGQAAAAAAAAAAAAAAAAAAAPoAAAA+gABAAABAAAAAAAA"
+    "AAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAACJXRy"
+    "YWsAAABcdGtoZAAAAAMAAAAAAAAAAAAAAAEAAAAAAAAA+gAAAAAAAAAAAAAAAQEAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAA"
+    "AAAAAAAAAEAAAAAAAAAAAAAAAAAAACRlZHRzAAAAHGVsc3QAAAAAAAAAAQAAAPoAAAQAAAEAAAAAAZ1tZGlhAAAAIG1kaGQAAAAA"
+    "AAAAAAAAAAAAAB9AAAAL0FXEAAAAAAAtaGRscgAAAAAAAAAAc291bgAAAAAAAAAAAAAAAFNvdW5kSGFuZGxlcgAAAAFIbWluZgAA"
+    "ABBzbWhkAAAAAAAAAAAAAAAkZGluZgAAABxkcmVmAAAAAAAAAAEAAAAMdXJsIAAAAAEAAAEMc3RibAAAAGpzdHNkAAAAAAAAAAEA"
+    "AABabXA0YQAAAAAAAAABAAAAAAAAAAAAAQAQAAAAAB9AAAAAAAA2ZXNkcwAAAAADgICAJQABAASAgIAXQBUAAAAAAD6AAAAA/QWA"
+    "gIAFFYhW5QAGgICAAQIAAAAgc3R0cwAAAAAAAAACAAAAAgAABAAAAAABAAAD0AAAABxzdHNjAAAAAAAAAAEAAAABAAAAAwAAAAEA"
+    "AAAUc3RzegAAAAAAAAAEAAAAAwAAABRzdGNvAAAAAAAAAAEAAAMCAAAAGnNncGQBAAAAcm9sbAAAAAIAAAAB//8AAAAcc2JncAAA"
+    "AAByb2xsAAAAAQAAAAMAAAABAAAAPXVkdGEAAAA1bWV0YQAAAAAAAAAhaGRscgAAAAAAAAAAbWRpcmFwcGwAAAAAAAAAAAAAAAAI"
+    "aWxzdAAAAAhmcmVlAAAAFG1kYXQBGCAHARggBwEYIAc=")
 FAKE_MP4 = lambda seconds: (b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00isomiso2" + b"placeholder video, not playable: "
                             + f"{seconds:.1f} s".encode()).ljust(96, b".")
 
@@ -109,8 +122,8 @@ def make_job(jid, artist, title, lang, duration, lines, cast=(), status="done"):
     d = os.path.join(A.JOBS, jid)
     os.makedirs(d)
     save_lines(os.path.join(d, "words.json"), lines, list(cast))
-    for f in ("out.mp4", "vocals.m4a"):
-        open(os.path.join(d, f), "wb").write(FAKE_MP4(duration))
+    open(os.path.join(d, "out.mp4"), "wb").write(FAKE_MP4(duration))
+    open(os.path.join(d, "vocals.m4a"), "wb").write(VOCALS_M4A)  # published as <base>.vocals.m4a (guidevocals.py)
     f0, per = melody(lines, duration)
     np.savez_compressed(os.path.join(d, P.CACHE), f0=f0.astype(np.float32), per=per.astype(np.float16), hop=np.float32(P.HOP),
                         stamp=np.array(P._stamp(os.path.join(d, "vocals.m4a"))), model=np.array("fixture"))
@@ -281,13 +294,13 @@ def main():
     call(A.app, "POST", "/api/encore/plays", {"plays": old}, {"Authorization": "Bearer " + TOKEN})
     CLOCK[0] += 60
     plays = [{"pid": PID[0], "id": solo, "base": sb, "at": int(CLOCK[0]), "seconds": 33, "result": "finished", "singers": 1,
-              "style": None, "party": "Friday at Ken's"},
+              "style": None, "party": "Friday at Ken's", "guide": "low"},
              {"pid": PID[1], "id": duet, "base": A.load(duet)["published_as"], "at": int(CLOCK[0]) + 60, "seconds": 9,
               "result": "skipped", "singers": 2, "style": "romaji", "party": "Friday at Ken's"},
              {"pid": PID[2], "id": ver, "base": vbase, "at": int(CLOCK[0]) + 120, "seconds": 18, "result": "stopped", "singers": 1,
               "style": None, "party": "Friday at Ken's", "uid": UID}]
     ex(13, "plays", "A batch (up to 200). Counted: finished, or stopped after more than half (the version's 18 of 24 s); the "
-       "last one carries a user profile uid (§2.6, planned).", "POST", "/api/encore/plays", {"plays": plays},
+       "first one was sung with guide vocals (guide: low), the last one carries a user profile uid (§2.6, planned).", "POST", "/api/encore/plays", {"plays": plays},
        "plays.post.request.schema.json", "plays.post.response.schema.json", expect=200)
     ex(14, "plays-duplicate", "The same batch again (a retry): stored counts them again, nothing is added.", "POST",
        "/api/encore/plays", {"plays": plays}, "plays.post.request.schema.json", "plays.post.response.schema.json", expect=200)
