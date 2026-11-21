@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:encore-studio:contract:score-words.get.response.schema.json",
+  "title": "GET /api/encore/score-words/<job> (§2.9)",
+  "description": "queued/running: eta; done: words, heard, total, score; failed/busy: reason. An unknown or forgotten job (results are kept 10 minutes) answers 410.",
+  "type": "object",
+  "required": [
+    "status"
+  ],
+  "properties": {
+    "status": {
+      "enum": [
+        "queued",
+        "running",
+        "done",
+        "failed",
+        "busy"
+      ]
+    },
+    "eta": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "words": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "line",
+          "w",
+          "ok",
+          "conf"
+        ],
+        "properties": {
+          "line": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The words.json line's i."
+          },
+          "w": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "The word's index in that line's words (0-based)."
+          },
+          "ok": {
+            "type": "boolean",
+            "description": "Heard sung."
+          },
+          "conf": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "The aligner's confidence for the word."
+          }
+        }
+      },
+      "description": "Only the words judged: words without letters, outside the recording, that the song's own vocals don't pass clearly or that its instrumental alone passes are left out."
+    },
+    "heard": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "total": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "score": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100,
+      "description": "round(100 * heard / total)."
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "enum": [
+              "queued",
+              "running"
+            ]
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "eta"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "done"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "words",
+          "heard",
+          "total",
+          "score"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "enum": [
+              "failed",
+              "busy"
+            ]
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "reason"
+        ]
+      }
+    }
+  ]
+}

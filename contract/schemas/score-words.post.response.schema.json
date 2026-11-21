@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:encore-studio:contract:score-words.post.response.schema.json",
+  "title": "POST /api/encore/score-words → 202 (§2.9)",
+  "type": "object",
+  "required": [
+    "job",
+    "eta",
+    "status"
+  ],
+  "properties": {
+    "job": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$",
+      "description": "Poll GET /api/encore/score-words/<job> (only this player can)."
+    },
+    "eta": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "About how many seconds until it's scored (0 when busy)."
+    },
+    "status": {
+      "enum": [
+        "queued",
+        "busy"
+      ],
+      "description": "busy: the Studio won't score it (nothing kept; the player stops asking)."
+    }
+  }
+}

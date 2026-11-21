@@ -61,7 +61,7 @@
               "string",
               "null"
             ],
-            "description": "Why it was declined or failed (short text); null otherwise."
+            "description": "Why it was declined or failed (short text, the guest sees it); for ready, why it waits (\"needs a look\": an auto-made song below the Studio's quality floor), else null."
           },
           "updated": {
             "type": "number",
@@ -70,7 +70,7 @@
           },
           "auto": {
             "type": "boolean",
-            "description": "§2.2b party auto-make (reserved; built later)."
+            "description": "§2.2b party auto-make: present (true) only when the Studio took the request to make by itself; a request that only asked for it answers like any other."
           },
           "stage": {
             "enum": [
@@ -80,14 +80,14 @@
               "publishing",
               null
             ],
-            "description": "§2.2b: where an auto-make is (null when not running)."
+            "description": "§2.2b: where an auto-make is: finding (the video and lyrics), downloading, making, publishing; null when nothing runs."
           },
           "eta": {
             "type": [
               "number",
               "null"
             ],
-            "description": "§2.2b: unix time the song should be ready, or null."
+            "description": "§2.2b: unix time the song should be published (the Studio's estimate from its queue and measured make times), or null."
           }
         },
         "allOf": [

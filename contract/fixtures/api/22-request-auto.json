@@ -1,6 +1,6 @@
 {
   "name": "request-auto",
-  "about": "§2.2b (reserved): a party with auto-make on; the guest is already queued with a placeholder. The Studio keeps auto and queue; until it makes songs by itself, it answers like any request.",
+  "about": "§2.2b: a party with auto-make on (the guest is already queued with a placeholder), from a player the Studio's admin allows to auto-make: taken (auto, stage finding, eta: when it should be published).",
   "request": {
     "method": "POST",
     "path": "/api/encore/requests",
@@ -30,7 +30,10 @@
       "rid": "f7d5a3e6-5b8c-4dae-8f1a-6c3b4e5f7a8b",
       "status": "open",
       "id": null,
-      "base": null
+      "base": null,
+      "auto": true,
+      "stage": "finding",
+      "eta": 1794485020.0
     },
     "schema": "requests.post.response.schema.json"
   }

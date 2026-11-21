@@ -15,6 +15,10 @@ steps:
    float: 60.0 = middle C). Silence, breaths and anything sung outside the words are gaps. range = the lowest and
    highest notes, ignoring the outermost 2% of singing time (octave slips of the tracker).
 
+3. music(): the loudness of the song's instrumental (the published video's sound) as RMS dBFS per 0.1 s of video time,
+   rounded to 0.5 dB, floor -90 (silence), for players telling a singer from the music in the mic (§1.1 "music"). CPU
+   only (ffmpeg and numpy, about a second a song); a video whose sound can't be read leaves it out.
+
 Never stops a publish: a song whose pitch can't be made has no pitch file (the catalog says null) and still plays.
 """
 import json, os, subprocess, sys, time
@@ -32,6 +36,8 @@ VOICED = 0.5                    # CREPE periodicity above this = a sung note
 JUMP = 0.8                      # semitones: a new note starts where the pitch moves more than this
 MIN_NOTE = 3                    # frames (60 ms): shorter bits are dropped
 GPU_MIN_FREE_MIB = 4000
+MUSIC_HOP = 0.1                 # seconds per loudness value
+MUSIC_FLOOR = -90.0             # dBFS given for digital silence (JSON has no -inf)
 
 
 def _vocals(job_dir):
@@ -177,14 +183,52 @@ def word_spans(job_dir, job):
     return out
 
 
-def doc(base, duration, note_list, rng):
-    return {"version": 1, "base": base, "duration": duration, "hop": HOP, "notes": note_list, "range": rng}
+def music_audio(video):
+    """The video's sound as 16 kHz mono float32 samples (ffmpeg)."""
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-nostdin", "-i", video, "-vn", "-ac", "1", "-ar", str(SR), "-f", "f32le", "-"],
+                         capture_output=True, check=True, timeout=300).stdout
+    return np.frombuffer(raw, dtype=np.float32)
+
+
+def music_db(a, sr=SR, hop=MUSIC_HOP):
+    """RMS dBFS (20·log10 of the RMS; a full-scale square wave is 0) per `hop` seconds, rounded to 0.5 dB, between
+    MUSIC_FLOOR and 0. The last value covers what's left of the audio."""
+    a = np.asarray(a, dtype=np.float64)
+    n = max(1, int(round(sr * hop)))
+    k = -(-len(a) // n)
+    if not k:
+        return []
+    sq = np.zeros(k * n)
+    sq[:len(a)] = a * a
+    counts = np.full(k, n, dtype=np.float64)
+    counts[-1] = len(a) - (k - 1) * n
+    rms = np.sqrt(sq.reshape(k, n).sum(axis=1) / counts)
+    with np.errstate(divide="ignore"):
+        db = 20.0 * np.log10(np.maximum(rms, 10 ** (MUSIC_FLOOR / 20)))
+    return [float(x) for x in np.clip(np.round(db * 2) / 2, MUSIC_FLOOR, 0.0)]
+
+
+def music(video):
+    """{"hop": 0.1, "db": [...]} for a published video's sound (the instrumental), or None when it can't be read."""
+    try:
+        db = music_db(music_audio(video))
+    except Exception:
+        return None
+    return {"hop": MUSIC_HOP, "db": db} if db else None
+
+
+def doc(base, duration, note_list, rng, mus=None):
+    d = {"version": 1, "base": base, "duration": duration, "hop": HOP, "notes": note_list, "range": rng}
+    if mus:
+        d["music"] = mus
+    return d
 
 
 def write(job_dir, job, mv_dir, bases, log=None, device=None):
-    """Write <base>.pitch.json for the song's published bases (the song and its versions share sound and timing).
-    Returns the files written. On failure the old pitch files of these bases are removed (no score beats a wrong one)
-    and the error is raised."""
+    """Write <base>.pitch.json for the song's published bases (the song and its versions share sound and timing), with
+    the instrumental's loudness (music) when the published video's sound can be read. Returns the files written.
+    On failure of the melody the old pitch files of these bases are removed (no score beats a wrong one) and the error
+    is raised; the loudness failing only leaves it out."""
     try:
         f0, per = frames(job_dir, log=log, device=device)
         ns, rng = notes(f0, per, word_spans(job_dir, job))
@@ -197,12 +241,17 @@ def write(job_dir, job, mv_dir, bases, log=None, device=None):
         raise
     d = (job.get("result") or {}).get("duration")
     dur = round(float(d), 1) if d else round(len(f0) * HOP, 1)
+    mus = None  # the instrumental's loudness: the song and its versions share their sound (first one that reads)
+    for b in bases:
+        mus = music(os.path.join(mv_dir, b + ".mp4"))
+        if mus:
+            break
     out = []
     for b in bases:
         p = os.path.join(mv_dir, b + EXT)
         tmp = os.path.join(mv_dir, f".{b}{EXT}.part")
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(doc(b, dur, ns, rng), f, ensure_ascii=False, separators=(",", ":"))
+            json.dump(doc(b, dur, ns, rng, mus), f, ensure_ascii=False, separators=(",", ":"))
         os.replace(tmp, p)
         out.append(b + EXT)
     return out

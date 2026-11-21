@@ -28,6 +28,26 @@
     "catalog_version": {
       "type": "integer",
       "minimum": 1
+    },
+    "auto_make": {
+      "type": "object",
+      "required": [
+        "allowed",
+        "minutes"
+      ],
+      "description": "§2.2b: may this player ask for party auto-make now (the Studio's admin turned it on and allowed this player), and about how many minutes a song asked for now takes until it's published (null when not allowed or no graphics card is up). A Studio from before auto-make leaves it out: not allowed.",
+      "properties": {
+        "allowed": {
+          "type": "boolean"
+        },
+        "minutes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        }
+      }
     }
   }
 }

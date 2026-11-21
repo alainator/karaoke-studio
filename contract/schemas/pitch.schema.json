@@ -73,6 +73,28 @@
         }
       ],
       "description": "[lowest, highest] midi sung; null only when notes is empty."
+    },
+    "music": {
+      "type": "object",
+      "required": [
+        "hop",
+        "db"
+      ],
+      "properties": {
+        "hop": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "db": {
+          "type": "array",
+          "items": {
+            "type": "number",
+            "minimum": -90,
+            "maximum": 0
+          }
+        }
+      },
+      "description": "Optional (added 2026-11-20): the loudness of the song's instrumental (the published video's sound) as RMS dBFS per hop seconds of video time (0.1), rounded to 0.5 dB; -90 = silence. Missing = players learn the room in the gaps."
     }
   }
 }

@@ -19,7 +19,8 @@ Type `Artist - Title`. The studio finds the music video on YouTube and the lyric
 - **Remakes safely.** Older songs show what a remake would improve. A remake keeps your edits, changes nothing if it finds nothing better, and can be undone.
 - **Works with an agent, or without.** An AI agent (Claude Code, a local model, anything that can run a command) can do the first pass of checking and fixing through `ks`, with only the permissions you give it; every edit is signed and undoable. Or do it all by hand.
 - **Uses a second GPU.** A PC on your network can take songs when the main GPU is busy, or you can choose which GPU makes each song.
-- **Works with Encore.** Link the Encore party app (or any player that speaks [the contract](contract/ENCORE-STUDIO.md)): guests' song requests land in a Requests list, lyric flags from the party mark the lines to fix, and what was sung counts in the Library. Each published song also gets its sung melody (`.pitch.json`) for singing scores and its separated vocals (`.vocals.m4a`) for guide vocals.
+- **Party auto-make.** With your OK (per linked player), a party's request for a missing song is found, made and published by the studio in a few minutes, picked the way the Make page picks; songs below a quality floor wait for a look, and quick makes are marked until someone checks them.
+- **Works with Encore.** Link the Encore party app (or any player that speaks [the contract](contract/ENCORE-STUDIO.md)): guests' song requests land in a Requests list, lyric flags from the party mark the lines to fix, and what was sung counts in the Library. Each published song also gets its sung melody (`.pitch.json`, with the instrumental's loudness) for singing scores and its separated vocals (`.vocals.m4a`) for guide vocals; the studio can also score whether a singer sang the words, and the Library shows each song's best grade.
 
 ## Languages
 
@@ -136,9 +137,27 @@ it* and *Decline* answer it. Lyric flags ("the words light up late here") put a 
 never change timing or words. Plays count in the Library's *Sung* column and in `catalog.json`, together with
 PiKaraoke's own history.
 
+**Party auto-make.** Off by default. On the **Players** tab: *Party auto-make* (with limits: songs per hour and per
+day, the longest song, only if a graphics card is free within N minutes, the quality floor) and, per linked player,
+*May auto-make*. When both are on and the party's host turned *Auto-make missing songs* on in Encore, a request for a
+song the studio doesn't have is searched, picked (`autopick.py`: the Make page's own rules, kept identical by a test),
+made and, if at least 60% of its lines were heard in place (the 10th percentile of songs people published; the floor is
+a setting) and no lines are crammed, published without review, signed "auto-make for <player>". Songs list:
+*quick make, not reviewed* (and a filter) until a person marks it checked. Below the floor it waits as made ("needs a
+look"); it never replaces a published song. Encore sees the stage and an ETA (from the queue and the measured make
+times) and keeps the guest's place meanwhile (contract §2.2b). Agents can't turn it on or start it.
+
 **Melody files.** Publishing writes `<name>.pitch.json` in the background (CREPE on the song's separated vocals: a few
 seconds on the GPU, about 20 s on the CPU). For songs published before, run once (when nobody is singing):
-`python -I deploy/write-pitch.py --dry`, then without `--dry` (`--limit 5` to try a few first).
+`python -I deploy/write-pitch.py --dry`, then without `--dry` (`--limit 5` to try a few first). The file also carries
+the instrumental's loudness every 0.1 s (`music`); to add it to pitch files written before: `python -I
+deploy/write-music.py --dry`, then without `--dry` (ffmpeg only, about a second a song).
+
+**Words scoring.** A linked player can send a singer's recording of a song (Opus, at most 8 MB); the studio aligns the
+song's words against it and answers which ones it heard (contract §2.9). It runs after everything else: on the GPU only
+when no song is being made or waiting (about a second), else on the CPU (about 30 s), else it answers "busy"
+(`KARAOKE_WORDS_CPU=0`: never on the CPU; `KARAOKE_WORDS_SCORE=0`: off). The recording stays in memory, is never written
+to disk or logged, and is dropped when it's scored; answers are forgotten after 10 minutes.
 
 **Guide vocals.** Publishing also copies the song's separated lead vocal next to it as `<name>.vocals.m4a` (AAC,
 ~128 kb/s, 3-5 MB a song, on the video's timeline with any trim applied; versions get the same file), so a player can
@@ -202,7 +221,7 @@ shown), or set `STUDIO_URL` and `STUDIO_AGENT_KEY`.
 - You're responsible for what you download and how you use it. This is meant for karaoke at home.
 - LRCLIB is a free community service; please keep `STUDIO_USER_AGENT` meaningful.
 - Not affiliated with PiKaraoke. The lyric renderer is [JavascriptSubtitlesOctopus](https://github.com/libass/JavascriptSubtitlesOctopus).
-- Lyrics come from [LRCLIB](https://lrclib.net) and [kara.moe](https://kara.moe) (Karaoke Mugen). Romanization uses [uroman](https://github.com/isi-nlp/uroman), [cutlet](https://github.com/polm/cutlet), [PyThaiNLP](https://github.com/PyThaiNLP/pythainlp) and [ToJyutping](https://github.com/CanCLID/ToJyutping). Scripts the TV can't draw use [Noto](https://notofonts.github.io) fonts (SIL Open Font License), embedded in the subtitle file.
+- Lyrics come from [LRCLIB](https://lrclib.net) and [kara.moe](https://kara.moe) (Karaoke Mugen). Romanization uses [uroman](https://github.com/isi-nlp/uroman), [cutlet](https://github.com/polm/cutlet), [PyThaiNLP](https://github.com/PyThaiNLP/pythainlp) and [ToJyutping](https://github.com/CanCLID/ToJyutping). Scripts the TV can't draw use [Noto](https://notofonts.github.io) fonts (SIL Open Font License), embedded in the subtitle file. The web app uses [Atkinson Hyperlegible Next](https://www.brailleinstitute.org/freefont/) and [Bricolage Grotesque](https://github.com/ateliertriay/bricolage) (SIL Open Font License; licence files in `static/fonts/`), the same as Encore.
 
 ## License
 

@@ -1,6 +1,6 @@
 {
   "name": "requests-auto-status",
-  "about": "§2.2b (reserved): auto-make progress (stage, eta), and one that failed (with a reason). Set by hand here: auto-make is built later.",
+  "about": "§2.2b: auto-make progress: one being made (stage, eta), one that failed (its video couldn't be downloaded: the reason).",
   "request": {
     "method": "GET",
     "path": "/api/encore/requests?rids=f7d5a3e6-5b8c-4dae-8f1a-6c3b4e5f7a8b,a8e6b4f7-6c9d-4ebf-9a2b-7d4c5f6a8b9c",
@@ -18,14 +18,14 @@
         {
           "rid": "f7d5a3e6-5b8c-4dae-8f1a-6c3b4e5f7a8b",
           "status": "making",
-          "job": "20261111-212000-june-arbor-copper-moon",
+          "job": "20261112-120120-june-arbor-copper-moon",
           "id": null,
           "base": null,
           "reason": null,
-          "updated": 1794485060.0,
+          "updated": 1794484910.0,
           "auto": true,
           "stage": "making",
-          "eta": 1794485560.0
+          "eta": 1794485020.0
         },
         {
           "rid": "a8e6b4f7-6c9d-4ebf-9a2b-7d4c5f6a8b9c",
@@ -34,7 +34,7 @@
           "id": null,
           "base": null,
           "reason": "couldn't download the video",
-          "updated": 1794485060.0,
+          "updated": 1794484910.0,
           "auto": true,
           "stage": null,
           "eta": null

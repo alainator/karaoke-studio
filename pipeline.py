@@ -262,7 +262,14 @@ from romanize import derune, RUNE_RE as RUNE_CHECK  # noqa: E402
 if any(RUNE_CHECK.search(x) for _, x in synced):
     synced = [(t, derune(x)) for t, x in synced]
     say("info", "lines written in runes: spelled in Latin letters")
-synced = [(t, x) for t, x in synced if x]
+# lines with nothing to sing go: empty ones, and ones of only punctuation (a lyrics copy marked repeated lines with a
+# row of ditto quote marks, which were then timed and shown as lines); hand-made romaji stays with its line
+from romanize import drop_unsung  # noqa: E402
+synced, hand_romaji, _unsung = drop_unsung(synced, hand_romaji)
+if _unsung:
+    say("info", f"left out {len(_unsung)} line{'s' if len(_unsung) != 1 else ''} with no words (only punctuation)")
+    if len(synced) < 4:
+        fail("these lyrics are empty or too short (fewer than 4 lines)")
 align_text = [t for _, t in synced]   # what Whisper reads (original script)
 origs = [None] * len(synced)          # original line shown above the romaji
 from romanize import script_of, SCRIPTS, SCRIPT_RE, is_rtl, romanize_generic, sound_key  # noqa: E402

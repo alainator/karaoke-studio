@@ -1,0 +1,32 @@
+{
+  "name": "score-words",
+  "about": "§2.9: the singer's recording of one song (the body: Opus audio, at most 8 MB; body = fixtures/audio/sung.ogg), described by its headers: the song and the version played, the video time at its first sample, the playback rate, the lines that are this singer's. Answers 202 with a job to poll.",
+  "request": {
+    "method": "POST",
+    "path": "/api/encore/score-words",
+    "headers": {
+      "Content-Type": "audio/ogg",
+      "X-Encore-Song": "20261101-120000-nova-lane-paper-lanterns",
+      "X-Encore-Base": "Nova Lane - Paper Lanterns (Music Video)",
+      "X-Encore-Start": "12.000",
+      "X-Encore-Rate": "1.0",
+      "X-Encore-Lines": "1,2",
+      "Authorization": "Bearer <token from pairing>"
+    },
+    "body": {
+      "$file": "audio/sung.ogg"
+    },
+    "schema": null,
+    "headers_schema": "score-words.post.headers.schema.json"
+  },
+  "response": {
+    "status": 202,
+    "headers": {},
+    "body": {
+      "job": "5d0c9a7e3b1f4e28a6c4d2b0e8f6a1c3",
+      "eta": 4,
+      "status": "queued"
+    },
+    "schema": "score-words.post.response.schema.json"
+  }
+}

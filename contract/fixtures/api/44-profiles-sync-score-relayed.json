@@ -1,0 +1,61 @@
+{
+  "name": "profiles-sync-score-relayed",
+  "about": "§2.6: the home Encore gets the scored history event exactly as it was sent.",
+  "request": {
+    "method": "POST",
+    "path": "/api/encore/profiles/sync",
+    "headers": {
+      "Authorization": "Bearer <token from pairing>"
+    },
+    "body": {
+      "player": "8b9c0d1e-2f3a-4b4c-9d5e-6f7a8b9c0d1e",
+      "since": null,
+      "events": []
+    },
+    "schema": "profiles.sync.request.schema.json"
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "cursor": "s7",
+      "events": [
+        {
+          "eid": "fa48918a-e845-5574-8e2b-815c5b477d92",
+          "stream": "profile",
+          "uid": "9c0d1e2f-3a4b-4c5d-8e6f-7a8b9c0d1e2f",
+          "at": 1794487091.0,
+          "name": "Ana",
+          "color": "#5fb4ff",
+          "pin_hash": null,
+          "created": 1794487091.0,
+          "deleted": false
+        },
+        {
+          "eid": "04f9d5d3-6eb2-5da8-b6b0-de4fc33dabe2",
+          "stream": "history",
+          "uid": "9c0d1e2f-3a4b-4c5d-8e6f-7a8b9c0d1e2f",
+          "at": 1794487331.5,
+          "song": "20261101-120000-nova-lane-paper-lanterns",
+          "base": "Nova Lane - Paper Lanterns (Music Video)",
+          "result": "stopped",
+          "party": "Friday at Ken's",
+          "style": null,
+          "score": {
+            "v": 1,
+            "difficulty": "normal",
+            "points": 301877,
+            "pitch": 81.5,
+            "timing": 92.0,
+            "words": 78.0,
+            "acc": 84.2,
+            "grade": "C",
+            "max_combo": 12,
+            "partial": true
+          }
+        }
+      ]
+    },
+    "schema": "profiles.sync.response.schema.json"
+  }
+}

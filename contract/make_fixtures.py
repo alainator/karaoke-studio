@@ -6,7 +6,8 @@ middleware). The output is the same on every run (a fixed clock, ids, code and t
 can be compared byte for byte.
 
     python -I contract/make_fixtures.py [OUT]       (default: contract/fixtures; run with the studio's Python, e.g.
-                                                      in its image: no GPU, network or PiKaraoke needed)
+                                                      in its image: no GPU, network or PiKaraoke needed; ffmpeg is,
+                                                      for the §2.9 recording)
 
 fixtures/library/: catalog.json and "Music Videos/" (.mp4 placeholders of a few bytes, .ass, .words.json, .pitch.json,
   .vocals.m4a: a real AAC file of a quarter second of silence, 782 bytes, made once with ffmpeg and kept below)
@@ -17,9 +18,14 @@ fixtures/library/: catalog.json and "Music Videos/" (.mp4 placeholders of a few 
     and timing as the song, as every Studio version)
 fixtures/api/NN-name.json: {"name", "about", "request": {method, path, headers, body, schema}, "response": {status,
   headers (only ETag, Content-Range, Accept-Ranges, Retry-After), body, schema}}; a body {"$file": path} is that fixture
-  file (with "$range": [first, last] the bytes of it). The bearer token shows as "<token from pairing>".
+  file (with "$range": [first, last] the bytes of it). The bearer token shows as "<token from pairing>". A request
+  whose headers carry what describes the body (§2.9 words scoring) also names a "headers_schema".
+fixtures/audio/sung.ogg: the §2.9 recording, made-up "singing" (a 330 Hz tone on the words a singer sang, silence
+  elsewhere; 8 s of Opus, 8.7 KB, made once with ffmpeg and kept below). The words aligner is tests/fake_wordscore.py
+  (a word is heard where the recording is loud) and the song has no real vocals to compare with, so every word is judged.
 The pitch files come from the Studio's note maker (pitch.notes) fed a made-up melody (the CREPE step needs real
-vocals), cached the way pitch.py caches it.
+vocals), cached the way pitch.py caches it; their instrumental loudness ("music") comes from the Studio's loudness
+code (pitch.music_db) fed made-up sound (the placeholder videos have none).
 """
 import base64, json, os, shutil, sys, tempfile, time, uuid
 
@@ -34,6 +40,7 @@ for k, v in {"KARAOKE_JOBS": f"{ROOT}/jobs", "KARAOKE_WORK": f"{ROOT}/work", "KA
              "STUDIO_ORIGINS": "", "STUDIO_PUBLIC_URL": "https://studio.example.lan", "STUDIO_NAME": "Karaoke Studio",
              "ENCORE_TOKEN": "", "ENCORE_ONLY_NETS": "", "KARAOKE_LYRICS_FONT": "classic", "KARAOKE_LYRICS_DISPLAY": "both",
              "AGENT_KEYS_REQUIRED": "0", "STUDIO_PERSON_HEADER": "X-authentik-username", "KARAOKE_DEVICE": "",
+             "USE_LOCAL_GPU": "1", "MIN_GPU_FREE_MIB": "9000",
              "TZ": "UTC"}.items():
     os.environ[k] = v
 for d in ("jobs", "work", "models", "logs", "data", "fonts", "library/Music Videos"):
@@ -52,16 +59,43 @@ import secrets  # noqa: E402
 secrets.token_urlsafe = lambda n=32: "fixture-token-0123456789abcdef"
 
 import numpy as np  # noqa: E402
+import pitch as P  # noqa: E402
+
+
+def made_up_music(video):
+    """The instrumental for the loudness track: a placeholder video says its length; levels on the 0.5 dB grid, as
+    ±A samples (RMS exactly A): quiet intro, a changing level, a silent last second."""
+    import re
+    secs = float(re.search(rb"([0-9.]+) s", open(video, "rb").read()).group(1))
+    hop = int(P.SR * P.MUSIC_HOP)
+    out = []
+    for k in range(int(round(secs / P.MUSIC_HOP))):
+        t = k * P.MUSIC_HOP
+        lvl = None if t >= secs - 1.0 else -60.0 if t < 2.0 else -32.0 + ((k * 7) % 25) * 0.5
+        a = 0.0 if lvl is None else 10 ** (lvl / 20)
+        out.append(a * np.where(np.arange(hop) % 2, -1.0, 1.0))
+    return np.concatenate(out).astype(np.float32)
+
+
+P.music_audio = made_up_music
 import app as A  # noqa: E402
 import encore  # noqa: E402
-import pitch as P  # noqa: E402
 from assgen import save_lines  # noqa: E402
 from tests._asgi import call  # noqa: E402
 
 A.STORE.now = lambda: CLOCK[0]
 A.STORE.q("insert or replace into kv (k, v) values ('studio_id', ?)", ("9c1e7b42-5d3a-4f86-a0b9-2e4c6d8f1a3b",))
 A.pitch_later = lambda jid: None   # written below, in order (not in the background)
+A.gpu_free_mib = lambda: 32000      # (a free card, whatever machine this runs on: the auto-make ETAs are the same)
 A.catalog_soon = lambda delay=0: None
+# §2.9 words scoring: jobs run below, in order (no background thread), with the stand-in aligner
+A.WORDS.now = lambda: CLOCK[0]
+A.WORDS._start = lambda: None
+A.WORDS.cmd = [sys.executable, "-I", os.path.join(REPO, "tests", "fake_wordscore.py")]
+A.WORDS.reference = lambda song, device: None
+A.WORDS.ref_cached = lambda song: True
+_WJOBS = iter(["5d0c9a7e3b1f4e28a6c4d2b0e8f6a1c3", "6e1d0b8f4c2a4f39b7d5e3c1f9a7b2d4", "7f2e1c9a5d3b4a4ac8e6f4d2a0b8c3e5"])
+A.WORDS.new_id = lambda: next(_WJOBS)
 
 TOKEN_SHOWN = "<token from pairing>"
 PLAYER = "6f1c2a90-3b7e-4c1d-9e55-0a7b8c9d1e2f"
@@ -86,6 +120,123 @@ VOCALS_M4A = base64.b64decode(
     "AAAUc3RzegAAAAAAAAAEAAAAAwAAABRzdGNvAAAAAAAAAAEAAAMCAAAAGnNncGQBAAAAcm9sbAAAAAIAAAAB//8AAAAcc2JncAAA"
     "AAByb2xsAAAAAQAAAAMAAAABAAAAPXVkdGEAAAA1bWV0YQAAAAAAAAAhaGRscgAAAAAAAAAAbWRpcmFwcGwAAAAAAAAAAAAAAAAI"
     "aWxzdAAAAAhmcmVlAAAAFG1kYXQBGCAHARggBwEYIAc=")
+SUNG_OGG = base64.b64decode(
+    "T2dnUwACAAAAAAAAAAAAAAAAAAAAAEkq9qABE09wdXNIZWFkAQE4AYA+AAAAAABPZ2dTAAAAAAAAAAAAAAAAAAABAAAASZW+VAEu"
+    "T3B1c1RhZ3MGAAAAZmZtcGVnAQAAABQAAABlbmNvZGVyPUxhdmMgbGlib3B1c09nZ1MAAIC7AAAAAAAAAAAAAAIAAACj5qjRMggJ"
+    "CAgICAgICAgICAgICAgICAgIJCYqKS0vLSswKTArLCsoLCgtLy0oGhAQECotKygtSAvkwTbsxYBIB8lyJ+FE6lBIB8l5yMlXwEgH"
+    "yXnIyVfASAfJecjJV8BIB8l5yMlXwEgHyXnIyVfASAfJecjJV8BIB8l5yMlXwEgHyXnIyVfASAfJecjJV8BIB8l5yMlXwEgHyXnI"
+    "yVfASAfJecjJV8BIB8l5yMlXwEgHyXnIyVfASAfJecjJV8BIB8l5yMlXwEgHyXnIyVfASAfJecjJV8BIpuhDVIZuke7gJ2Snjbmn"
+    "oIqVCZdPQHcVKSGnJwYokqC114BIoUIZZXBcDCG3swr0Zj2fQsv2y9iFf6mcqHNlJwhv6f9MDcmDc0ihQhl4a1Gy8Q2UuiVRfu7f"
+    "ovikj/2TKKXrQ4QqQyj7dw8no/ZRlzeujkihQhl4a1lK76zp7zKCYeooFpNa5Av/KgOHaiX4oBkPKegfDrTVF8ngSKFCGXhrWU6K"
+    "0wggQ4Ve6FG5MRVjUVW1IgkOsfwi7bTSJUHWn/dyfAhwyEaASKFCGWVwZdm1QQZNc8vmRyoE6TrAlpY+tDcsDPQsBDU8kwixCkXR"
+    "wHu2jfN4btxIoUIZeGtYxn+kEO+5i0mtQhQj3v5A6+fMjZuf83X3LEfujB+NaRZsh7rzlxBIoUIZeGtZTon0f8dE8cHZ2LTaE+7Q"
+    "Ito31KnYFkag95d1QNP7fGcsaKOASKFCGXhrTWVZqtnsyzMcNnuXnoyf6OXsFhiZWTt2TiPnhO9vmHznjGvKKf5gTI9YSKFZXmYr"
+    "Ji2f/HomYMVb2Puo43lKMFUhHEOYpuJOYI7OV38EYhq23XBIoop5ZXBcDGVYOVNCy6M9WFA5WSKPWoJc9kaVljDk9fzLfsEphT7Z"
+    "DYVPJhGOTSBIoop5ZXBcDCHfgNP3nhO7pnoZfOBwB/QewoS9nrUkk61zK6P2hGSxomQwSKKKeW/wbkgjLU795sLlybcvL9K+oM28"
+    "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"
+    "F5wWVg6PBiAEulCikwis/VZJhBxIrqaWAPEyLQYD3pt/SwaK3xWmrWUNNZ7JqnfXki0bHOfXeEBIrqaV59A42vp6KS+E4S+ZIE/y"
+    "LAkAdkyj/1BVAxJ/vddz4bluUtc0SK6mlefQTC9VUQagoMhzh2msr9OpqYdAmET9w7vVuYQuYEiupvfabhaiSJ7xWwFCxHp/KFde"
+    "BZ+58+uC0vC/n8MMUEiupvfab1FsbPbaHoGR8oFnaoabhv/hzOBIhclig3SROT6Mgk3ke33sfz9232bT2UwgSD93cAQyExYLwEv6"
+    "8d8pK7hrQEg6MDB5rCrtKWqj4HQnv8iASB1ppmLI16u6vrLjYhbuJUgMBaC91jBNWTDrXmCpSAqCpMUnHwW29wHgJosUSAmcpMUn"
+    "H1Pt1UQ8yW68W4BICZykxSi3Y3dYnJ0jQ49ASAlz56vgx3zGpQ1zceXJKkgItqTFaBi032J8TNm26YXgSAi2pMVTBCEvF+5rG9Z8"
+    "b0OwSAi2pMUl0hGH7PeQOCIgVPqNSAi2pMUnIhPf+hNGU2x9+v+fSAi7GXfJnQYfSsyJCH+cRwgBG0gIr3In4UTqUEgIr3nIyVfA"
+    "SAivecjJV8BICK95yMlXwEgIr3nIyVfASAfJecjJV8BIB8l5yMlXwEgHyXnIyVfASAfJecjJV8BIB8l5yMlXwEgHyXnIyVfASAfJ"
+    "ecjJV8BIB8l5yMlXwEgHyXnIyVfASAfJecjJV8BIB8l5yMlXwEgHyXnIyVfASAfJecjJV8BIB8l5yMlXwEgHyXnIyVfAT2dnUwAA"
+    "AO4CAAAAAAAAAAAABQAAAEg6ap4yCAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAhIB8l5"
+    "yMlXwEgHyXnIyVfASAfJecjJV8BIB8l5yMlXwEgHyXnIyVfASAfJecjJV8BIB8l5yMlXwEgHyXnIyVfASAfJecjJV8BIB8l5yMlX"
+    "wEgHyXnIyVfASAfJecjJV8BIB8l5yMlXwEgHyXnIyVfASAfJecjJV8BIB8l5yMlXwEgHyXnIyVfASAfJecjJV8BIB8l5yMlXwEgH"
+    "yXnIyVfASAfJecjJV8BIB8l5yMlXwEgHyXnIyVfASAfJecjJV8BIB8l5yMlXwEgHyXnIyVfASAfJecjJV8BIB8l5yMlXwEgHyXnI"
+    "yVfASAfJecjJV8BIB8l5yMlXwEgHyXnIyVfASAfJecjJV8BIB8l5yMlXwEgHyXnIyVfASAfJecjJV8BIB8l5yMlXwEgHyXnIyVfA"
+    "SAfJecjJV8BIB8l5yMlXwEgHyXnIyVfASAfJecjJV8BIB8l5yMlXwEgHyXnIyVfASAfJecjJV8BIB8l5yMlXwEgHyXnIyVfASAfJ"
+    "ecjJV8BIB8l5yMlXwEgHyXnIyVfAT2dnUwAAgKkDAAAAAAAAAAAABgAAAPxKnM4yCAgICAgICAgICAgICAgICAgICAgICAgICAgI"
+    "CAgICAgICAgICAgICCQmLCYqKCsuJi9IB8l5yMlXwEgHyXnIyVfASAfJecjJV8BIB8l5yMlXwEgHyXnIyVfASAfJecjJV8BIB8l5"
+    "yMlXwEgHyXnIyVfASAfJecjJV8BIB8l5yMlXwEgHyXnIyVfASAfJecjJV8BIB8l5yMlXwEgHyXnIyVfASAfJecjJV8BIB8l5yMlX"
+    "wEgHyXnIyVfASAfJecjJV8BIB8l5yMlXwEgHyXnIyVfASAfJecjJV8BIB8l5yMlXwEgHyXnIyVfASAfJecjJV8BIB8l5yMlXwEgH"
+    "yXnIyVfASAfJecjJV8BIB8l5yMlXwEgHyXnIyVfASAfJecjJV8BIB8l5yMlXwEgHyXnIyVfASAfJecjJV8BIB8l5yMlXwEgHyXnI"
+    "yVfASAfJecjJV8BIB8l5yMlXwEgHyXnIyVfASAfJecjJV8BIB8l5yMlXwEim6ENUhm6R7uAnZKeNuaegipUJl09AdxUpIacnBiiS"
+    "oLXXgEihQhllcFwMIbezCvRmPZ9Cy/bL2IV/qZyoc2UnCG/p/0wNyYNzSKFCGXhrUbLxDZS7EPDjDIYedyx3Sm7yfkCMs5ZFn9YO"
+    "wzf06PkYbuZ9W1hIoUIZeGtZSu5tR0B6HF5+06ID8dLd1Jj2i6OHnHyMuZ7wMkG2gEihQhl4a1lOiRPIzhfLGHbQ+uSnJ0Y/y4qu"
+    "pDO7g36KjNmHLV+S/Uu8zkihQhllcGXZs/YL+2yopUojdeOKFH4mUpgalSQv+Do2hfnMrYL5xNpIoUIZeGtYxn+ctj0zLnm/AhtU"
+    "ahw6ef20z5oT49rQpLtLPQVkjXjdLXsmSKFCGXhrWU6JHV791UdZrWTycG20Xu7lFvsFYCnyMLwVD1V69v0qwcBUsCiboEihQhl4"
+    "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"
+    "yMlXwEgHyXnIyVfASAfJecjJV8BIB8l5yMlXwEgHyXnIyVfASAfJecjJV8BIB8l5yMlXwEgHyXnIyVfASAfJecjJV8BIB8l5yMlX"
+    "wEgHyXnIyVfAT2dnUwAAANwFAAAAAAAAAAAACQAAAEl8PD8yCAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI"
+    "CAgICAgICAgICAhIB8l5yMlXwEgHyXnIyVfASAfJecjJV8BIB8l5yMlXwEgHyXnIyVfASAfJecjJV8BIB8l5yMlXwEgHyXnIyVfA"
+    "SAfJecjJV8BIB8l5yMlXwEgHyXnIyVfASAfJecjJV8BIB8l5yMlXwEgHyXnIyVfASAfJecjJV8BIB8l5yMlXwEgHyXnIyVfASAfJ"
+    "ecjJV8BIB8l5yMlXwEgHyXnIyVfASAfJecjJV8BIB8l5yMlXwEgHyXnIyVfASAfJecjJV8BIB8l5yMlXwEgHyXnIyVfASAfJecjJ"
+    "V8BIB8l5yMlXwEgHyXnIyVfASAfJecjJV8BIB8l5yMlXwEgHyXnIyVfASAfJecjJV8BIB8l5yMlXwEgHyXnIyVfASAfJecjJV8BI"
+    "B8l5yMlXwEgHyXnIyVfASAfJecjJV8BIB8l5yMlXwEgHyXnIyVfASAfJecjJV8BIB8l5yMlXwEgHyXnIyVfASAfJecjJV8BIB8l5"
+    "yMlXwEgHyXnIyVfASAfJecjJV8BIB8l5yMlXwEgHyXnIyVfAT2dnUwAEON0FAAAAAAAAAAAACgAAAEuJ74sBCEgHyXnIyVfA")
 FAKE_MP4 = lambda seconds: (b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00isomiso2" + b"placeholder video, not playable: "
                             + f"{seconds:.1f} s".encode()).ljust(96, b".")
 
@@ -150,7 +301,7 @@ KEEP_HEADERS = ("etag", "content-range", "accept-ranges", "retry-after")
 
 
 def ex(n, name, about, method, path, body=None, schema=None, res_schema=None, headers=None, auth=True, client=None,
-       expect=None, body_file=None):
+       expect=None, body_file=None, req_file=None, headers_schema=None):
     """Make the call for real, and keep it as fixtures/api/NN-name.json."""
     h = dict(headers or {})
     if auth:
@@ -163,8 +314,10 @@ def ex(n, name, about, method, path, body=None, schema=None, res_schema=None, he
         res_body = body_file
     else:
         res_body = json.loads(rb) if rb else None
-    EXCHANGES.append((n, name, {"name": name, "about": about,
-                                "request": {"method": method, "path": path, "headers": shown, "body": body, "schema": schema},
+    request = {"method": method, "path": path, "headers": shown, "body": req_file if req_file else body, "schema": schema}
+    if headers_schema:
+        request["headers_schema"] = headers_schema
+    EXCHANGES.append((n, name, {"name": name, "about": about, "request": request,
                                 "response": {"status": st, "headers": {k.title() if k != "etag" else "ETag": v for k, v in rh.items()
                                                                        if k in KEEP_HEADERS},
                                              "body": res_body, "schema": res_schema}}))
@@ -332,24 +485,57 @@ def main():
        {"plays": plays[:1]}, "plays.post.request.schema.json", err, auth="fixture-token-revoked-00000000000", client=("192.0.2.41", 50001),
        expect=401)
 
-    # ---- §2.2b auto-make (reserved): the Studio stores the fields; the progress shown here is set by hand (auto-make
-    # itself comes in a later round)
+    # ---- §2.2b party auto-make: the admin turns it on and allows the kit; the searches are made up (no network) and the
+    # worker runs here in order; the make times are the measured defaults (no song here has a start time)
+    t_am = CLOCK[0]
     CLOCK[0] += 60
-    ex(22, "request-auto", "§2.2b (reserved): a party with auto-make on; the guest is already queued with a placeholder. The Studio "
-       "keeps auto and queue; until it makes songs by itself, it answers like any request.", "POST", "/api/encore/requests",
+    A.AM.save(A.STORE, {"on": True})
+    A.STORE.set_automake(PLAYER, True)
+    A.automake_enqueue = lambda rid: None   # (run below, in order)
+
+    def made_up_search(q):
+        artist, _, title = q.partition(" - ")
+        v = lambda i, t, dur, flags=(): {"id": f"am{i}xyzAbCd"[:11], "title": t, "channel": artist, "duration": dur, "views": 1000,
+                                         "verified": True, "official_channel": True, "flags": list(flags), "score": 8.0, "thumb": ""}
+        return {"artist": artist, "title": title, "notes": [],
+                "videos": [v(1, f"{artist} - {title} (Official Video)", 212), v(2, f"{artist} - {title} (Live)", 260, ["live"])],
+                "lyrics": [{"source": "lrclib", "id": 900001 + len(title), "artist": artist, "title": title, "album": "", "duration": 211.0,
+                            "timed": True, "plain": True, "latin": True, "japanese": False, "native": False, "script": "latin",
+                            "english": True, "romaji": None, "lines": 38, "first": "", "artist_match": True, "name_match": True}]}
+    A.search = made_up_search
+    ex(22, "request-auto", "§2.2b: a party with auto-make on (the guest is already queued with a placeholder), from a player the "
+       "Studio's admin allows to auto-make: taken (auto, stage finding, eta: when it should be published).", "POST",
+       "/api/encore/requests",
        {"rid": R[4], "artist": "June Arbor", "title": "Copper Moon", "note": "", "by": "Jo", "party": "Friday at Ken's",
         "at": int(CLOCK[0]), "auto": True, "queue": {"eid": "q3f9a1c2d4e", "uid": UID}},
        "requests.post.request.schema.json", "requests.post.response.schema.json", expect=200)
     call(A.app, "POST", "/api/encore/requests", {"rid": R[5], "artist": "June Arbor", "title": "Tin Lantern", "note": "", "by": "Jo",
                                                  "party": "Friday at Ken's", "at": int(CLOCK[0]), "auto": True,
                                                  "queue": {"eid": "q3f9a1c2d4f"}}, {"Authorization": "Bearer " + TOKEN})
-    CLOCK[0] += 200
-    A.STORE.set_request(R[4], status="making", job="20261111-212000-june-arbor-copper-moon", stage="making", eta=CLOCK[0] + 500)
-    A.STORE.set_request(R[5], status="failed", reason="couldn't download the video", stage=None)
-    A.refresh_requests = lambda: 0   # (the made-up auto-make job doesn't exist: keep the hand-set status)
-    ex(23, "requests-auto-status", "§2.2b (reserved): auto-make progress (stage, eta), and one that failed (with a reason). "
-       "Set by hand here: auto-make is built later.", "GET", f"/api/encore/requests?rids={R[4]},{R[5]}", None, None,
+    CLOCK[0] += 20
+    A.automake_run(R[4])     # found, picked, queued
+    A.automake_run(R[5])
+    j4, j5 = A.STORE.get_request(R[4])["job"], A.STORE.get_request(R[5])["job"]
+    CLOCK[0] += 30
+    A.set_job(j4, status="running", step="separate", started=CLOCK[0] - 25, gpu=A.LOCAL_GPU)
+    A.set_job(j5, status="failed", step="download", error="yt-dlp failed: ERROR: [youtube] amXXXXXXXXX: Sign in to confirm you're not a bot")
+    ex(23, "requests-auto-status", "§2.2b: auto-make progress: one being made (stage, eta), one that failed (its video couldn't be "
+       "downloaded: the reason).", "GET", f"/api/encore/requests?rids={R[4]},{R[5]}", None, None,
        "requests.get.response.schema.json", expect=200)
+    CLOCK[0] += 60
+    st_, _, b_ = call(A.app, "POST", "/api/encore/requests", {"rid": "b9f7c5a8-7d0e-4fc0-8b3c-8e5d6a7b9c0d", "artist": "June Arbor",
+                                                             "title": "Glass Kite", "note": "", "by": "Jo", "party": "Friday at Ken's",
+                                                             "at": int(CLOCK[0]), "auto": True}, {"Authorization": "Bearer " + TOKEN})
+    A.AM.save(A.STORE, {"per_hour": 2})
+    ex(32, "request-auto-limit", "§2.2b: taken for auto-make, but over the Studio's limit (here 2 songs an hour): failed at once, "
+       "with the reason; the request stays in the Studio's list.", "POST", "/api/encore/requests",
+       {"rid": "c0a8d6b9-8e1f-4ad1-9c4d-9f6e7b8c0d1e", "artist": "June Arbor", "title": "Paper Comet", "note": "", "by": "Mia",
+        "party": "Friday at Ken's", "at": int(CLOCK[0]), "auto": True, "queue": {"eid": "q3f9a1c2d50"}},
+       "requests.post.request.schema.json", "requests.post.response.schema.json", expect=200)
+    ex(33, "hello-auto-make", "§2.2b: hello says whether this player may ask for auto-make, and about how long a song asked for "
+       "now takes (minutes) until it's published.", "GET", "/api/encore/hello", None, None, "hello.response.schema.json", expect=200)
+    A.AM.save(A.STORE, {"on": False, "per_hour": 6})
+    CLOCK[0] = t_am + 260   # (the profile exchanges below keep their times)
     # ---- §2.6 profiles: a second player (the home Encore) and one singer's profile, synced, exported, deleted
     CLOCK[0] += 60
     HOME = "8b9c0d1e-2f3a-4b4c-9d5e-6f7a8b9c0d1e"
@@ -395,27 +581,98 @@ def main():
            {"eid": EV(5), "stream": "profile", "uid": UID, "at": round(CLOCK[0], 3), "deleted": True}]}, sreq, sres,
        auth=HOME_TOKEN, expect=200)
     CLOCK[0] += 60
-    ex(29, "profiles-sync-after-delete", "§2.6: the kit comes back with a late favourite for the deleted singer (dropped) and gets "
+    _, _, b = ex(29, "profiles-sync-after-delete", "§2.6: the kit comes back with a late favourite for the deleted singer (dropped) and gets "
        "the tombstone, never the singer's other events.", "POST", "/api/encore/profiles/sync",
        {"player": PLAYER, "since": kit_cursor, "events": [{"eid": EV(6), "stream": "favorites", "uid": UID,
                                                           "at": round(CLOCK[0], 3), "song": ver, "on": True}]},
        sreq, sres, expect=200)
+    kit_cursor = json.loads(b)["cursor"]
     ex(30, "profiles-export-deleted", "§2.6: a deleted singer exports as deleted, with nothing else.", "GET",
        f"/api/encore/profiles/{UID}/export", None, None, "profiles.export.response.schema.json", expect=200)
     ex(31, "profiles-sync-bad-cursor", "§2.6: a cursor this Studio didn't give (a rebuilt Studio): 400; Encore syncs again with "
        "since null.", "POST", "/api/encore/profiles/sync", {"player": PLAYER, "since": "s999999", "events": []}, sreq, err,
        expect=400)
 
+    # ---- §2.9 words scoring: Nova Lane's first two lines, recorded from 12.0 s (the singer skipped the last two words of
+    # line 2); then a call with a header missing, one while the Studio is busy, one whose audio can't be read, and an
+    # answer asked for after 10 minutes
+    CLOCK[0] += 60
+    wh = {"Content-Type": "audio/ogg", "X-Encore-Song": solo, "X-Encore-Base": sb, "X-Encore-Start": "12.000",
+          "X-Encore-Rate": "1.0", "X-Encore-Lines": "1,2"}
+    hs, wres, wget = "score-words.post.headers.schema.json", "score-words.post.response.schema.json", "score-words.get.response.schema.json"
+    _, _, b = ex(34, "score-words", "§2.9: the singer's recording of one song (the body: Opus audio, at most 8 MB; body = "
+                 "fixtures/audio/sung.ogg), described by its headers: the song and the version played, the video time at its "
+                 "first sample, the playback rate, the lines that are this singer's. Answers 202 with a job to poll.",
+                 "POST", "/api/encore/score-words", SUNG_OGG, None, wres, headers=wh, expect=202,
+                 req_file={"$file": "audio/sung.ogg"}, headers_schema=hs)
+    wjob = json.loads(b)["job"]
+    CLOCK[0] += 1
+    ex(35, "score-words-queued", "§2.9: not scored yet (eta: about how many seconds).", "GET", f"/api/encore/score-words/{wjob}",
+       None, None, wget, expect=200)
+    A.WORDS.run_once()
+    CLOCK[0] += 4
+    ex(36, "score-words-done", "§2.9: scored: each judged word (line = words.json i, w = its index in the line from 0) heard or "
+       "not, with the aligner's confidence; heard of total and the score (0-100). Kept 10 minutes.", "GET",
+       f"/api/encore/score-words/{wjob}", None, None, wget, expect=200)
+    ex(37, "score-words-bad-headers", "§2.9: a header missing or wrong (here X-Encore-Start): 422, before the body is read.",
+       "POST", "/api/encore/score-words", SUNG_OGG, None, err, headers={k: v for k, v in wh.items() if k != "X-Encore-Start"},
+       expect=422, req_file={"$file": "audio/sung.ogg"}, headers_schema=hs)
+    CLOCK[0] += 60
+    pick = A.WORDS.pick_device
+    A.WORDS.pick_device = lambda: None   # (a song being made, and CPU scoring off)
+    _, _, b = ex(38, "score-words-busy", "§2.9: the Studio won't score it now (no graphics card free soon): busy at once; it "
+                 "keeps nothing.", "POST", "/api/encore/score-words", SUNG_OGG, None, wres, headers=wh, expect=202,
+                 req_file={"$file": "audio/sung.ogg"}, headers_schema=hs)
+    A.WORDS.pick_device = pick
+    ex(39, "score-words-busy-status", "§2.9: a busy job: the player stops asking (the score has no words part).", "GET",
+       f"/api/encore/score-words/{json.loads(b)['job']}", None, None, wget, expect=200)
+    CLOCK[0] += 60
+    st, _, b = call(A.app, "POST", "/api/encore/score-words", b"not audio at all", dict(wh, **{"Content-Type": "audio/webm",
+                                                                                             "Authorization": "Bearer " + TOKEN}))
+    assert st == 202, (st, b)
+    A.WORDS.run_once()
+    CLOCK[0] += 5
+    ex(40, "score-words-failed", "§2.9: a recording the Studio couldn't score (here: not Opus audio): failed, with the reason.",
+       "GET", f"/api/encore/score-words/{json.loads(b)['job']}", None, None, wget, expect=200)
+    CLOCK[0] += 601
+    ex(41, "score-words-forgotten", "§2.9: answers are kept 10 minutes; after that (or for a job that isn't this player's): 410.",
+       "GET", f"/api/encore/score-words/{wjob}", None, None, err, expect=410)
+    if A.WORDS.worker is not None:
+        A.WORDS.worker.stop()
+
+    # ---- §2.4 / §2.6 singing scores: a scored play, and a scored song in a singer's history (relayed untouched)
+    CLOCK[0] += 60
+    score = {"v": 1, "difficulty": "normal", "points": 734210, "pitch": 81.5, "timing": 92.0, "words": 78.0, "acc": 84.2,
+             "grade": "A", "max_combo": 57}
+    ex(42, "plays-scored", "§2.4: a play with its singing score (the same object as on history events); the Studio keeps it with "
+       "the play (its Library shows each song's best grade) and never needs it.", "POST", "/api/encore/plays",
+       {"plays": [{"pid": U("scored-play"), "id": solo, "base": sb, "at": int(CLOCK[0]), "seconds": 33, "result": "finished",
+                   "singers": 1, "style": None, "party": "Friday at Ken's", "guide": "off", "score": score}]},
+       "plays.post.request.schema.json", "plays.post.response.schema.json", expect=200)
+    UID2 = "9c0d1e2f-3a4b-4c5d-8e6f-7a8b9c0d1e2f"
+    CLOCK[0] += 60
+    t2 = round(CLOCK[0], 3)
+    ana = [{"eid": EV(7), "stream": "profile", "uid": UID2, "at": t2, "name": "Ana", "color": "#5fb4ff", "pin_hash": None,
+            "created": t2, "deleted": False},
+           {"eid": EV(8), "stream": "history", "uid": UID2, "at": t2 + 240.5, "song": solo, "base": sb, "result": "stopped",
+            "party": "Friday at Ken's", "style": None, "score": dict(score, points=301877, grade="C", max_combo=12, partial=True)}]
+    ex(43, "profiles-sync-score", "§2.6: a singer's history event with the singing score (here a song stopped early: partial).",
+       "POST", "/api/encore/profiles/sync", {"player": PLAYER, "since": kit_cursor, "events": ana}, sreq, sres, expect=200)
+    ex(44, "profiles-sync-score-relayed", "§2.6: the home Encore gets the scored history event exactly as it was sent.", "POST",
+       "/api/encore/profiles/sync", {"player": HOME, "since": None, "events": []}, sreq, sres, auth=HOME_TOKEN, expect=200)
+
     CLOCK[0] += 60
     ex(21, "unpair", "Unlink from Encore's side (the token stops working).", "POST", "/api/encore/unpair", {},
        "unpair.request.schema.json", "unpair.response.schema.json", expect=200)
 
     # ---- write
-    lib_out, api_out = os.path.join(OUT, "library"), os.path.join(OUT, "api")
-    for d in (lib_out, api_out):
+    lib_out, api_out, audio_out = os.path.join(OUT, "library"), os.path.join(OUT, "api"), os.path.join(OUT, "audio")
+    for d in (lib_out, api_out, audio_out):
         shutil.rmtree(d, ignore_errors=True)
     os.makedirs(os.path.join(lib_out, "Music Videos"))
     os.makedirs(api_out)
+    os.makedirs(audio_out)
+    open(os.path.join(audio_out, "sung.ogg"), "wb").write(SUNG_OGG)
     shutil.copyfile(os.path.join(A.LIB, "catalog.json"), os.path.join(lib_out, "catalog.json"))
     for f in sorted(os.listdir(A.MV_DIR)):
         if not f.startswith("."):

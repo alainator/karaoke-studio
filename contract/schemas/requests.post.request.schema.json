@@ -54,7 +54,7 @@
     },
     "auto": {
       "type": "boolean",
-      "description": "§2.2b party auto-make (reserved; built later)."
+      "description": "§2.2b: the host turned on auto-make for this party: the Studio may make and publish the song by itself (it decides: its admin's setting and this player's permission, its limits)."
     },
     "queue": {
       "type": "object",
@@ -73,7 +73,7 @@
           "description": "Optional, for user profiles (§2.6, planned): the profile uuid of the person, when a user (not a guest) did it."
         }
       },
-      "description": "§2.2b: the guest is already queued with a placeholder (Encore's queue entry id)."
+      "description": "§2.2b: the guest is already queued with a placeholder (Encore's queue entry id, and their profile uid)."
     }
   }
 }

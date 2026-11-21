@@ -1,0 +1,22 @@
+{
+  "name": "score-words-failed",
+  "about": "§2.9: a recording the Studio couldn't score (here: not Opus audio): failed, with the reason.",
+  "request": {
+    "method": "GET",
+    "path": "/api/encore/score-words/7f2e1c9a5d3b4a4ac8e6f4d2a0b8c3e5",
+    "headers": {
+      "Authorization": "Bearer <token from pairing>"
+    },
+    "body": null,
+    "schema": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "status": "failed",
+      "reason": "couldn't read the audio (Opus in ogg or webm)"
+    },
+    "schema": "score-words.get.response.schema.json"
+  }
+}

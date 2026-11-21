@@ -1,0 +1,47 @@
+{
+  "name": "plays-scored",
+  "about": "§2.4: a play with its singing score (the same object as on history events); the Studio keeps it with the play (its Library shows each song's best grade) and never needs it.",
+  "request": {
+    "method": "POST",
+    "path": "/api/encore/plays",
+    "headers": {
+      "Authorization": "Bearer <token from pairing>"
+    },
+    "body": {
+      "plays": [
+        {
+          "pid": "1734ba9a-8db6-5788-a61a-5eda5d1935bb",
+          "id": "20261101-120000-nova-lane-paper-lanterns",
+          "base": "Nova Lane - Paper Lanterns (Music Video)",
+          "at": 1794487031,
+          "seconds": 33,
+          "result": "finished",
+          "singers": 1,
+          "style": null,
+          "party": "Friday at Ken's",
+          "guide": "off",
+          "score": {
+            "v": 1,
+            "difficulty": "normal",
+            "points": 734210,
+            "pitch": 81.5,
+            "timing": 92.0,
+            "words": 78.0,
+            "acc": 84.2,
+            "grade": "A",
+            "max_combo": 57
+          }
+        }
+      ]
+    },
+    "schema": "plays.post.request.schema.json"
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "stored": 1
+    },
+    "schema": "plays.post.response.schema.json"
+  }
+}

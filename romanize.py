@@ -7,7 +7,7 @@ Measured on Stray Kids "TOP" against a human romanization: 98.8 % of letters bef
 
 Mandarin: pypinyin, one syllable per character (no tone marks), English kept.
 """
-import functools, re
+import functools, re, unicodedata
 
 HANGUL = re.compile(r"[가-힣]")
 HAN = re.compile(r"[一-鿿㐀-䶿]")
@@ -89,6 +89,54 @@ def romanize_korean(line):
     return re.sub(r"[가-힣]+", one, line)
 
 
+def has_words(text):
+    """Is there anything to sing in this lyric line (a letter or a digit, in any script)? Lines of only punctuation
+    have none (a lyrics copy that marks a repeated line with a row of ditto quote marks)."""
+    return any(c.isalnum() for c in text or "")
+
+
+def drop_unsung(lines, keyed=None):
+    """Lyric lines [(time, text)] without the ones that have nothing to sing (see has_words). keyed: {line index:
+    value} for the same lines (hand-made romaji), re-keyed to the kept lines. Returns (lines, keyed, dropped texts)."""
+    keep = [k for k, (_, x) in enumerate(lines) if has_words(x)]
+    new_index = {k: n for n, k in enumerate(keep)}
+    return ([lines[k] for k in keep], {new_index[k]: v for k, v in (keyed or {}).items() if k in new_index},
+            [x for _, x in lines if x and not has_words(x)])
+
+
+def _opens(c):
+    return unicodedata.category(c) in ("Ps", "Pi")  # ( （ 【 「 “ ‘ «
+
+
+def glue_brackets(tokens):
+    """Words of a romanized line where brackets and quote marks came out as words of their own ("(", "）"): an opening
+    one goes onto the word after it, a closing one onto the word before, so a bracketed phrase reads "(ni hao)" and
+    keeps both brackets (the word timing gives a word without letters to the word before it, so a "(" opening the
+    line was lost and only its ")" was shown). Other punctuation-only words (commas) are left as they are."""
+    out, carry = [], ""
+    for tok in tokens:
+        if any(c.isalnum() for c in tok):
+            out.append(carry + tok); carry = ""
+            continue
+        if carry:
+            carry += tok
+            continue
+        k = next((i for i, c in enumerate(tok) if _opens(c)), len(tok))
+        head, tail = tok[:k], tok[k:]
+        if head:
+            if out and any(unicodedata.category(c) in ("Pe", "Pf") for c in head):
+                out[-1] += head
+            else:
+                out.append(head)
+        carry = tail
+    if carry:
+        if out:
+            out[-1] += carry
+        else:
+            out.append(carry)
+    return out
+
+
 def romanize_mandarin(line):
     """Pinyin, one syllable per character (no tones); English and other text kept as words."""
     from pypinyin import lazy_pinyin, Style
@@ -98,7 +146,7 @@ def romanize_mandarin(line):
             out += lazy_pinyin(tok, style=Style.NORMAL, errors="ignore", v_to_u=False)
         else:
             out.append(tok)
-    return " ".join(out)
+    return " ".join(glue_brackets(out))
 
 
 # Other scripts: (Unicode ranges, name for people, Noto font family for the TV if Arial lacks it, right-to-left).
@@ -160,6 +208,64 @@ def is_rtl(script):
     return bool(SCRIPTS.get(script, (0, 0, 0, False))[3])
 
 
+# Thai: PyThaiNLP's RTGS romanizer (royin) is rule-based and works on one syllable at a time; given a whole word it
+# guesses the syllables itself and gets many wrong (จดหมาย "chadahamai" for chotmai), and it leaves Thai vowel signs
+# in what it can't read (ก็ "k็", แป็ก "pae็k", เกราะ "keraะ"). So each word is cut into syllables (PyThaiNLP's
+# dictionary splitter) and each syllable romanized whole, with what royin gets wrong put right first:
+#  - a leading vowel before a two-consonant start (เปลือก plueak, เกลือ kluea, ใพร phrai): royin splits the vowel from
+#    its consonants ("pelin"), so the syllable is read without the second consonant, which is put back after the first;
+#  - a silent ห before a low consonant behind a leading vowel (เหนือ nuea, not "enue") is left out;
+#  - ห starting a syllable before its vowel is sounded (หาด hat, เห็ด het; royin drops it);
+#  - mai taikhu ( ็) only shortens the vowel; on its own after a consonant it is a short o (ก็ ko);
+#  - anything still in Thai letters is dropped, so the romanized row never shows Thai vowel signs.
+TH_CONS = "กขฃคฅฆงจฉชซฌญฎฏฐฑฒณดตถทธนบปผฝพฟภมยรลวศษสหฬอฮ"
+_TH_ANY = re.compile("[\u0e00-\u0e7f]")
+_TH_CLUSTER = (re.compile("^([เแโ])([กขคตปผพบฟด])([รลว])(.+)$"), re.compile("^([ใไ])([กขคตปผพบฟด])([รลว])(.*)$"))
+_TH_SILENT_HO = re.compile("^([เแโใไ])ห([งญนมยรลว])(.*)$")
+_TH_HO = re.compile(f"^[เแโใไ]?ห[^{TH_CONS}]")
+
+
+def _royin(syllable):
+    import importlib
+    try:  # royin's own syllable step: its public romanize() splits the text into words again (กาศ -> "kas")
+        return importlib.import_module("pythainlp.transliterate.royin")._romanize(syllable)
+    except Exception:
+        from pythainlp.transliterate import romanize as th_rom
+        return th_rom(syllable, engine="royin")
+
+
+def _thai_syllable(s):
+    m = _TH_SILENT_HO.match(s)
+    if m:
+        s = m.group(1) + m.group(2) + m.group(3)
+    m = _TH_CLUSTER[0].match(s) or _TH_CLUSTER[1].match(s)
+    if m:
+        r = _royin(m.group(1) + m.group(2) + m.group(4))
+        k = re.match(r"[^aeiou]*", r).end()
+        r = r[:k] + {"ร": "r", "ล": "l", "ว": "w"}[m.group(3)] + r[k:]
+    else:
+        r = _royin(s)
+    if _TH_ANY.search(r) and "\u0e47" in s:
+        r = _thai_syllable(re.sub(f"^([{TH_CONS}])\u0e47([\u0e48-\u0e4b]?)$", "\\1อ\\2", s).replace("\u0e47", ""))
+    r = _TH_ANY.sub("", r)
+    if r and not r.startswith("h") and _TH_HO.match(s):
+        r = "h" + r
+    return r
+
+
+def romanize_thai_word(word):
+    """One Thai word (as PyThaiNLP's word splitter cut it) in Latin letters, syllable by syllable, as one word."""
+    try:
+        from pythainlp.tokenize import syllable_tokenize
+        out = "".join(_thai_syllable(s) for s in syllable_tokenize(word, engine="dict"))
+    except Exception:
+        out = ""
+    if not out:  # (no syllables found: the word as a whole, as before; a word with nothing sounded stays empty)
+        from pythainlp.transliterate import romanize as th_rom
+        out = _TH_ANY.sub("", th_rom(word, engine="royin"))
+    return out
+
+
 _UROMAN = None
 
 
@@ -176,14 +282,13 @@ def romanize_generic(line, script):
     if script == "thai":
         try:
             from pythainlp.tokenize import word_tokenize
-            from pythainlp.transliterate import romanize as th_rom
             out = []
             for tok in re.findall(r"\S+", line):
                 if SCRIPT_RE["thai"].search(tok):
-                    out += [th_rom(w, engine="royin") for w in word_tokenize(tok, engine="newmm", keep_whitespace=False) if w.strip()]
+                    out += [romanize_thai_word(w) for w in word_tokenize(tok, engine="newmm", keep_whitespace=False) if w.strip()]
                 else:
                     out.append(tok)
-            return " ".join(w for w in out if w)
+            return " ".join(glue_brackets([w for w in out if w]))
         except Exception:
             pass
     u = _uroman()
@@ -199,7 +304,7 @@ def romanize_cantonese(line):
             out += [re.sub(r"\d", "", j) if j else ch for ch, j in ToJyutping.get_jyutping_list(tok)]
         else:
             out.append(tok)
-    return " ".join(out)
+    return " ".join(glue_brackets(out))  # (the same words as pinyin: the aligner reads a Cantonese line as pinyin)
 
 
 @functools.lru_cache(maxsize=65536)

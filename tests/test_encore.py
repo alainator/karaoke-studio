@@ -160,6 +160,11 @@ class SchemaChecker(Base):
             "profiles.sync.response.schema.json": {"cursor": "", "events": []},
             "profiles.export.response.schema.json": {"uid": u, "deleted": False, "profile": {"name": "x", "color": "#000000",
                                                      "created": 1, "pin": "yes"}, "favorites": [], "prefs": [], "history": []},
+            # §2.9 words scoring; the GET one also checks its if/then (done needs words, heard, total, score)
+            "score-words.post.headers.schema.json": {"Authorization": "Bearer x", "Content-Type": "audio/mpeg", "X-Encore-Song": "s",
+                                                     "X-Encore-Base": "b", "X-Encore-Start": "1.5", "X-Encore-Rate": "1"},
+            "score-words.post.response.schema.json": {"job": "abc", "eta": 1, "status": "queued"},
+            "score-words.get.response.schema.json": {"status": "done", "words": []},
         }
         self.assertEqual(sorted(bad), sorted(os.listdir(S.SCHEMAS)))
         for n, d in bad.items():
@@ -439,12 +444,16 @@ class Requests(Base):
         self.assertEqual(self.get("rids=" + b["rid"])[b["rid"]]["status"], "ready")
 
     def test_auto_fields_are_kept(self):
+        """Asking for auto-make while the Studio doesn't allow it: kept, and answered like any request (no auto
+        fields: tests/test_automake.py has the rest)."""
         body = req_body("June Arbor", "Copper Moon", auto=True, queue={"eid": "q1", "uid": "u1"})
-        self.assertEqual(self.post(body)["status"], "open")
+        a = self.post(body)
+        self.assertEqual(a["status"], "open")
+        self.assertNotIn("auto", a)
         row = A.STORE.get_request(body["rid"])
-        self.assertEqual((row["auto"], json.loads(row["queue"])), (1, {"eid": "q1", "uid": "u1"}))
+        self.assertEqual((row["auto"], json.loads(row["queue"]), row["am"]), (1, {"eid": "q1", "uid": "u1"}, None))
         r = self.get("rids=" + body["rid"])[body["rid"]]
-        self.assertEqual((r["auto"], r["stage"], r["eta"]), (True, None, None))
+        self.assertNotIn("auto", r)
 
 
 # ---------------- flags ----------------
@@ -828,11 +837,16 @@ class Fixtures(Base):
             if f.endswith((".words.json", ".pitch.json")):
                 self.valid("words.schema.json" if f.endswith(".words.json") else "pitch.schema.json", json.load(open(os.path.join(mv, f))))
         names = sorted(os.listdir(os.path.join(fx, "api")))
-        self.assertEqual(len(names), 31)  # (24-31: §2.6 profiles)
+        self.assertEqual(len(names), 44)  # (24-31: §2.6 profiles; 22, 23, 32, 33: §2.2b auto-make; 34-41: §2.9; 42-44: scores)
         for n in names:
             x = json.load(open(os.path.join(fx, "api", n)))
-            if x["request"]["schema"]:
-                self.valid(x["request"]["schema"], x["request"]["body"])
+            rb = x["request"]["body"]
+            if isinstance(rb, dict) and "$file" in rb:
+                self.assertTrue(os.path.isfile(os.path.join(fx, rb["$file"])), n)
+            elif x["request"]["schema"]:
+                self.valid(x["request"]["schema"], rb)
+            if x["request"].get("headers_schema") and x["response"]["status"] != 422:
+                self.valid(x["request"]["headers_schema"], x["request"]["headers"])
             body = x["response"]["body"]
             if isinstance(body, dict) and "$file" in body:
                 self.assertTrue(os.path.isfile(os.path.join(fx, body["$file"])), n)

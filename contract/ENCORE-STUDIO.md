@@ -40,6 +40,13 @@ The lead vocal's melody, from the Studio's separated vocals, in VIDEO time (like
   unvoiced parts are gaps. Segments are cut at word boundaries where words.json has them.
 - `range`: the lowest and highest midi sung (for drawing and for octave-tolerant scoring).
 - Missing file = no score for that song (Encore still plays it).
+- Optional (added 2026-11-20 for singing scores): `"music": {"hop": 0.1, "db": [-32.5, ...]}`: the loudness of the
+  song's INSTRUMENTAL track (the audio of the published video, mixed to mono) as RMS dBFS per `hop` seconds of video
+  time (value k covers [k·hop, (k+1)·hop); the last one what's left), rounded to 0.5 dB, from -90 (silence: JSON has
+  no -inf) to 0. Players use it to follow the music through the whole song when deciding whether a mic is hearing the
+  singer or the music (not only in gaps). Missing = players fall back to learning the room in the gaps. `version`
+  stays 1. A version's file has the song's values (the same sound).
+- Notes shorter than about 60 ms are fragments; players may merge or ignore them. Players use `range` for drawing.
 
 ## 2. API
 
@@ -97,7 +104,8 @@ Encore shows "Studio connected" / "Studio not reachable" in the station's System
 {"rid": "uuid", "artist": "Spice Girls", "title": "Wannabe", "note": "the music video one", "by": "Mia",
  "party": "Friday at Ken's", "at": 1795200000}
 ```
-→ `{"rid": "uuid", "status": "open" | "have" , "id": "<job id if have>", "base": "<base if have>"}`
+→ `{"rid": "uuid", "status": "open" | "have" , "id": "<job id if have>", "base": "<base if have>"}` (auto-make, §2.2b:
+also `failed` with `reason`, and `auto`, `stage`, `eta`)
 
 Statuses (the Studio owns them; Encore polls):
 | status | meaning |
@@ -108,6 +116,7 @@ Statuses (the Studio owns them; Encore polls):
 | `published` | in the catalog (`id`, `base` set) |
 | `have` | the Studio already had it when it arrived (`id`, `base`) |
 | `declined` | the Studio said no (`reason`, short text) |
+| `failed` | party auto-make couldn't make it (`reason`; §2.2b) |
 
 `GET /api/encore/requests?rids=a,b,c` (or `?since=<unix>`) → `{"requests": [{"rid", "status", "job", "id", "base",
 "reason", "updated"}]}`
@@ -118,18 +127,53 @@ search filled in; the job remembers the rid, so the status follows the job), "We
 Encore side: the phone shows "You asked for X: being made / ready soon / it's here!" and the TV can show "New: X
 (asked for by Mia)" when it becomes published.
 
-### 2.2b Party auto-make (fields reserved now; built in the round after the link)
-A request may carry `"auto": true` (the Encore host turned on auto-make for this party) and `"queue": {"eid": "<queue
-entry id>", "uid": "..."}` (the guest is already queued with a placeholder). When the Studio admin allows auto-make
-(Studio setting, with limits: songs per hour, max length, only when a GPU is free), the Studio picks the video and
-lyrics itself (the world batch's picker), makes the song and publishes it without review if it passes a quality floor
-(enough of the lyrics heard in place; otherwise it stops at `ready` with `reason` "needs a look"). Auto-published songs
-are marked "quick make, not reviewed" in the Studio.
-Extra status fields while this runs (Encore must accept them now, even if it ignores them):
-`"auto": true`, `"stage": "finding"|"downloading"|"making"|"publishing"`, `"eta": unix time or null`,
-`"status": "failed"` with `reason` (e.g. "couldn't download the video", "lyrics didn't match the singing").
-Encore keeps the guest's place, shows the ETA, moves the placeholder down one spot if it isn't ready by their turn,
-and downloads the song as soon as it's `published`.
+### 2.2b Party auto-make (built 2026-11-20: the Studio and Encore)
+"Be on screen at the right time is better than nothing": while a party is on, a guest's request for a song the
+library doesn't have can be made and published by the Studio by itself in a few minutes (a make takes ~2 min on an
+RTX 5090, ~3 on a 3090), and the guest keeps their place in the queue meanwhile.
+
+**Who decides.** Two switches, both needed:
+- The Studio's admin (web app, Players tab): **Party auto-make** on, with limits (songs per hour, default 6; per day,
+  30; longest song, 7 min; only when a graphics card is free or will be within N minutes, 10; the quality floor, 60%),
+  and per linked player **may auto-make** (off by default). It's a Studio feature, not an agent: no agent key can
+  start it or change it.
+- The Encore host, per party: **Auto-make missing songs** (Party settings -> Requests), offered only while the
+  Studio says this player may (`hello.auto_make.allowed`).
+
+**hello** (§2.1) carries `"auto_make": {"allowed": bool, "minutes": n | null}`: may this player ask now, and about
+how many minutes a song asked for now takes until it's published (from the Studio's queue and its measured make
+times). A Studio from before auto-make leaves it out: not allowed.
+
+**The request** carries `"auto": true` and `"queue": {"eid": "<Encore's queue entry id>", "uid": "..."}` (the guest
+is already queued with a placeholder). The POST answer says what the Studio did with it:
+- taken: `{"status": "open", "auto": true, "stage": "finding", "eta": <unix>}`;
+- taken but over a limit (or no card free soon): `{"status": "failed", "auto": true, "reason": "..."}` at once (the
+  request stays in the Studio's Requests list; its admin can reopen it as a normal request);
+- not taken (the admin's setting or the player's toggle is off): a normal answer, **without `auto`**; the request is
+  an ordinary one;
+- the Studio has it: `have`, as always (never made again, never replaced).
+
+**Taken requests** answer polls with `auto: true`, `stage` (`finding` the video and lyrics, `downloading`, `making`,
+`publishing`; null when nothing runs) and `eta` (unix time it should be published, to 10 s; null when not moving).
+The Studio searches as the Make page does and picks the video, the lyrics and the names with the Make page's own
+rules (`autopick.py`, a copy of the page's code that a test keeps identical), then makes the song. They end as:
+- `published` (`id`, `base`): it cleared the quality floor (60% of the lines heard sung where they sit, the 10th
+  percentile of the songs people had published; a song the by-ear check couldn't follow never goes out on its own;
+  no more than one line crammed into too little time); in the Studio it's marked **quick make, not reviewed** until a
+  person checks it;
+- `ready` with `reason` "needs a look": made, below the floor; it waits for a person;
+- `have` (`id`, `base`): the song turned out to be in the library under the names the lyrics give it;
+- `failed` with `reason`, e.g. "couldn't search for it (YouTube or the lyrics sites didn't answer)", "no music
+  video found", "no timed lyrics found", "too long for a quick make (9:05; the limit is 7 min)", "couldn't download
+  the video", "lyrics didn't match the singing", "it was stopped at the Studio".
+Auto-made songs are signed "auto-make for <player name>" (made and published by).
+
+**Encore** keeps the guest's place with a placeholder entry that shows the stage and ETA (phone, station, TV up
+next). A placeholder never goes on stage: when it reaches the front unready, it moves down one spot (once per turn,
+and the singer is told). `published`/`have` and the song in the library: the placeholder becomes a normal entry.
+`failed` or `ready`: the placeholder goes and the asker is told why ("the Studio made it but it needs a look first").
+A request the Studio didn't take: the placeholder goes, the request stays in "Your requests". While any auto request
+moves, Encore polls every 15 s.
 
 ### 2.3 Lyric flags
 `POST /api/encore/flags`
@@ -152,6 +196,9 @@ and downloads the song as soon as it's `published`.
 ```
 Optional `"guide": "off" | "low" | "medium" | "full"`: the guide vocals level the song was sung with (§1 `vocals`;
 left out when the song had none). The Studio may ignore it.
+Optional `"score"` (added 2026-11-20): the singing score when the play was scored, same object as in §2.6 history
+(`{"v": 1, "difficulty", "points", "pitch", "timing", "words"?, "acc", "grade", "max_combo", "partial"?}`); the
+Studio stores it with the play (it may show it, e.g. best grade per song) and never needs it.
 → `{"stored": n}` (up to 200 per call). The Studio's Library "Sung" column and the catalog's `plays` count Encore
 plays (finished, or stopped after more than half) plus PiKaraoke's history.
 
@@ -171,7 +218,12 @@ profile PIN, optional), "created", "deleted": bool}` plus event streams:
 - `history`: `{"eid", "uid", "song", "base", "at", "result", "party"}` (append-only; plays in §2.4 carry `uid` when
   a user sang)
 - `prefs`: `{"eid", "uid", "key": "style:ja"|..., "value", "at"}` (latest `at` wins per key)
-- later: `range`, `scores`.
+- `history` events may carry an optional `"score"` (added 2026-11-20; schema `$defs/score`, the same in the plays and
+  profile schemas): `{"v": 1, "difficulty": "easy"|"normal"|"hard"|
+  "expert", "points": int, "pitch": 0-100, "timing": 0-100, "words": 0-100 (optional, §2.9), "acc": 0-100,
+  "grade": "AAA"|"AA"|"A"|"B"|"C"|"D", "max_combo": int, "partial": bool (optional: the song was skipped/stopped)}`.
+  Scores sync with the rest of the user's history (a user's best grades follow them between kits).
+- later: `range`.
 
 `POST /api/encore/profiles/sync` `{"player": uuid, "since": <studio cursor or null>, "events": [...]}` →
 `{"cursor": "...", "events": [events from other players since the cursor]}`. Events are idempotent by `eid`; merging
@@ -198,6 +250,59 @@ fixtures 24–31. What the Studio does:
 - Export: unknown uid 404; deleted `{uid, deleted: true, profile: null, [] …}`; `profile.updated` = the winning
   record's `at`; `pin` only as true/false, never the hash. Admins see a list (Players tab → Singer profiles: name,
   colour, last activity, which players, PIN set); no history.
+
+### 2.9 Words scoring (added 2026-11-20)
+The third part of the singing score ("did they sing the actual words"), done by the Studio's GPU after the song, since
+a kit's mini PC can't run the aligner quickly. Optional: without a linked Studio (or when it's busy/offline) a score
+simply has no `words` part.
+
+`POST /api/encore/score-words` (bearer token as §2): body = the singer's mic recording of one song as Opus audio
+(`Content-Type: audio/ogg` or `audio/webm`, codec parameters allowed, mono, ≤ 48 kb/s, at most 8 MB — the only
+`/api/encore/` body allowed above 64 KB), with headers (schema `score-words.post.headers.schema.json`):
+- `X-Encore-Song`: the song id; `X-Encore-Base`: the version played (its words.json timing is used);
+- `X-Encore-Start`: the video time (seconds, float, -60 to 86400) at the first audio sample, after the player's
+  latency correction;
+- `X-Encore-Rate`: playback rate (0.5 to 2.0) if a speed-up surprise was active from the start (1.0 normally; a
+  recording whose rate changed mid-song is cut into separate calls or not sent);
+- `X-Encore-Lines` (optional): comma-separated words.json `i` values to score (duets: the singer's own lines; `i`
+  values the Studio's words.json doesn't have are ignored). Left out: every line but backing lines.
+→ `202 {"job": "<id>", "eta": seconds, "status": "queued"|"busy"}`; then `GET /api/encore/score-words/<job>` →
+`{"status": "queued"|"running"|"done"|"failed"|"busy", "words": [{"line": i, "w": index, "ok": bool, "conf": 0-1}],
+  "heard": n, "total": n, "score": 0-100, "reason"?}`. `busy` = the Studio won't score now (no GPU free soon); the
+player stops asking. Results are kept for 10 minutes, then forgotten.
+
+Settled while building it (2026-11-20, the Studio):
+- Fields by status: `queued`/`running`: `eta`; `done`: `words`, `heard`, `total`, `score`; `failed`/`busy`: `reason`.
+  A `busy` job keeps nothing (the 202 already says `busy` when the Studio knows it at once).
+- `line` = the words.json line's `i`; `w` = the word's index in that line's `words` (0-based).
+- `words` lists only the words judged; `total` counts them, `score` = round(100 · heard / total). Not judged (left out,
+  nobody gains or loses by them): words without letters, words not wholly inside the recording, and words the song's
+  own separated vocals don't pass clearly or its instrumental alone already passes (see below). A recording with no
+  word to judge ends `failed` ("no words to score in this recording").
+- Errors: a missing or wrong header, a song or base the catalog doesn't have, none of `X-Encore-Lines` in the song, an
+  empty body: 422 (checked before the body is read); over 8 MB: 413 (counted as the body arrives); more than 6
+  recordings a minute from one player, or 3 of its recordings still waiting: 429 with `Retry-After`.
+- A job is only the sending player's. An unknown job, another player's, or one forgotten after 10 minutes: **410**
+  (not 404, which §2.8.6 keeps for "no player API here").
+
+How the Studio scores: forced alignment of the expected words (the same kind of model it uses to time songs: torchaudio
+MMS_FA) against the recording, windowed around each word's expected time ± 0.8 s (video time, mapped with Start and
+Rate), each line heard once with 1 s of context; a word's confidence = the mean probability of its letters where they
+were placed × how much each letter beats the best other letter there; a word counts as sung at 0.25 and above. Only
+words the song's own separated vocals reach 0.35 on and its instrumental stays under 0.25 on are judged (worked out
+once per song, cached in its job folder). Calibrated on eight published songs (five English, three Japanese): the
+original vocals score 100 and the instrumentals 0 (by construction), another song's instrumental 1-9 (mean 5),
+silence 0, the vocals with the instrumental 10 dB under them 87-99 (mean 93), through Opus 40 kb/s webm 95-100 and
+24 kb/s ogg 93-99, recorded from 30 s in 100, at rate 1.25 82-99 (mean 95), the vocals against another song's words
+8-26 (mean 18). About 70% of a Japanese song's words are judged and 30% of an English one's. It runs after anything
+else and never delays a song being made: on the GPU only when no song is being made or waiting there and the card
+keeps room for one (about 1 s for a 4-minute song, plus about 4 s to start), else on the CPU (about 30 s; 85 s the
+first time a song is scored), else `busy`. The aligner leaves the GPU a few seconds after its last job.
+
+Privacy (owner's choice): Encore only sends recordings when its host setting "Score the words (sends singers' audio to
+the Studio)" is on. The Studio keeps the audio in memory only while scoring (it reaches the decoder and the aligner
+through pipes; no temp file), never stores it with the song, never logs it, and drops it as soon as the job is done,
+fails, is found busy or waits too long (10 minutes).
 
 ### 2.7 Transports and sync bundles (planned: kit phase)
 The Studio can be any PC (Linux, Windows, macOS with Docker; an NVIDIA GPU only for making songs) and doesn't have to
@@ -239,7 +344,7 @@ bundle/
 6. Unpair → `{"ok": true}`; an already-revoked token → 401. Error bodies are `{"error": "<short text>"}`; clients
    never rely on the text. 404 on `/api/encore/*` = no player API at that address (Encore backs off).
 7. `stage` may be null when nothing is running; `failed` always has a `reason`; `ready` may have a `reason`
-   ("needs a look"). Encore's own state for an item the Studio refused (400/413/422) is `rejected`.
+   ("needs a look", auto-make only). Encore's own state for an item the Studio refused (400/413/422) is `rejected`.
 8. v2 catalog: `pitch`, `plays`, `last_played` present on every song (null allowed), `pitch` on every version.
 9. **Studio identity:** `hello` and `pair` return `"studio_id"` (a uuid the Studio makes once). Every outbox item is
    tied to the studio_id it was made for: re-linking the same Studio drains them; linking a DIFFERENT Studio keeps

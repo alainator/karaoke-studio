@@ -82,11 +82,87 @@
               "full"
             ],
             "description": "Optional: the guide vocals level it was sung with (catalog vocals); left out when the song had none."
+          },
+          "score": {
+            "$ref": "#/$defs/score",
+            "description": "Optional (added 2026-11-20): the singing score, when the play was scored (the same object as on history events, §2.6)."
           }
         }
       },
       "minItems": 1,
       "maxItems": 200
+    }
+  },
+  "$defs": {
+    "score": {
+      "type": "object",
+      "required": [
+        "v",
+        "difficulty",
+        "points",
+        "pitch",
+        "timing",
+        "acc",
+        "grade",
+        "max_combo"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "difficulty": {
+          "enum": [
+            "easy",
+            "normal",
+            "hard",
+            "expert"
+          ]
+        },
+        "points": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "pitch": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "timing": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "words": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Optional: the words part (§2.9); left out when the words weren't scored."
+        },
+        "acc": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "grade": {
+          "enum": [
+            "AAA",
+            "AA",
+            "A",
+            "B",
+            "C",
+            "D"
+          ]
+        },
+        "max_combo": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "partial": {
+          "type": "boolean",
+          "description": "Optional: true when the song was skipped or stopped before its end."
+        }
+      },
+      "description": "The singing score (added 2026-11-20; §2.4, §2.6). The Studio stores it and never needs it."
     }
   }
 }

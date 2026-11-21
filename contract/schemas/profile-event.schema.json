@@ -297,10 +297,86 @@
           "type": "string",
           "maxLength": 300,
           "description": "Optional: Encore's card key (artist|title, normalised)."
+        },
+        "score": {
+          "$ref": "#/$defs/score",
+          "description": "Optional (added 2026-11-20): the singing score, when the song was scored. Synced untouched with the rest of the history."
         }
       },
       "description": "Append-only: one event per user per song sung (a duet sung by two users is two events). at = when it ended."
     }
   ],
-  "description": "One profile event (§2.6). The stream decides its shape."
+  "description": "One profile event (§2.6). The stream decides its shape.",
+  "$defs": {
+    "score": {
+      "type": "object",
+      "required": [
+        "v",
+        "difficulty",
+        "points",
+        "pitch",
+        "timing",
+        "acc",
+        "grade",
+        "max_combo"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "difficulty": {
+          "enum": [
+            "easy",
+            "normal",
+            "hard",
+            "expert"
+          ]
+        },
+        "points": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "pitch": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "timing": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "words": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Optional: the words part (§2.9); left out when the words weren't scored."
+        },
+        "acc": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "grade": {
+          "enum": [
+            "AAA",
+            "AA",
+            "A",
+            "B",
+            "C",
+            "D"
+          ]
+        },
+        "max_combo": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "partial": {
+          "type": "boolean",
+          "description": "Optional: true when the song was skipped or stopped before its end."
+        }
+      },
+      "description": "The singing score (added 2026-11-20; §2.4, §2.6). The Studio stores it and never needs it."
+    }
+  }
 }

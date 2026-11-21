@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:encore-studio:contract:score-words.post.headers.schema.json",
+  "title": "POST /api/encore/score-words: the request headers (§2.9)",
+  "description": "The body is the recording itself (Opus audio, at most 8 MB), so what describes it travels in headers. Header names are case-insensitive; this schema uses the spelling of the fixtures.",
+  "type": "object",
+  "required": [
+    "Authorization",
+    "Content-Type",
+    "X-Encore-Song",
+    "X-Encore-Base",
+    "X-Encore-Start",
+    "X-Encore-Rate"
+  ],
+  "properties": {
+    "Authorization": {
+      "type": "string",
+      "pattern": "^Bearer .+$"
+    },
+    "Content-Type": {
+      "type": "string",
+      "pattern": "^audio/(ogg|webm)(\\s*;.*)?$",
+      "description": "Opus in Ogg or WebM (codec parameters allowed, e.g. audio/webm;codecs=opus), mono, at most 48 kb/s."
+    },
+    "X-Encore-Song": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "description": "The catalog song id."
+    },
+    "X-Encore-Base": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 300,
+      "description": "The version played (its base); its words.json timing is used."
+    },
+    "X-Encore-Start": {
+      "type": "string",
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$",
+      "description": "Video time (seconds) at the recording's first sample, after the player's latency correction."
+    },
+    "X-Encore-Rate": {
+      "type": "string",
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$",
+      "description": "Playback rate for the whole recording (1.0 normally; 0.5 to 2.0)."
+    },
+    "X-Encore-Lines": {
+      "type": "string",
+      "pattern": "^[0-9]+(,[0-9]+)*$",
+      "description": "Optional: the words.json line i values to score (duets: the singer's own lines). Left out: every line but backing lines."
+    }
+  }
+}

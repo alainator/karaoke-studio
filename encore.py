@@ -10,8 +10,12 @@ everything is kept in <KARAOKE_DATA>/encore.db (SQLite).
   answers what the first one answered.
 - Request statuses follow the studio's songs: a job that remembers the request (job["encore_rids"], set by "Find and
   make", "We have it", a match on arrival, and kept when a song is made again in place of another) moves it to making,
-  ready, published. A job that fails, is cancelled or deleted puts it back to open. "failed", "auto", "stage" and
-  "eta" are for party auto-make (§2.2b, not built yet).
+  ready, published. A job that fails, is cancelled or deleted puts it back to open.
+- Plays may carry the singing score (§2.4 score); it's kept with the play as sent (the Library shows each song's best
+  grade) and nothing depends on it. Profile history events carry theirs inside the event, relayed untouched.
+- Party auto-make (§2.2b, automake.py): a request the Studio took (`am` set) answers with auto, stage and eta, and
+  ends as published, ready with a reason ("needs a look") or failed with a reason. One it didn't take is a normal
+  request (no auto fields), whatever the player asked.
 """
 import hashlib, hmac, json, os, re, secrets, sqlite3, threading, time, uuid
 from collections import deque
@@ -32,6 +36,7 @@ UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
 PRESET = "preset"
 FINAL = ("published", "have", "declined", "failed")   # statuses the studio's songs don't move any more
 COUNTED = "finished"            # a play counts when finished, or stopped after more than half the song
+GRADES = ("AAA", "AA", "A", "B", "C", "D")   # singing score grades, best first (§2.6 score)
 
 SCHEMA = """
 create table if not exists kv (k text primary key, v text);
@@ -108,6 +113,13 @@ class Store:
             cols = {r[1] for r in self.db.execute("pragma table_info(requests)")}
             if "detached" not in cols:  # (a store from before "Not this song")
                 self.db.execute("alter table requests add column detached integer default 0")
+            for c, t in (("am", "text"), ("am_at", "real")):  # party auto-make: taken, and when
+                if c not in cols:
+                    self.db.execute(f"alter table requests add column {c} {t}")
+            if "automake" not in {r[1] for r in self.db.execute("pragma table_info(players)")}:  # "may auto-make"
+                self.db.execute("alter table players add column automake integer default 0")
+            if "score" not in {r[1] for r in self.db.execute("pragma table_info(plays)")}:  # singing scores (§2.4)
+                self.db.execute("alter table plays add column score text")
             self.db.commit()
         self.code = None            # {"hash", "expires", "wrong"}: the one pairing code that's valid now
         self.preset_hash = token_hash(preset_token) if preset_token else None
@@ -214,8 +226,19 @@ class Store:
                 continue
             out.append({"player": r["player"], "name": r["name"], "created": r["created"], "last_seen": r["last_seen"],
                         "encore": r["encore"], "contract": r["contract"], "backlog": r["backlog"],
-                        "preset": r["player"] == PRESET})
+                        "preset": r["player"] == PRESET, "automake": bool(r["automake"])})
         return out
+
+    def may_automake(self, player):
+        r = self.q("select automake from players where player=?", (player,))
+        return bool(r and r[0]["automake"])
+
+    def set_automake(self, player, on):
+        """The admin's "may auto-make" for one linked player. False if there's no such player."""
+        with self.lock:
+            n = self.db.execute("update players set automake=? where player=?", (1 if on else 0, player)).rowcount
+            self.db.commit()
+        return n > 0
 
     def unlink(self, player):
         """Revoke a player's token (its next call gets 401). The preset can't be unlinked here."""
@@ -271,6 +294,10 @@ class Store:
             args += list(statuses)
         return [dict(r) for r in self.q(sql + " order by created desc", args)]
 
+    def set_answer(self, rid, ans):
+        """What a repeated POST of this rid answers (the first answer, decided after the request was stored)."""
+        self.q("update requests set answer=? where rid=?", (json.dumps(ans), rid))
+
     def set_request(self, rid, **kw):
         """Change a request's status fields; `updated` moves only when something changed. True if it did."""
         old = self.get_request(rid)
@@ -288,9 +315,11 @@ class Store:
         out = {"rid": r["rid"], "status": r["status"], "job": r["job"] if r["status"] in ("making", "ready", "published") else None,
                "id": r["song_id"] if r["status"] in ("published", "have") else None,
                "base": r["base"] if r["status"] in ("published", "have") else None,
-               "reason": r["reason"] if r["status"] in ("declined", "failed") else None, "updated": round(r["updated"], 3)}
-        if r.get("auto"):
-            out.update(auto=True, stage=r.get("stage"), eta=r.get("eta"))
+               "reason": r["reason"] if r["status"] in ("declined", "failed") or (r["status"] == "ready" and r.get("am")) else None,
+               "updated": round(r["updated"], 3)}
+        if r.get("am"):  # taken for auto-make (§2.2b); a request that only asked for it is a normal one
+            moving = r["status"] in ("open", "making")
+            out.update(auto=True, stage=r.get("stage") if moving else None, eta=r.get("eta") if moving else None)
         return out
 
     # ---------------- flags ----------------
@@ -476,13 +505,30 @@ class Store:
                 d = duration_of(p["id"], p["base"])
                 counted = p["result"] == COUNTED or (p["result"] == "stopped" and d and p["seconds"] > d / 2)
                 self.db.execute("insert or ignore into plays (pid, player, song_id, base, at, seconds, result, singers, style, party, "
-                                "uid, counted, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                "uid, counted, created, score) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                                 (p["pid"], player, p["id"], p["base"], int(p["at"]), int(p["seconds"]), p["result"],
                                  int(p.get("singers") or 1), p.get("style"), p.get("party") or "", p.get("uid"),
-                                 1 if counted else 0, now))
+                                 1 if counted else 0, now, json.dumps(p["score"], separators=(",", ":")) if p.get("score") else None))
             self.db.commit()
             pids = [p["pid"] for p in plays]
             return self.db.execute(f"select count(*) from plays where pid in ({','.join('?' * len(pids))})", pids).fetchone()[0]
+
+    def play_score(self, pid):
+        """The singing score a play came with (§2.4), as sent, or None."""
+        r = self.q("select score from plays where pid=?", (pid,))
+        return json.loads(r[0][0]) if r and r[0][0] else None
+
+    def best_grades(self):
+        """base -> the best grade any scored play of it got (AAA best), for the Library."""
+        best = {}
+        for base, raw in self.q("select base, score from plays where score is not null"):
+            try:
+                g = json.loads(raw).get("grade")
+            except (ValueError, AttributeError):
+                continue
+            if g in GRADES and (base not in best or GRADES.index(g) < GRADES.index(best[base])):
+                best[base] = g
+        return best
 
     def counted_plays(self):
         """(song id, base, last time, count) of the plays that count (Encore), grouped by song and version."""

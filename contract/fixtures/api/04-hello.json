@@ -18,7 +18,11 @@
       "contract": "1",
       "studio": "2026.11.20",
       "catalog_version": 2,
-      "studio_id": "9c1e7b42-5d3a-4f86-a0b9-2e4c6d8f1a3b"
+      "studio_id": "9c1e7b42-5d3a-4f86-a0b9-2e4c6d8f1a3b",
+      "auto_make": {
+        "allowed": false,
+        "minutes": null
+      }
     },
     "schema": "hello.response.schema.json"
   }

@@ -1,0 +1,22 @@
+{
+  "name": "score-words-busy-status",
+  "about": "§2.9: a busy job: the player stops asking (the score has no words part).",
+  "request": {
+    "method": "GET",
+    "path": "/api/encore/score-words/6e1d0b8f4c2a4f39b7d5e3c1f9a7b2d4",
+    "headers": {
+      "Authorization": "Bearer <token from pairing>"
+    },
+    "body": null,
+    "schema": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "status": "busy",
+      "reason": "the Studio's graphics card is busy"
+    },
+    "schema": "score-words.get.response.schema.json"
+  }
+}

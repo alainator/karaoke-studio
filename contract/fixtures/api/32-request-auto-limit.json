@@ -1,0 +1,40 @@
+{
+  "name": "request-auto-limit",
+  "about": "§2.2b: taken for auto-make, but over the Studio's limit (here 2 songs an hour): failed at once, with the reason; the request stays in the Studio's list.",
+  "request": {
+    "method": "POST",
+    "path": "/api/encore/requests",
+    "headers": {
+      "Authorization": "Bearer <token from pairing>"
+    },
+    "body": {
+      "rid": "c0a8d6b9-8e1f-4ad1-9c4d-9f6e7b8c0d1e",
+      "artist": "June Arbor",
+      "title": "Paper Comet",
+      "note": "",
+      "by": "Mia",
+      "party": "Friday at Ken's",
+      "at": 1794484970,
+      "auto": true,
+      "queue": {
+        "eid": "q3f9a1c2d50"
+      }
+    },
+    "schema": "requests.post.request.schema.json"
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "rid": "c0a8d6b9-8e1f-4ad1-9c4d-9f6e7b8c0d1e",
+      "status": "failed",
+      "id": null,
+      "base": null,
+      "reason": "the Studio's auto-make limit is reached (2 songs an hour)",
+      "auto": true,
+      "stage": null,
+      "eta": null
+    },
+    "schema": "requests.post.response.schema.json"
+  }
+}

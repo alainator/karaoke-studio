@@ -3,7 +3,9 @@
 (or "fake:<mode>" at the end of the title, for the helper PC, which gets only the song's fields)
 slow (default): starts a child (like yt-dlp/ffmpeg) and both wait 10 minutes; stubborn: the same, but the child
 ignores SIGTERM; ok: writes a finished song's files and exits 0; media: the same with real (tiny) media, lines and
-heard words; oom: says it ran out of GPU memory and fails."""
+heard words; oom: says it ran out of GPU memory and fails; conf: a finished song with its by-ear confidence (job fields
+fake_lines, fake_sure (null: couldn't follow), fake_squeezed: lines crammed into too little time); baddl: the video
+can't be downloaded (YouTube's bot check)."""
 import json, os, subprocess, sys, time
 
 d = sys.argv[1]
@@ -30,6 +32,26 @@ if mode == "media":  # a real (tiny) song: 12 s of video and vocals, three lines
     open(os.path.join(d, "lyrics.ass"), "w").write("x")
     json.dump({"offset": 0, "lines": 3, "duration": 12.0}, open(os.path.join(d, "result.json"), "w"))
     print("@info made (fake media)", flush=True)
+    sys.exit(0)
+if mode == "baddl":
+    print("@step download", flush=True)
+    print("@error yt-dlp failed: ERROR: [youtube] xxxxxxxxxxx: Sign in to confirm you're not a bot", flush=True)
+    sys.exit(1)
+if mode == "conf":
+    n, sq = int(job.get("fake_lines", 10)), int(job.get("fake_squeezed", 0))
+    sure = job["fake_sure"] if "fake_sure" in job else n
+    lines, t = [], 5.0
+    for i in range(n):
+        step = 0.05 if i < sq else 0.5
+        lines.append({"words": [[round(t + k * step, 3), round(t + (k + 1) * step, 3), w] for k, w in enumerate(("la", "da", "na"))]})
+        t += 3.0
+    for f in ("out.mp4", "vocals.m4a", "lyrics.ass"):
+        open(os.path.join(d, f), "wb").write(b"placeholder " * 10)
+    json.dump({"version": 2, "lines": lines}, open(os.path.join(d, "words.json"), "w"))
+    json.dump({"offset": 0, "lines": n, "duration": t + 5, "lang": "en", "confidence": {"lines": n, "check": 0, "sure": sure}},
+              open(os.path.join(d, "result.json"), "w"))
+    print("@step render", flush=True)
+    print("@info made (fake, with confidence)", flush=True)
     sys.exit(0)
 if mode == "oom":
     print("torch.OutOfMemoryError: CUDA out of memory", flush=True)

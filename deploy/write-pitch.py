@@ -3,7 +3,8 @@
 studio made them on publish, then rewrite catalog.json so it lists them. Each song's pitch is tracked once from its
 vocals (about 2 s on the GPU plus a few seconds to start, about 20 s on the CPU for a 4-minute song) and cached in its
 job folder (pitch.f0.npz). Run it when nobody is singing (it loads the server) and when no song is being made, or
-with --cpu to leave the GPU alone.
+with --cpu to leave the GPU alone. The files it writes carry the instrumental's loudness too (§1.1 "music");
+deploy/write-music.py adds that to existing pitch files without tracking the pitch again.
 
     python -I deploy/write-pitch.py --dry                  # which songs would get a pitch file; writes nothing
     python -I deploy/write-pitch.py --limit 5              # the first 5 songs without one (try it on a few first)

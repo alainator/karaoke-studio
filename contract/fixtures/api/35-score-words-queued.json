@@ -1,0 +1,22 @@
+{
+  "name": "score-words-queued",
+  "about": "§2.9: not scored yet (eta: about how many seconds).",
+  "request": {
+    "method": "GET",
+    "path": "/api/encore/score-words/5d0c9a7e3b1f4e28a6c4d2b0e8f6a1c3",
+    "headers": {
+      "Authorization": "Bearer <token from pairing>"
+    },
+    "body": null,
+    "schema": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "status": "queued",
+      "eta": 4
+    },
+    "schema": "score-words.get.response.schema.json"
+  }
+}

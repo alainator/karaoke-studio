@@ -32,6 +32,9 @@ import guidevocals  # noqa: E402
 import schemalite  # noqa: E402
 import gpu as gpumod  # noqa: E402
 import agents  # noqa: E402
+import automake as AM  # noqa: E402
+import autopick  # noqa: E402
+import wordscore  # noqa: E402
 
 # what the studio did and when: data/logs/studio.log (5 files of 2 MB kept)
 os.makedirs(C.LOGS, exist_ok=True)
@@ -420,6 +423,23 @@ def lyrics_preview(source: str, id: str):
     return {"lines": _LYR_PREVIEW[key]}
 
 
+def new_job(fields, actor):
+    """A new song in the queue (job.json): fields = yt, lrc_id, lyrics_source, artist, title, video_title, gpu_pref and
+    any extras. Returns its id."""
+    slug = re.sub(r"[^a-z0-9]+", "-", norm(f"{fields['artist']} {fields['title']}"))[:60].strip("-") or "song"
+    with lock:
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        jid, n = f"{stamp}-{slug}", 1
+        while os.path.exists(f"{JOBS}/{jid}"):  # two of the same song in one second
+            n += 1
+            jid = f"{stamp}-{slug[:57].strip('-')}-{n}"
+        os.makedirs(f"{JOBS}/{jid}")
+        save(jid, {"id": jid, "status": "queued", "step": "queued", "gpu_pref": "auto", **fields,
+                   "created": time.time(), "offset": 0.0, "lyrics_display": C.LYRICS_DISPLAY if C.LYRICS_DISPLAY in MODES else "both",
+                   "made_by": agents.stamp(actor), "log": []})
+    return jid
+
+
 @app.post("/api/jobs")
 async def create_job(req: Request):
     check_origin(req)
@@ -437,15 +457,10 @@ async def create_job(req: Request):
                 (source == "pasted" and sum(1 for l in pasted.splitlines() if l.strip()) >= 4)
     if not re.fullmatch(r"[A-Za-z0-9_-]{11}", yt) or not ok_lyrics or not artist or not title:
         raise HTTPException(400, "pick a video and lyrics (or paste at least 4 lines), and give artist and title")
-    slug = re.sub(r"[^a-z0-9]+", "-", norm(f"{artist} {title}"))[:60].strip("-") or "song"
-    jid = time.strftime("%Y%m%d-%H%M%S") + "-" + slug
-    os.makedirs(f"{JOBS}/{jid}")
-    save(jid, {"id": jid, "yt": yt, "lrc_id": lrc_id, "lyrics_source": source, "artist": artist, "title": title,
-               "video_title": str(b.get("video_title", ""))[:200], "status": "queued", "step": "queued",
-               "gpu_pref": b.get("gpu") if b.get("gpu") in ("local", "remote") else "auto",
-               **({"lyrics_text": pasted} if source == "pasted" else {}),
-               "created": time.time(), "offset": 0.0, "lyrics_display": C.LYRICS_DISPLAY if C.LYRICS_DISPLAY in MODES else "both",
-               "made_by": agents.stamp(agents.actor_of(req)), "log": []})
+    jid = new_job({"yt": yt, "lrc_id": lrc_id, "lyrics_source": source, "artist": artist, "title": title,
+                   "video_title": str(b.get("video_title", ""))[:200],
+                   "gpu_pref": b.get("gpu") if b.get("gpu") in ("local", "remote") else "auto",
+                   **({"lyrics_text": pasted} if source == "pasted" else {})}, agents.actor_of(req))
     log.info("queued %s | video %s | lyrics %s:%s | gpu %s%s", jid, yt, source, lrc_id if source != "pasted" else f"{len(pasted)} chars",
              b.get("gpu") or "auto", f" | replaces {b.get('replace')}" if b.get("replace") else "")
     # "Change video or lyrics" on an existing song: the new one takes its place once it has been made (if it fails,
@@ -502,8 +517,11 @@ def summary(job):
 def _summary(job):
     keys = ("id", "artist", "title", "yt", "status", "step", "created", "finished", "error", "offset",
             "published", "published_as", "video_title", "result", "waiting", "edited", "unpublished_changes", "lang", "gpu", "ai_romaji", "video_v", "gpu_pref", "reviewed", "lrc_id", "lyrics_source", "trim", "video_task",
-            "lyrics_display", "cancel_requested", "last_edit", "published_by")
-    return {k: job.get(k) for k in keys}
+            "lyrics_display", "cancel_requested", "last_edit", "published_by", "made_by", "quick", "auto_held")
+    out = {k: job.get(k) for k in keys}
+    am = job.get("automake")
+    out["automake"] = {k: am.get(k) for k in ("player_name", "by", "party", "at")} if am else None
+    return out
 
 
 @app.get("/api/jobs")
@@ -530,6 +548,8 @@ def brief_summary(s):
     out["lang"] = s.get("lang") or r.get("lang")
     out["result"] = {"confidence": r.get("confidence")} if r.get("confidence") else None
     out["updates_n"] = len(s.get("updates") or [])  # improvements since it was made (the song page lists them)
+    q = s.get("quick")
+    out["quick"] = 1 if q and not q.get("reviewed") else None   # auto-made and published, nobody has checked it yet
     return {k: v for k, v in out.items() if v not in (None, False, 0, "", [])}
 
 
@@ -544,7 +564,8 @@ def job_index():
                 continue
             if j.get("artist") and j.get("title"):
                 out.append({k: j.get(k) for k in ("id", "artist", "title", "status", "published", "published_as",
-                                                  "created", "finished", "cancel_requested", "encore_rids", "error")})
+                                                  "created", "finished", "cancel_requested", "encore_rids", "error",
+                                                  "started", "step", "gpu", "gpu_pref", "automake", "auto_held")})
     return out
 
 
@@ -1733,7 +1754,10 @@ async def set_reviewed(jid: str, req: Request):
         if job.get("status") != "done":
             raise HTTPException(400, "finish making it first")
         job["reviewed"] = time.time() if b.get("on", True) else None
-        _edited(jid, job, agents.actor_of(req), "checked by you: " + ("on" if job["reviewed"] else "off"))
+        who = agents.actor_of(req)
+        if job["reviewed"] and job.get("quick") and not job["quick"].get("reviewed") and who.get("kind") != "agent":
+            job["quick"] = dict(job["quick"], reviewed=job["reviewed"], reviewed_by=who.get("name"))  # a person looked
+        _edited(jid, job, who, "checked by you: " + ("on" if job["reviewed"] else "off"))
         save(jid, job)
     return {"reviewed": job["reviewed"]}
 
@@ -2133,6 +2157,8 @@ def worker():
 
 def schedule_once():
     queued = sorted((j for j in list_jobs() if j["status"] == "queued"), key=lambda j: j["created"])
+    if queued:
+        WORDS.release_gpu()  # (words scoring never holds the card while a song waits for one)
     for j in queued:
         jid = j["id"]
         pref = load(jid).get("gpu_pref", "auto")  # "auto": whichever card is free; "local"/"remote": only that one
@@ -2180,6 +2206,19 @@ def cancel_requested(jid):
 
 
 def finish(jid, rc, err, oom, where):
+    _finish(jid, rc, err, oom, where)
+    try:
+        job = load(jid)
+    except Exception:
+        return
+    if job.get("automake"):  # party auto-make: check it and publish it (or say why not); the request follows
+        if job.get("status") == "done":
+            threading.Thread(target=auto_finish, args=(jid,), daemon=True, name="automake-finish").start()
+        else:
+            refresh_requests()
+
+
+def _finish(jid, rc, err, oom, where):
     with lock:
         job = load(jid)
         if job.get("cancel_requested"):  # stopped by the user: not failed, not retried
@@ -2650,7 +2689,11 @@ def publish_info(jid: str):
 async def publish(jid: str, req: Request):
     check_origin(req)
     b = await req.json()
-    remove = [str(x) for x in b.get("remove", [])]
+    return do_publish(jid, [str(x) for x in b.get("remove", [])], agents.actor_of(req))
+
+
+def do_publish(jid, remove, actor):
+    """Publish a made song into the library (and remove the listed old YouTube versions), signed by actor."""
     with lock:
         job = load(jid)
         if job["status"] not in ("done",):
@@ -2682,7 +2725,7 @@ async def publish(jid: str, req: Request):
         # the guide vocals (base.vocals.m4a), the song's and its versions' (the same sound); never stops a publish
         guidevocals.write(job_path(jid), MV_DIR, [base] + vbases, log)
         job.update(status="done", published=time.time(), published_as=base, unpublished_changes=False,
-                   published_by=agents.stamp(agents.actor_of(req)))
+                   published_by=agents.stamp(actor))
         log.info("published %s as %s (by %s)", jid, base, job["published_by"]["by"])
         job.setdefault("log", []).append(f"published as '{base}'" + (f"; removed {len(removed)} old version(s)" if removed else ""))
         save(jid, job)
@@ -2698,11 +2741,16 @@ JOB_RANK = {"done": 0, "running": 1, "queued": 2, "failed": 3}  # which of sever
 
 def library_songs():
     """Every song file in the library. plays/last_played (unix time): PiKaraoke's history plus Encore's plays that
-    count (finished, or stopped after more than half), by file name."""
+    count (finished, or stopped after more than half), by file name; grade: the best singing score grade Encore
+    reported for it (or None)."""
     plays = {}
     for _, title, last, n in encore.play_rows(STORE):
         p = plays.get(title, (0, None))
         plays[title] = (p[0] + n, max(x for x in (p[1], last) if x is not None) if (p[1] or last) else None)
+    try:
+        grades = STORE.best_grades()  # the best singing score grade per version played (Encore, §2.4)
+    except sqlite3.Error:
+        grades = {}
     songs = []
     for d, _, files in os.walk(LIB):
         for f in files:
@@ -2716,7 +2764,8 @@ def library_songs():
                 except OSError:
                     added = None
                 songs.append({"file": rel, "title": title, "folder": folder, "plays": n, "last_played": last, "added": added,
-                              "lyrics": os.path.exists(os.path.join(d, os.path.splitext(f)[0] + ".ass"))})
+                              "lyrics": os.path.exists(os.path.join(d, os.path.splitext(f)[0] + ".ass")),
+                              "grade": grades.get(title)})
     jobs = job_index()
     by_pub = {j["published_as"]: j for j in jobs if j.get("published_as")}
     mvs = []  # (artist, title, library title, studio song) of every studio music video in the library
@@ -2811,7 +2860,8 @@ def recover_jobs():
 
 # ---------------- players (Encore): contract/ENCORE-STUDIO.md ----------------
 # /api/encore/* is the player API: a bearer token per linked player (pairing: "Connect a player" on the Players page),
-# JSON bodies of at most 64 KB checked against contract/schemas, errors as {"error": "..."}. The admin pages
+# JSON bodies of at most 64 KB checked against contract/schemas (a words-scoring recording: Opus audio, at most 8 MB),
+# errors as {"error": "..."}. The admin pages
 # (/api/players, /api/requests, flags on the song page) are the web app's own, behind its login like the rest.
 STORE = encore.Store(preset_token=C.ENCORE_TOKEN or None)
 MAX_BODY = 64 * 1024
@@ -2858,9 +2908,10 @@ async def encore_gate(req: Request, call_next):
         if _ONLY_NETS and _only_player_api(req):
             return _err(403, "only the player API (/api/encore/) answers on this network")
         return await call_next(req)
+    audio = path == "/api/encore/score-words" and req.method == "POST"  # (§2.9: the one body that's audio)
     try:
-        if int(req.headers.get("content-length") or 0) > MAX_BODY:
-            return _err(413, "the body is too big (64 KB at most)")
+        if int(req.headers.get("content-length") or 0) > (wordscore.MAX_BYTES if audio else MAX_BODY):
+            return _err(413, "the recording is too big (8 MB at most)" if audio else "the body is too big (64 KB at most)")
     except ValueError:
         return _err(400, "bad Content-Length")
     if path != "/api/encore/pair":
@@ -3140,8 +3191,16 @@ def refresh_requests():
         for rid in j.get("encore_rids") or []:
             by_rid[rid] = j
     changed = 0
+    etas = None
     for r in moving:
         j = by_rid.get(r["rid"]) or (by_id.get(r["job"]) if r["job"] else None)
+        if r.get("am"):  # taken for party auto-make: its own rules (failed and ready keep their reasons)
+            if etas is None:
+                etas = auto_etas(jobs)
+            kw = _auto_status(r, j, etas)
+            if kw:
+                changed += STORE.set_request(r["rid"], **kw)
+            continue
         st = _job_status(j) if j else None
         if st is None and r["status"] == "open" and not j and not r.get("detached"):
             m = match_song(r["artist"], r["title"], jobs)
@@ -3152,6 +3211,269 @@ def refresh_requests():
         st = st or ("open", None, None, None)
         changed += STORE.set_request(r["rid"], status=st[0], job=st[1], song_id=st[2], base=st[3], reason=None)
     return changed
+
+
+# ---- party auto-make (automake.py; contract §2.2b) ----
+def _auto_status(r, j, etas):
+    """The status fields of a request taken for auto-make, from its song (None: leave it as it is)."""
+    if not j:
+        if r["job"]:  # its song was deleted at the Studio
+            return dict(status="failed", reason="it was removed at the Studio", stage=None, eta=None, song_id=None, base=None)
+        return None   # still finding the video and lyrics (the worker moves it on)
+    base = dict(job=j["id"], song_id=None, base=None)
+    if j["status"] in ("queued", "running"):
+        return dict(base, status="making", reason=None, stage=AM.stage_of(j.get("step")) if j["status"] == "running" else "downloading",
+                    eta=etas.get(j["id"]))
+    if j["status"] == "done":
+        if j.get("published") and j.get("published_as"):
+            return dict(base, status="published", song_id=j["id"], base=j["published_as"], reason=None, stage=None, eta=None)
+        if j.get("auto_held") or not j.get("automake"):  # below the floor (or a person's song): waits for a look
+            return dict(base, status="ready", reason=AM.NEEDS_A_LOOK if j.get("automake") else None, stage=None, eta=None)
+        return dict(base, status="making", reason=None, stage="publishing", eta=r.get("eta") or AM.round_eta(time.time() + AM.PUBLISH_S))
+    return dict(base, status="failed", reason=AM.failure_reason(j), stage=None, eta=None)
+
+
+_MAKE_S = {"at": 0.0, "v": None}
+
+
+def make_seconds(jobs):
+    """Median make time per card (local, remote), from the finished songs; cached for 10 minutes."""
+    if _MAKE_S["v"] is None or time.time() - _MAKE_S["at"] > 600:
+        _MAKE_S.update(at=time.time(), v=AM.make_seconds(jobs, LOCAL_GPU))
+    return _MAKE_S["v"]
+
+
+def _queue_plan(jobs, extra=None):
+    now = time.time()
+    secs = make_seconds(jobs)
+    local_running = any(j["status"] == "running" and (runners.get(j["id"]) or {}).get("where", "local") == "local" for j in jobs)
+    up = {"local": bool(C.USE_LOCAL_GPU) and (local_running or gpu_free_mib() >= NEED_GPU_MIB),  # (something else may hold it)
+          "remote": bool(C.GPU_HELPER_URL) and bool(helper_seen.get("health")) and not helper_seen.get("stale")}
+    running = {}
+    for j in jobs:
+        if j["status"] == "running" and j.get("started"):
+            where = (runners.get(j["id"]) or {}).get("where") or ("local" if j.get("gpu") == LOCAL_GPU else "remote")
+            running[where] = j["started"]
+    queued = [(j["id"], j.get("gpu_pref") or "auto") for j in sorted(jobs, key=lambda j: j.get("created") or 0) if j["status"] == "queued"]
+    return now, secs, up, running, AM.plan(now, up, running, queued, secs, extra)
+
+
+def auto_etas(jobs):
+    """job id -> when the song should be published (unix time, to 10 s), for the songs waiting or being made."""
+    now, secs, up, running, plan = _queue_plan(jobs)
+    out = {}
+    for j in jobs:
+        if j["status"] == "running" and j.get("started"):
+            where = (runners.get(j["id"]) or {}).get("where") or ("local" if j.get("gpu") == LOCAL_GPU else "remote")
+            end = j["started"] + secs.get(where, AM.DEFAULT_MAKE_S["local"])
+            out[j["id"]] = AM.round_eta(max(end, now + 30.0) + AM.PUBLISH_S)
+        elif j["status"] == "queued" and j["id"] in plan:
+            out[j["id"]] = AM.round_eta(plan[j["id"]][1] + AM.PUBLISH_S)
+    return out
+
+
+def new_song_eta(jobs=None):
+    """(wait for a card in seconds, when a song asked for now would be published) or (None, None): no card."""
+    jobs = job_index() if jobs is None else jobs
+    now, secs, up, running, plan = _queue_plan(jobs, extra=("new", "auto"))
+    got = plan.get("new")
+    if not got:
+        return None, None
+    start = max(got[0], now + AM.SEARCH_S)
+    return got[0] - now, AM.round_eta(start + secs[got[2]] + AM.PUBLISH_S)
+
+
+def automake_offer(player):
+    """For hello (§2.2b): may this player ask for auto-make now, and about how many minutes it takes."""
+    cfg = AM.load(STORE)
+    if not (cfg["on"] and STORE.may_automake(player)):
+        return {"allowed": False, "minutes": None}
+    _, eta = new_song_eta()
+    return {"allowed": True, "minutes": max(1, math.ceil((eta - time.time()) / 60)) if eta else None}
+
+
+def automake_counts(now):
+    q = lambda since: STORE.q("select count(*) from requests where am='taken' and am_at > ?", (since,))[0][0]
+    return q(now - 3600), q(now - 86400)
+
+
+def automake_take(player, b, ans):
+    """A new request that asks for auto-make: take it (when the admin allows it for this player, within the limits)
+    or leave it a normal request. Returns the POST answer (kept for a repeated rid)."""
+    cfg = AM.load(STORE)
+    if not (cfg["on"] and STORE.may_automake(player)):
+        return ans
+    rid, now = b["rid"], time.time()
+    hour, day = automake_counts(now)
+    wait, eta = new_song_eta()
+    why = None
+    if hour >= cfg["per_hour"]:
+        why = f"the Studio's auto-make limit is reached ({cfg['per_hour']} songs an hour)"
+    elif day >= cfg["per_day"]:
+        why = f"the Studio's auto-make limit for today is reached ({cfg['per_day']} songs)"
+    elif wait is None:
+        why = "no graphics card is free at the Studio"
+    elif wait > cfg["gpu_wait"] * 60:
+        why = f"the Studio's graphics cards are busy (about {math.ceil(wait / 60)} min to wait)"
+    if why:
+        STORE.set_request(rid, am="taken", status="failed", reason=why, stage=None, eta=None)
+        ans = dict(ans, status="failed", reason=why, auto=True, stage=None, eta=None)
+        log.info("auto-make: request %s… not made: %s", rid[:8], why)
+    else:
+        STORE.set_request(rid, am="taken", am_at=now, stage="finding", eta=eta)
+        ans = dict(ans, auto=True, stage="finding", eta=eta)
+        automake_enqueue(rid)
+        log.info("auto-make: request %s… %r - %r taken", rid[:8], b.get("artist"), b["title"])
+    STORE.set_answer(rid, ans)
+    return ans
+
+
+_AM_Q = queue.Queue()
+_AM_T = {"thread": None}
+
+
+def automake_enqueue(rid):
+    if _AM_T["thread"] is None or not _AM_T["thread"].is_alive():
+        _AM_T["thread"] = threading.Thread(target=_automake_worker, daemon=True, name="automake")
+        _AM_T["thread"].start()
+    _AM_Q.put(rid)
+
+
+def _automake_worker():
+    while True:
+        rid = _AM_Q.get()
+        try:
+            automake_run(rid)
+        except Exception as e:
+            log.exception("auto-make: request %s", rid[:8])
+            try:
+                STORE.set_request(rid, status="failed", reason="the Studio hit an error", stage=None, eta=None)
+            except Exception:
+                pass
+
+
+def _auto_fail(rid, why):
+    STORE.set_request(rid, status="failed", reason=why, stage=None, eta=None)
+    log.info("auto-make: request %s… not made: %s", rid[:8], why)
+
+
+def automake_run(rid):
+    """Find the video and lyrics for a request taken for auto-make, the way the Make page picks them, and queue the
+    song (or say why not)."""
+    r = STORE.get_request(rid)
+    if not r or r["status"] != "open" or r.get("am") != "taken" or r.get("job"):
+        return
+    cfg = AM.load(STORE)
+    q = f"{r['artist']} - {r['title']}" if (r["artist"] or "").strip() else r["title"]
+    try:
+        d = search(q)
+    except Exception as e:
+        log.warning("auto-make: search for %s… failed: %s", rid[:8], str(getattr(e, "detail", e))[:120])
+        return _auto_fail(rid, "couldn't search for it (YouTube or the lyrics sites didn't answer)")
+    p = autopick.choose(d)
+    v, l = p["video"], p["lyrics"]
+    if not v:
+        return _auto_fail(rid, "no music video found")
+    if not l or not l.get("timed"):
+        return _auto_fail(rid, "no timed lyrics found")
+    if (v.get("duration") or 0) > cfg["max_minutes"] * 60:
+        m, sec = divmod(int(v["duration"]), 60)
+        return _auto_fail(rid, f"too long for a quick make ({m}:{sec:02d}; the limit is {cfg['max_minutes']} min)")
+    artist = p["artist"] or d.get("artist") or r["artist"]
+    title = p["title"] or d.get("title") or r["title"]
+    have = match_song(artist, title)  # it may be here under the names the lyrics give it
+    if have[0] == "have":
+        STORE.set_request(rid, status="have", job=have[1], song_id=have[2], base=have[3], stage=None, eta=None)
+        return
+    if have[0] in ("ready", "making"):  # someone's song: the request follows it (no auto-publish)
+        link_request(have[1], rid)
+        refresh_requests()
+        return
+    base = final_base({"artist": artist, "title": title})
+    if os.path.exists(f"{MV_DIR}/{base}.mp4"):  # never replaced by a quick make
+        hit = catalog_view()["by_base"].get(base)
+        if hit:
+            STORE.set_request(rid, status="have", song_id=hit[0]["id"], base=base, stage=None, eta=None)
+            return
+        return _auto_fail(rid, "a song with this name is already in the library")
+    pname = STORE.player_names().get(r["player"]) or ("the preset player" if r["player"] == encore.PRESET else "a player")
+    jid = new_job({"yt": v["id"], "lrc_id": l["id"], "lyrics_source": l["source"], "artist": artist, "title": title,
+                   "video_title": str(v.get("title") or "")[:200], "gpu_pref": "auto", "encore_rids": [rid],
+                   "automake": {"rid": rid, "player": r["player"], "player_name": pname, "by": r["by_name"], "party": r["party"],
+                                "at": time.time(), "video": v["id"], "lyrics": f"{l['source']}:{l['id']}",
+                                "names_from": p["names_from"]}}, AM.actor(pname))
+    log.info("auto-make: queued %s for %s (asked by %s) | video %s | lyrics %s:%s", jid, pname, r["by_name"], v["id"], l["source"], l["id"])
+    STORE.set_request(rid, status="making", job=jid, stage="downloading")
+    refresh_requests()
+    wake.set()
+
+
+def auto_finish(jid):
+    """An auto-made song is done: publish it if it clears the quality floor (and nothing of that name is in the
+    library), else it waits for a look. The request follows."""
+    rid = None
+    try:
+        job = load(jid)
+        am = job.get("automake") or {}
+        rid = am.get("rid")
+        if job.get("status") != "done" or job.get("published") or job.get("auto_held") or job.get("quick"):
+            return
+        r = STORE.get_request(rid) if rid else None
+        if not (r and r.get("am") == "taken" and r["status"] in ("open", "making") and r.get("job") == jid
+                and AM.load(STORE)["on"] and STORE.may_automake(am.get("player"))):
+            # made again by hand (Retry after it failed), or the admin turned it off meanwhile: a person publishes it
+            with lock:
+                j = load(jid)
+                j["auto_held"] = "the request isn't waiting for this make any more (or auto-make was turned off)"
+                j.setdefault("log", []).append("auto-make: not published automatically; publish it yourself if it's right")
+                save(jid, j)
+            log.info("auto-make: %s made, not published automatically (its request isn't waiting for it)", jid)
+            return
+        if rid:
+            STORE.set_request(rid, status="making", stage="publishing", eta=AM.round_eta(time.time() + AM.PUBLISH_S))
+        ok, why, stats = AM.check(job.get("result"), load_lines(job_path(jid, "words.json")), AM.load(STORE)["floor"])
+        base = final_base(job)
+        if ok and os.path.exists(f"{MV_DIR}/{base}.mp4"):  # a song of that name was published meanwhile: never replaced
+            ok, why = False, "a song with this name is already in the library"
+            hit = catalog_view()["by_base"].get(base)
+            if hit and rid:
+                STORE.set_request(rid, status="have", song_id=hit[0]["id"], base=base, stage=None, eta=None)
+        if not ok:
+            with lock:
+                j = load(jid)
+                j["auto_held"] = why
+                j.setdefault("log", []).append(f"auto-make: not published ({why}); it needs a look")
+                save(jid, j)
+            log.info("auto-make: %s not published: %s", jid, why)
+            return
+        who = AM.actor(am.get("player_name"))
+        do_publish(jid, [], who)
+        with lock:
+            j = load(jid)
+            j["quick"] = {"at": time.time(), "for": am.get("player_name"), "by": am.get("by"), "party": am.get("party"), **stats}
+            j.setdefault("log", []).append(f"{who['name']}: published without review ({stats['sure']} of {stats['lines']} lines heard in place)")
+            save(jid, j)
+        log.info("auto-make: published %s for %s (%s of %s heard in place)", jid, am.get("player_name"), stats["sure"], stats["lines"])
+    except Exception as e:
+        log.exception("auto-make: finishing %s", jid)
+        try:
+            set_job(jid, auto_held=f"auto-make hit an error ({str(e)[:80]})")
+        except Exception:
+            pass
+    finally:
+        refresh_requests()
+
+
+def recover_automake():
+    """At startup: requests still being looked for go back to the worker; auto-made songs that finished while the
+    Studio was down get their check."""
+    for r in STORE.requests(statuses=("open",)):
+        if r.get("am") == "taken" and not r.get("job"):
+            automake_enqueue(r["rid"])
+    for j in job_index():
+        if j.get("automake") and j["status"] == "done" and not j.get("published") and not j.get("auto_held"):
+            if not load(j["id"]).get("quick"):
+                threading.Thread(target=auto_finish, args=(j["id"],), daemon=True).start()
 
 
 # ---- flags: the ⚠ marks ----
@@ -3273,7 +3595,7 @@ async def encore_unpair(req: Request):
 @_guard
 def encore_hello(req: Request):
     return {"api": encore.API, "contract": encore.CONTRACT, "studio": encore.VERSION, "catalog_version": catalog.VERSION,
-            "studio_id": STORE.studio_id()}
+            "studio_id": STORE.studio_id(), "auto_make": automake_offer(req.state.player)}
 
 
 @app.post("/api/encore/requests")
@@ -3288,6 +3610,8 @@ async def encore_request(req: Request):
     if new:
         if jid and st in ("ready", "making"):
             link_request(jid, b["rid"])
+        elif b.get("auto") and st == "open":  # party auto-make (§2.2b): taken only if the admin allows it for this player
+            ans = automake_take(req.state.player, b, ans)
         log.info("players: request %s… %r - %r from %s: %s", b["rid"][:8], b.get("artist"), b["title"], b["by"], st)
     return ans
 
@@ -3394,6 +3718,119 @@ def encore_unpublished(req: Request):
     return {"songs": songs, "studio_url": C.STUDIO_PUBLIC_URL or None}
 
 
+# ---- §2.9 words scoring (wordscore.py): the singer's recording against the song's words ----
+WORDS_LIMIT = encore.RateLimit(6, 60)          # recordings per player and minute
+
+
+def words_device():
+    """Where words scoring may run now: the GPU only when no song is being made here or waits for a card, and the card
+    keeps room for a song beside the aligner; else the CPU (unless KARAOKE_WORDS_CPU=0); else None (busy)."""
+    try:
+        if C.USE_LOCAL_GPU and slots["local"] is None and not any(j["status"] == "queued" for j in job_index()):
+            if gpu_free_mib() - wordscore.GPU_MIB >= max(NEED_GPU_MIB, wordscore.GPU_MIB):
+                return pitchmod._gpu_device()
+    except Exception:
+        pass
+    return "cpu" if wordscore.CPU_OK else None
+
+
+def words_song(sid, base):
+    """What words scoring needs about a published song or version (wordscore.Scorer), or None. Versions share the
+    song's sound and timing: the song's vocals and video are the references."""
+    e, _ = catalog_view()["by_base"].get(base) or (None, None)
+    if not e or (sid != e["id"] and not sid.startswith("f-")):  # (scanned songs, "f-…": matched by base, §2.8.3)
+        return None
+    folder = os.path.join(LIB, *(e.get("folder") or "").split("/"))
+    try:  # (the version's own words file: the song's timing, its base)
+        doc = json.load(open(os.path.join(folder, base + ".words.json"), encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    jdir = os.path.join(JOBS, e["id"]) if ID_RE.match(e["id"]) and os.path.isdir(os.path.join(JOBS, e["id"])) else None
+    # the published vocals (on the published video's timeline, like its words), else the job's (a trim or remake since
+    # publishing moves those)
+    voc = os.path.join(folder, e["vocals"]) if e.get("vocals") else None
+    if not (voc and os.path.isfile(voc)):
+        voc = os.path.join(jdir, "vocals.m4a") if jdir else None
+    return {"words": doc, "duration": e.get("duration"), "vocals": voc, "music": os.path.join(folder, e["base"] + ".mp4"),
+            "ref_dir": jdir}
+
+
+WORDS = wordscore.Scorer(words_song, words_device, log)
+
+
+def _num_header(req, name, lo, hi, label):
+    v = (req.headers.get(name) or "").strip()
+    try:
+        x = float(v)
+    except ValueError:
+        x = float("nan")
+    if not math.isfinite(x) or not lo <= x <= hi:
+        raise EncoreError(422, f"{label}: a number from {lo:g} to {hi:g}")
+    return x
+
+
+async def _audio_body(req):
+    """The recording (at most 8 MB, counted as it arrives: a missing or wrong Content-Length doesn't get past it)."""
+    buf = bytearray()
+    async for chunk in req.stream():
+        buf += chunk
+        if len(buf) > wordscore.MAX_BYTES:
+            raise EncoreError(413, "the recording is too big (8 MB at most)")
+    return bytes(buf)
+
+
+@app.post("/api/encore/score-words")
+@_guard
+async def encore_score_words(req: Request):
+    """§2.9: score the words of one recording (the body: Opus audio). The headers are checked before the body is read."""
+    player = req.state.player
+    if not WORDS_LIMIT.hit(player):
+        raise EncoreError(429, "too many recordings; wait a minute")
+    if WORDS.pending_of(player) >= wordscore.PENDING_PER_PLAYER:
+        raise EncoreError(429, "this player's earlier recordings are still being scored")
+    fmt = wordscore.media_format(req.headers.get("content-type"))
+    if not fmt:
+        raise EncoreError(422, "Content-Type: audio/ogg or audio/webm (Opus)")
+    sid, base = (req.headers.get("x-encore-song") or "").strip(), (req.headers.get("x-encore-base") or "").strip()
+    if not sid or len(sid) > 80 or not base or len(base) > 300:
+        raise EncoreError(422, "X-Encore-Song and X-Encore-Base: the song id and the version played")
+    start = _num_header(req, "x-encore-start", -60.0, 24 * 3600.0, "X-Encore-Start")
+    rate = _num_header(req, "x-encore-rate", 0.5, 2.0, "X-Encore-Rate")
+    try:
+        lines = wordscore.parse_lines(req.headers.get("x-encore-lines"))
+    except ValueError as e:
+        raise EncoreError(422, str(e))
+    s = await asyncio.to_thread(words_song, sid, base)
+    if not s:
+        raise EncoreError(422, "unknown song (not in the Studio's catalog, or without words)")
+    if lines is not None:
+        known = {l.get("i") for l in s["words"].get("lines") or []}
+        lines = [i for i in lines if i in known]
+        if not lines:
+            raise EncoreError(422, "none of X-Encore-Lines are lines of this song")
+    if not wordscore.ENABLED or await asyncio.to_thread(WORDS.pick_device) is None:  # busy: the recording isn't read
+        jid = WORDS.answer_busy(player, sid, base)
+        log.info("players: words scoring %s… for %s from %s…: busy", jid[:8], base[:80], player[:8])
+        return JSONResponse({"job": jid, "eta": 0, "status": "busy"}, status_code=202)
+    raw = await _audio_body(req)
+    if not raw:
+        raise EncoreError(422, "no recording in the body")
+    jid, eta, status = await asyncio.to_thread(WORDS.submit, player, raw, fmt, sid, base, start, rate, lines, s.get("duration"))
+    raw = None
+    log.info("players: words scoring %s… for %s from %s…: %s", jid[:8], base[:80], player[:8], status)
+    return JSONResponse({"job": jid, "eta": eta, "status": status}, status_code=202)
+
+
+@app.get("/api/encore/score-words/{job}")
+@_guard
+def encore_score_words_get(job: str, req: Request):
+    """§2.9: a scoring job's state; only the player that sent it sees it. Unknown or forgotten (after 10 minutes): 410."""
+    x = WORDS.get(req.state.player, job) if re.fullmatch(r"[0-9a-f]{32}", job) else None
+    if x is None:
+        raise EncoreError(410, "no such scoring job (answers are kept 10 minutes)")
+    return x
+
+
 def _etag_match(req, etag):
     inm = req.headers.get("if-none-match")
     if not inm:
@@ -3471,6 +3908,47 @@ def players_code_cancel(req: Request):
     return {"ok": True}
 
 
+@app.post("/api/players/{player}/automake")
+async def players_automake(player: str, req: Request):
+    """The admin's "may auto-make" for one linked player (party auto-make: also needs the Studio-wide setting)."""
+    check_origin(req)
+    on = (await req.json()).get("on")
+    if not isinstance(on, bool):
+        raise HTTPException(400, "on: true or false")
+    if not STORE.set_automake(player, on):
+        raise HTTPException(404, "no such player")
+    log.info("players: %s… may auto-make: %s (by %s)", player[:8], "yes" if on else "no", agents.actor_of(req)["name"])
+    return {"ok": True, "automake": on}
+
+
+@app.get("/api/automake")
+def automake_info():
+    """Party auto-make: the settings, how many it made in the last hour and day, the last requests it took."""
+    now = time.time()
+    hour, day = automake_counts(now)
+    names = STORE.player_names()
+    recent = [{"rid": r["rid"], "title": r["title"], "artist": r["artist"], "by": r["by_name"], "party": r["party"],
+               "player": names.get(r["player"]) or "a player", "status": r["status"], "stage": r["stage"], "reason": r["reason"],
+               "job": r["job"], "created": r["created"]}
+              for r in STORE.q("select * from requests where am='taken' order by created desc limit 15")]
+    wait, eta = new_song_eta()
+    secs = make_seconds(job_index())
+    return {"settings": AM.load(STORE), "defaults": AM.DEFAULTS, "limits": AM.LIMITS, "hour": hour, "day": day,
+            "recent": recent, "minutes": max(1, math.ceil((eta - now) / 60)) if eta else None,
+            "make_seconds": secs if C.GPU_HELPER_URL else {"local": secs["local"]}}
+
+
+@app.post("/api/automake")
+async def automake_settings(req: Request):
+    check_origin(req)
+    try:
+        cfg = AM.save(STORE, await req.json())
+    except AM.SettingError as e:
+        raise HTTPException(400, str(e))
+    log.info("auto-make settings: %s (by %s)", json.dumps(cfg), agents.actor_of(req)["name"])
+    return automake_info()
+
+
 @app.delete("/api/players/{player}")
 def players_unlink(player: str, req: Request):
     check_origin(req)
@@ -3491,7 +3969,8 @@ def _request_row(r, names, jobs):
     return {"rid": r["rid"], "artist": r["artist"], "title": r["title"], "note": r["note"], "by": r["by_name"],
             "party": r["party"], "at": r["at"], "status": r["status"], "reason": r["reason"], "job": r["job"],
             "song_id": r["song_id"], "base": r["base"], "updated": r["updated"], "created": r["created"],
-            "auto": bool(r["auto"]), "player": names.get(r["player"]) or ("Preset player" if r["player"] == encore.PRESET else "an unlinked player"),
+            "auto": bool(r["auto"]), "automake": bool(r.get("am")), "stage": r.get("stage"), "eta": r.get("eta"),
+            "player": names.get(r["player"]) or ("Preset player" if r["player"] == encore.PRESET else "an unlinked player"),
             "song": {"id": j["id"], "artist": j["artist"], "title": j["title"], "status": j["status"],
                      "published": bool(j.get("published"))} if j else None}
 
@@ -3534,7 +4013,7 @@ async def request_action(rid: str, action: str, req: Request):
             STORE.set_request(rid, status=st[0], job=jid, song_id=None, base=None, reason=None)
     elif action == "reopen":  # (also "Not this song"): waits again, and isn't matched to a song by its name any more
         unlink_request(rid)
-        STORE.set_request(rid, status="open", reason=None, job=None, song_id=None, base=None, detached=1)
+        STORE.set_request(rid, status="open", reason=None, job=None, song_id=None, base=None, detached=1, am=None, stage=None, eta=None)
     else:
         raise HTTPException(404, "unknown action")
     log.info("players: request %s… %s", rid[:8], action)
@@ -3762,5 +4241,6 @@ if __name__ == "__main__":
     ap.add_argument("--port", type=int, default=5570)
     a = ap.parse_args()
     recover_jobs()
+    recover_automake()
     threading.Thread(target=worker, daemon=True).start()
     uvicorn.run(app, host=a.host, port=a.port, log_level="warning", proxy_headers=True, forwarded_allow_ips="*")

@@ -1,0 +1,21 @@
+{
+  "name": "score-words-forgotten",
+  "about": "§2.9: answers are kept 10 minutes; after that (or for a job that isn't this player's): 410.",
+  "request": {
+    "method": "GET",
+    "path": "/api/encore/score-words/5d0c9a7e3b1f4e28a6c4d2b0e8f6a1c3",
+    "headers": {
+      "Authorization": "Bearer <token from pairing>"
+    },
+    "body": null,
+    "schema": null
+  },
+  "response": {
+    "status": 410,
+    "headers": {},
+    "body": {
+      "error": "no such scoring job (answers are kept 10 minutes)"
+    },
+    "schema": "error.schema.json"
+  }
+}
