@@ -110,6 +110,8 @@ def _check(s, x, path, root, out):
         n = sum(1 for sub in s["oneOf"] if not _errs(sub, x, path, root))
         if n != 1:
             out.append(f"{path}: should match exactly one of the oneOf choices (matches {n})")
+    if "not" in s and not _errs(s["not"], x, path, root):
+        out.append(f"{path}: matches what it must not ({json.dumps(s['not'])[:80]})")
     if "if" in s:
         if not _errs(s["if"], x, path, root):
             if "then" in s:
@@ -126,7 +128,7 @@ def _errs(s, x, path, root):
 
 KEYWORDS = {"$ref", "type", "enum", "const", "minLength", "maxLength", "pattern", "minimum", "maximum",
             "exclusiveMinimum", "minItems", "maxItems", "prefixItems", "items", "required", "properties",
-            "additionalProperties", "maxProperties", "allOf", "oneOf", "if", "then", "else"}
+            "additionalProperties", "maxProperties", "allOf", "oneOf", "not", "if", "then", "else"}
 
 
 def errors(schema, data):

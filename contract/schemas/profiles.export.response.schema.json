@@ -1,0 +1,225 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:encore-studio:contract:profiles.export.response.schema.json",
+  "title": "GET /api/encore/profiles/<uid>/export",
+  "type": "object",
+  "required": [
+    "uid",
+    "deleted",
+    "profile",
+    "favorites",
+    "prefs",
+    "history"
+  ],
+  "properties": {
+    "uid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "deleted": {
+      "type": "boolean"
+    },
+    "profile": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "required": [
+        "name",
+        "color",
+        "created",
+        "pin"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "color": {
+          "type": "string"
+        },
+        "created": {
+          "type": "number"
+        },
+        "updated": {
+          "type": "number"
+        },
+        "pin": {
+          "type": "boolean",
+          "description": "Whether a PIN is set. Never the hash."
+        }
+      },
+      "description": "null when deleted (a deleted profile exports as {uid, deleted: true, profile: null, [] ...})."
+    },
+    "favorites": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "song",
+          "on",
+          "at"
+        ],
+        "properties": {
+          "song": {
+            "type": "string"
+          },
+          "on": {
+            "type": "boolean"
+          },
+          "at": {
+            "type": "number"
+          }
+        }
+      },
+      "description": "The winning state per song (latest at)."
+    },
+    "prefs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "key",
+          "value",
+          "at"
+        ],
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "value": {
+            "type": [
+              "string",
+              "number",
+              "boolean",
+              "null"
+            ]
+          },
+          "at": {
+            "type": "number"
+          }
+        }
+      }
+    },
+    "history": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/history"
+      }
+    },
+    "players": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "player",
+          "name"
+        ],
+        "properties": {
+          "player": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          },
+          "name": {
+            "type": "string"
+          },
+          "last_seen": {
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        }
+      },
+      "description": "Optional: the linked players that sent events for this profile."
+    }
+  },
+  "$defs": {
+    "history": {
+      "title": "history",
+      "type": "object",
+      "required": [
+        "eid",
+        "stream",
+        "uid",
+        "at",
+        "song",
+        "base",
+        "result",
+        "party"
+      ],
+      "properties": {
+        "eid": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "description": "The event's id, made once by the Encore that made the event (str(uuid4())). Idempotent: the same eid twice is one event."
+        },
+        "uid": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "description": "The profile (user) the event belongs to."
+        },
+        "at": {
+          "type": "number",
+          "minimum": 0,
+          "description": "When it happened: unix time in seconds, with milliseconds (e.g. 1795200000.123), from the clock of the Encore that made it (an edit: when it was made, kept strictly increasing per Encore; history: when the song ended; a merge re-sends events with their original at). Latest-wins rules compare (at, eid): a higher at wins, an equal at goes to the higher eid (as a string)."
+        },
+        "stream": {
+          "const": "history"
+        },
+        "song": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "base": {
+          "type": "string",
+          "maxLength": 300,
+          "description": "The version played (its base name)."
+        },
+        "result": {
+          "enum": [
+            "finished",
+            "skipped",
+            "stopped"
+          ]
+        },
+        "party": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "style": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 20,
+          "description": "Optional: the lyric style (both, original, romaji, kana, none, timing; null = the plain .ass)."
+        },
+        "guide": {
+          "enum": [
+            "off",
+            "low",
+            "medium",
+            "full"
+          ],
+          "description": "Optional: the guide vocals level."
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Optional: the song's title when it was sung (for history of songs no longer in the library)."
+        },
+        "artist": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "grp": {
+          "type": "string",
+          "maxLength": 300,
+          "description": "Optional: Encore's card key (artist|title, normalised)."
+        }
+      },
+      "description": "Append-only: one event per user per song sung (a duet sung by two users is two events). at = when it ended."
+    }
+  }
+}

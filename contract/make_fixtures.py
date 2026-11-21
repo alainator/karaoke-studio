@@ -33,6 +33,7 @@ for k, v in {"KARAOKE_JOBS": f"{ROOT}/jobs", "KARAOKE_WORK": f"{ROOT}/work", "KA
              "PIKARAOKE_ADMIN_PASSWORD": "", "PIKARAOKE_DB": "", "OLLAMA_URL": "", "GPU_HELPER_URL": "", "HELPER_TOKEN": "",
              "STUDIO_ORIGINS": "", "STUDIO_PUBLIC_URL": "https://studio.example.lan", "STUDIO_NAME": "Karaoke Studio",
              "ENCORE_TOKEN": "", "ENCORE_ONLY_NETS": "", "KARAOKE_LYRICS_FONT": "classic", "KARAOKE_LYRICS_DISPLAY": "both",
+             "AGENT_KEYS_REQUIRED": "0", "STUDIO_PERSON_HEADER": "X-authentik-username", "KARAOKE_DEVICE": "",
              "TZ": "UTC"}.items():
     os.environ[k] = v
 for d in ("jobs", "work", "models", "logs", "data", "fonts", "library/Music Videos"):
@@ -157,7 +158,7 @@ def ex(n, name, about, method, path, body=None, schema=None, res_schema=None, he
     st, rh, rb = call(A.app, method, path, body, h, **({"client": client} if client else {}))
     if expect is not None:
         assert st == expect, (name, st, rb[:300])
-    shown = {k: ("Bearer " + TOKEN_SHOWN if k == "Authorization" and auth is True else v) for k, v in h.items()}
+    shown = {k: ("Bearer " + TOKEN_SHOWN if k == "Authorization" and (auth is True or auth in MASKED) else v) for k, v in h.items()}
     if body_file:
         res_body = body_file
     else:
@@ -171,6 +172,7 @@ def ex(n, name, about, method, path, body=None, schema=None, res_schema=None, he
 
 
 TOKEN = None
+MASKED = set()   # other players' tokens from pairing, shown as TOKEN_SHOWN too
 
 
 def main():
@@ -348,6 +350,62 @@ def main():
     ex(23, "requests-auto-status", "§2.2b (reserved): auto-make progress (stage, eta), and one that failed (with a reason). "
        "Set by hand here: auto-make is built later.", "GET", f"/api/encore/requests?rids={R[4]},{R[5]}", None, None,
        "requests.get.response.schema.json", expect=200)
+    # ---- §2.6 profiles: a second player (the home Encore) and one singer's profile, synced, exported, deleted
+    CLOCK[0] += 60
+    HOME = "8b9c0d1e-2f3a-4b4c-9d5e-6f7a8b9c0d1e"
+    A.STORE.new_code()
+    A.STORE.code["hash"] = encore.token_hash("H4N8RT2W")
+    secrets.token_urlsafe = lambda n=32: "fixture-token-home-0123456789abc"
+    st, _, b = call(A.app, "POST", "/api/encore/pair", {"code": "H4N8RT2W", "name": "Encore at home", "player": HOME,
+                                                        "encore": "0.6", "contract": "1"}, client=("192.0.2.50", 50100))
+    assert st == 200, b
+    secrets.token_urlsafe = lambda n=32: "fixture-token-0123456789abcdef"
+    HOME_TOKEN = json.loads(b)["token"]
+    MASKED.add(HOME_TOKEN)
+    EV = lambda k: U("profile-event-" + str(k))
+    t = round(CLOCK[0], 3)
+    mia = [{"eid": EV(1), "stream": "profile", "uid": UID, "at": t, "name": "Mia", "color": "#ff5fa2",
+            "pin_hash": {"alg": "scrypt", "n": 16384, "r": 8, "p": 1, "salt": "00112233445566778899aabbccddeeff",
+                         "hash": "a1" * 32}, "created": t, "deleted": False},
+           {"eid": EV(2), "stream": "favorites", "uid": UID, "at": t + 12.5, "song": solo, "on": True},
+           {"eid": EV(3), "stream": "prefs", "uid": UID, "at": t + 13.25, "key": "style:ja", "value": "romaji"},
+           {"eid": EV(4), "stream": "history", "uid": UID, "at": t + 300.75, "song": duet, "base": A.load(duet)["published_as"],
+            "result": "finished", "party": "Friday at Ken's", "style": "romaji", "guide": "low"}]
+    sreq, sres = "profiles.sync.request.schema.json", "profiles.sync.response.schema.json"
+    CLOCK[0] += 400
+    _, _, b = ex(24, "profiles-sync-push", "§2.6: the kit sends a new singer's profile, a favourite, a lyric-style pref and a song "
+                 "they sang (its first sync: since null). Nothing from other players yet; the cursor covers what it sent.",
+                 "POST", "/api/encore/profiles/sync", {"player": PLAYER, "since": None, "events": mia}, sreq, sres, expect=200)
+    kit_cursor = json.loads(b)["cursor"]
+    _, _, b = ex(25, "profiles-sync-pull", "§2.6: the home Encore syncs: it gets the kit's events in the order the Studio stored "
+                 "them (players merge them: latest (at, eid) wins per record, song or key; history is kept whole).",
+                 "POST", "/api/encore/profiles/sync", {"player": HOME, "since": None, "events": []}, sreq, sres,
+                 auth=HOME_TOKEN, expect=200)
+    home_cursor = json.loads(b)["cursor"]
+    ex(26, "profiles-sync-repeat", "§2.6: the same events again (a retry after a lost answer): stored once; the kit never gets "
+       "its own events back.", "POST", "/api/encore/profiles/sync", {"player": PLAYER, "since": kit_cursor, "events": mia},
+       sreq, sres, expect=200)
+    ex(27, "profiles-export", "§2.6: everything the Studio keeps about one singer (\"Download my data\"): the winning "
+       "favourite per song and pref per key, all history, the players that sent them; the PIN only as set or not.",
+       "GET", f"/api/encore/profiles/{UID}/export", None, None, "profiles.export.response.schema.json", expect=200)
+    CLOCK[0] += 600
+    ex(28, "profiles-sync-delete", "§2.6: the singer deletes their profile on the home Encore: a tombstone. The Studio erases "
+       "everything of that uid (also the uid on requests, flags and plays) and keeps only the tombstone.",
+       "POST", "/api/encore/profiles/sync", {"player": HOME, "since": home_cursor, "events": [
+           {"eid": EV(5), "stream": "profile", "uid": UID, "at": round(CLOCK[0], 3), "deleted": True}]}, sreq, sres,
+       auth=HOME_TOKEN, expect=200)
+    CLOCK[0] += 60
+    ex(29, "profiles-sync-after-delete", "§2.6: the kit comes back with a late favourite for the deleted singer (dropped) and gets "
+       "the tombstone, never the singer's other events.", "POST", "/api/encore/profiles/sync",
+       {"player": PLAYER, "since": kit_cursor, "events": [{"eid": EV(6), "stream": "favorites", "uid": UID,
+                                                          "at": round(CLOCK[0], 3), "song": ver, "on": True}]},
+       sreq, sres, expect=200)
+    ex(30, "profiles-export-deleted", "§2.6: a deleted singer exports as deleted, with nothing else.", "GET",
+       f"/api/encore/profiles/{UID}/export", None, None, "profiles.export.response.schema.json", expect=200)
+    ex(31, "profiles-sync-bad-cursor", "§2.6: a cursor this Studio didn't give (a rebuilt Studio): 400; Encore syncs again with "
+       "since null.", "POST", "/api/encore/profiles/sync", {"player": PLAYER, "since": "s999999", "events": []}, sreq, err,
+       expect=400)
+
     CLOCK[0] += 60
     ex(21, "unpair", "Unlink from Encore's side (the token stops working).", "POST", "/api/encore/unpair", {},
        "unpair.request.schema.json", "unpair.response.schema.json", expect=200)

@@ -1,0 +1,27 @@
+{
+  "name": "profiles-export-deleted",
+  "about": "§2.6: a deleted singer exports as deleted, with nothing else.",
+  "request": {
+    "method": "GET",
+    "path": "/api/encore/profiles/7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d/export",
+    "headers": {
+      "Authorization": "Bearer <token from pairing>"
+    },
+    "body": null,
+    "schema": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "uid": "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d",
+      "deleted": true,
+      "profile": null,
+      "favorites": [],
+      "prefs": [],
+      "history": [],
+      "players": []
+    },
+    "schema": "profiles.export.response.schema.json"
+  }
+}

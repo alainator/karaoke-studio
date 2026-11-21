@@ -395,7 +395,9 @@ if not (os.path.exists(vocals) and os.path.exists(inst)):
     del sep
     os.remove(f"{w}.wav")
 import gc, torch  # noqa: E402
-gc.collect(); torch.cuda.empty_cache()
+import gpu  # noqa: E402
+DEV = gpu.device(cpu_ok=False)  # cuda on NVIDIA (and AMD ROCm builds of PyTorch); see gpu.py
+gc.collect(); gpu.empty_cache(DEV)
 
 # 4. alignment
 # Meanwhile, in its own process (CPU and network, so it runs alongside Whisper on the GPU): find the album recording
@@ -411,7 +413,7 @@ if source != "karamoe" and not untimed and len(synced) >= 4:
         album_proc = None
 say("step", "align")
 import numpy as np, stable_whisper  # noqa: E402
-model = stable_whisper.load_model(C.WHISPER_MODEL, device="cuda")
+model = stable_whisper.load_model(C.WHISPER_MODEL, device=DEV)
 audio = stable_whisper.audio.load_audio(vocals)  # 16 kHz mono
 SUNG = None  # the language Whisper hears in the singing (set when the lyrics' script leaves it open)
 _txt = " ".join(t for _, t in synced)
@@ -513,17 +515,17 @@ if True:  # every song is transcribed: the lyrics checks use it where they apply
             say("info", f"listened to the vocals for the lyrics check ({len(heard_words)} words heard)")
     except Exception as e:
         say("info", f"couldn't transcribe the vocals ({str(e)[:60]})")
-del model; gc.collect(); torch.cuda.empty_cache()
+del model; gc.collect(); gpu.empty_cache(DEV)
 # Pitch (CREPE): which 10 ms frames of the vocals hold a sung note. A held last word ends where its note does, which
 # loudness alone can't tell from a breath, a backing voice or separation leftovers in the gap after it.
 VOICED = None
 try:
     import torchcrepe
-    _a = torch.from_numpy(audio).float().unsqueeze(0).to("cuda")
+    _a = torch.from_numpy(audio).float().unsqueeze(0).to(DEV)
     _f0, _per = torchcrepe.predict(_a, SR, hop_length=SR // 100, fmin=65, fmax=1100, model="tiny", batch_size=4096,
-                                   device="cuda", return_periodicity=True)
+                                   device=DEV, return_periodicity=True)
     VOICED = (torchcrepe.filter.median(_per, 5)[0].float().cpu().numpy() > 0.45)
-    del _a, _f0, _per; torch.cuda.empty_cache()
+    del _a, _f0, _per; gpu.empty_cache(DEV)
 except Exception as e:
     say("info", f"couldn't track the pitch ({str(e)[:60]}); held notes end by loudness")
 # Where does the video's singing sit relative to LRCLIB's (album) timing? Candidates:
@@ -607,7 +609,7 @@ say("info", "offset candidates " + ", ".join(f"{k} {v:+.2f}s (activity fit {scor
 
 import torchaudio  # noqa: E402
 fa = torchaudio.pipelines.MMS_FA
-fa_model = fa.get_model(with_star=False).to("cuda")
+fa_model = fa.get_model(with_star=False).to(DEV)
 tokenizer, aligner = fa.get_tokenizer(), fa.get_aligner()
 VOCAL_RMS = float(np.sqrt(np.mean(audio ** 2)))
 end_all = len(audio) / SR
@@ -638,7 +640,7 @@ def align_at(off, only=None):
         words = []
         try:
             with torch.inference_mode():
-                em, _ = fa_model(torch.from_numpy(clip).float().unsqueeze(0).to("cuda"))
+                em, _ = fa_model(torch.from_numpy(clip).float().unsqueeze(0).to(DEV))
             spans = aligner(em[0], tokenizer([norm[k] for k in keep]))
             fps = len(clip) / SR / em.size(1)
             words = [[a + sp[0].start * fps, a + sp[-1].end * fps, orig[k]] for k, sp in zip(keep, spans)]
@@ -1105,17 +1107,17 @@ def speech_spans():
         from transformers import ASTFeatureExtractor, ASTForAudioClassification
         name, cache = "MIT/ast-finetuned-audioset-10-10-0.4593", os.path.join(MODELS, "hf")
         fe_ = ASTFeatureExtractor.from_pretrained(name, token=False, cache_dir=cache)
-        m_ = ASTForAudioClassification.from_pretrained(name, token=False, cache_dir=cache).eval().to("cuda")
+        m_ = ASTForAudioClassification.from_pretrained(name, token=False, cache_dir=cache).eval().to(DEV)
         sp_i = {v: k for k, v in m_.config.id2label.items()}["Speech"]
         y_ = np.frombuffer(subprocess.run(["ffmpeg", "-v", "error", "-i", f"{w}.mp4", "-map", "0:a:0", "-ac", "1", "-ar", "16000",
                                            "-f", "f32le", "-"], capture_output=True, check=True).stdout, dtype=np.float32)
         st_ = list(range(0, max(1, len(y_) - 32000), 16000))
         out_ = []
         for b0 in range(0, len(st_), 32):
-            x_ = fe_([y_[s0:s0 + 32000] for s0 in st_[b0:b0 + 32]], sampling_rate=16000, return_tensors="pt").to("cuda")
+            x_ = fe_([y_[s0:s0 + 32000] for s0 in st_[b0:b0 + 32]], sampling_rate=16000, return_tensors="pt").to(DEV)
             with torch.inference_mode():
                 out_ += torch.sigmoid(m_(**x_).logits)[:, sp_i].float().cpu().tolist()
-        del m_; gc.collect(); torch.cuda.empty_cache()
+        del m_; gc.collect(); gpu.empty_cache(DEV)
         spans_, cur_ = [], None
         for s0, p_ in zip(st_, out_):
             t_ = s0 / 16000 + 1.0  # window centre
@@ -1261,7 +1263,7 @@ def _fa_words(a, b, texts):
     """Align words (each must have letters) in audio [a, b]: (start, end) per word and its mean token score."""
     clip = audio[int(a * SR):int(b * SR)]
     with torch.inference_mode():
-        em, _ = fa_model(torch.from_numpy(clip).float().unsqueeze(0).to("cuda"))
+        em, _ = fa_model(torch.from_numpy(clip).float().unsqueeze(0).to(DEV))
     spans = aligner(em[0], tokenizer([_nz(t) for t in texts]))
     fps = len(clip) / SR / em.size(1)
     return [(a + sp[0].start * fps, a + sp[-1].end * fps) for sp in spans], [float(np.mean([x.score for x in sp])) for sp in spans]
@@ -1413,7 +1415,7 @@ if backs:
     out_lines.sort(key=lambda l: l["words"][0][0])
     if _placed_b:
         say("info", f"placed {_placed_b} backing-vocal phrase{'s' if _placed_b != 1 else ''} by ear (they may overlap the lead)")
-del fa_model; gc.collect(); torch.cuda.empty_cache()
+del fa_model; gc.collect(); gpu.empty_cache(DEV)
 if heard_words:
     for l in out_lines:
         if (l.get("orig") and listen_ja) or (not l.get("orig") and listen_latin):
@@ -1557,9 +1559,9 @@ json.dump({"offset": round(off, 2), "lines": len(out_lines), "skipped": skipped,
            "duration": round(duration, 1), "seconds": round(time.time() - t0), "encoded": "x264",
            "confidence": CONF, "pipeline": versions.VERSION}, open(f"{job_dir}/result.json", "w"))
 # a song the user trimmed (ads or an intro cut off): the new render is cut the same way, lines and all
+# (the GPU helper never gets the trim: the studio cuts a song made there the same way when it comes back, app.run_remote)
 _trim = job.get("trim") or {}
 if _trim.get("start") or _trim.get("end"):
     import trimtools  # noqa: E402
-    trimtools.apply_trim(job_dir, float(_trim.get("start") or 0), _trim.get("end"), old_start=0.0, fresh=True)
-    say("info", f"trimmed to {float(_trim.get('start') or 0):.1f} s" + (f"-{_trim['end']:.1f} s" if _trim.get("end") else "") + " of the video, as before")
+    say("info", trimtools.reapply(job_dir, _trim))
 say("step", "done")

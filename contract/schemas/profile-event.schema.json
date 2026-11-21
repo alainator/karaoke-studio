@@ -1,0 +1,306 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:encore-studio:contract:profile-event.schema.json",
+  "title": "A profile event (§2.6: profile, favorites, prefs, history)",
+  "oneOf": [
+    {
+      "title": "profile",
+      "type": "object",
+      "required": [
+        "eid",
+        "stream",
+        "uid",
+        "at",
+        "deleted"
+      ],
+      "properties": {
+        "eid": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "description": "The event's id, made once by the Encore that made the event (str(uuid4())). Idempotent: the same eid twice is one event."
+        },
+        "uid": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "description": "The profile (user) the event belongs to."
+        },
+        "at": {
+          "type": "number",
+          "minimum": 0,
+          "description": "When it happened: unix time in seconds, with milliseconds (e.g. 1795200000.123), from the clock of the Encore that made it (an edit: when it was made, kept strictly increasing per Encore; history: when the song ended; a merge re-sends events with their original at). Latest-wins rules compare (at, eid): a higher at wins, an equal at goes to the higher eid (as a string)."
+        },
+        "stream": {
+          "const": "profile"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40,
+          "description": "Encore sends at most 24 characters."
+        },
+        "color": {
+          "type": "string",
+          "pattern": "^#[0-9A-Fa-f]{6}$"
+        },
+        "pin_hash": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "required": [
+            "alg",
+            "n",
+            "r",
+            "p",
+            "salt",
+            "hash"
+          ],
+          "properties": {
+            "alg": {
+              "const": "scrypt"
+            },
+            "n": {
+              "type": "integer",
+              "minimum": 2
+            },
+            "r": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "p": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "salt": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{16,128}$"
+            },
+            "hash": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{32,128}$"
+            }
+          },
+          "description": "The 4-digit profile PIN as a salted scrypt hash (hashlib.scrypt(pin, salt, n, r, p, dklen=32), hex), or null = no PIN. Synced so the PIN works on every Encore; never shown to a browser, never in an export."
+        },
+        "created": {
+          "type": "number",
+          "minimum": 0,
+          "description": "When the profile was made (unix seconds)."
+        },
+        "deleted": {
+          "type": "boolean",
+          "description": "true = a tombstone: the profile is deleted everywhere. It wins over every other event for that uid, whatever their at; later events for that uid are dropped."
+        },
+        "merged_into": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "description": "Only with deleted: true: the profile was merged into this one (the merging Encore already re-sent the favourites, prefs and history under it). Players move what they keep locally for the old uid (remembered phones) to it."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "deleted": {
+                "const": false
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "name",
+              "color",
+              "pin_hash",
+              "created"
+            ],
+            "not": {
+              "required": [
+                "merged_into"
+              ]
+            }
+          }
+        }
+      ],
+      "description": "The whole profile record (latest (at, eid) wins for the whole record), or a tombstone (deleted: true, only eid/stream/uid/at and optionally merged_into needed)."
+    },
+    {
+      "title": "favorites",
+      "type": "object",
+      "required": [
+        "eid",
+        "stream",
+        "uid",
+        "at",
+        "song",
+        "on"
+      ],
+      "properties": {
+        "eid": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "description": "The event's id, made once by the Encore that made the event (str(uuid4())). Idempotent: the same eid twice is one event."
+        },
+        "uid": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "description": "The profile (user) the event belongs to."
+        },
+        "at": {
+          "type": "number",
+          "minimum": 0,
+          "description": "When it happened: unix time in seconds, with milliseconds (e.g. 1795200000.123), from the clock of the Encore that made it (an edit: when it was made, kept strictly increasing per Encore; history: when the song ended; a merge re-sends events with their original at). Latest-wins rules compare (at, eid): a higher at wins, an equal at goes to the higher eid (as a string)."
+        },
+        "stream": {
+          "const": "favorites"
+        },
+        "song": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "description": "The catalog song id (job id; f-... for scanned songs). A card with two lyric languages is two songs: Encore hearts the card's first song and un-hearts all of them."
+        },
+        "on": {
+          "type": "boolean"
+        }
+      },
+      "description": "Latest (at, eid) wins per (uid, song)."
+    },
+    {
+      "title": "prefs",
+      "type": "object",
+      "required": [
+        "eid",
+        "stream",
+        "uid",
+        "at",
+        "key",
+        "value"
+      ],
+      "properties": {
+        "eid": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "description": "The event's id, made once by the Encore that made the event (str(uuid4())). Idempotent: the same eid twice is one event."
+        },
+        "uid": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "description": "The profile (user) the event belongs to."
+        },
+        "at": {
+          "type": "number",
+          "minimum": 0,
+          "description": "When it happened: unix time in seconds, with milliseconds (e.g. 1795200000.123), from the clock of the Encore that made it (an edit: when it was made, kept strictly increasing per Encore; history: when the song ended; a merge re-sends events with their original at). Latest-wins rules compare (at, eid): a higher at wins, an equal at goes to the higher eid (as a string)."
+        },
+        "stream": {
+          "const": "prefs"
+        },
+        "key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40,
+          "pattern": "^[a-z][a-z0-9_]*(:[a-z0-9_-]+)?$",
+          "description": "Known today: \"guide\" (off|low|medium|full) and \"style:<lang>\" (normal|both|original|romaji|kana|timing|none; lang = the catalog's language code, or \"other\"). Store unknown keys as they are."
+        },
+        "value": {
+          "type": [
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ],
+          "description": "null = unset (the song sheet starts on the host's pick)."
+        }
+      },
+      "description": "Latest (at, eid) wins per (uid, key)."
+    },
+    {
+      "title": "history",
+      "type": "object",
+      "required": [
+        "eid",
+        "stream",
+        "uid",
+        "at",
+        "song",
+        "base",
+        "result",
+        "party"
+      ],
+      "properties": {
+        "eid": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "description": "The event's id, made once by the Encore that made the event (str(uuid4())). Idempotent: the same eid twice is one event."
+        },
+        "uid": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "description": "The profile (user) the event belongs to."
+        },
+        "at": {
+          "type": "number",
+          "minimum": 0,
+          "description": "When it happened: unix time in seconds, with milliseconds (e.g. 1795200000.123), from the clock of the Encore that made it (an edit: when it was made, kept strictly increasing per Encore; history: when the song ended; a merge re-sends events with their original at). Latest-wins rules compare (at, eid): a higher at wins, an equal at goes to the higher eid (as a string)."
+        },
+        "stream": {
+          "const": "history"
+        },
+        "song": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "base": {
+          "type": "string",
+          "maxLength": 300,
+          "description": "The version played (its base name)."
+        },
+        "result": {
+          "enum": [
+            "finished",
+            "skipped",
+            "stopped"
+          ]
+        },
+        "party": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "style": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 20,
+          "description": "Optional: the lyric style (both, original, romaji, kana, none, timing; null = the plain .ass)."
+        },
+        "guide": {
+          "enum": [
+            "off",
+            "low",
+            "medium",
+            "full"
+          ],
+          "description": "Optional: the guide vocals level."
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Optional: the song's title when it was sung (for history of songs no longer in the library)."
+        },
+        "artist": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "grp": {
+          "type": "string",
+          "maxLength": 300,
+          "description": "Optional: Encore's card key (artist|title, normalised)."
+        }
+      },
+      "description": "Append-only: one event per user per song sung (a duet sung by two users is two events). at = when it ended."
+    }
+  ],
+  "description": "One profile event (§2.6). The stream decides its shape."
+}

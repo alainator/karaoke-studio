@@ -47,7 +47,12 @@ create table if not exists flags (fid text primary key, player text, song_id tex
 create index if not exists flags_job on flags (job);
 create table if not exists plays (pid text primary key, player text, song_id text, base text, at integer, seconds integer,
     result text, singers integer, style text, party text, uid text, counted integer, created real);
+create table if not exists profile_events (seq integer primary key autoincrement, eid text unique, uid text, stream text,
+    at real, player text, body text, stored real);
+create index if not exists profile_events_uid on profile_events (uid);
+create table if not exists profile_tombs (uid text primary key, seq integer, at real, merged_into text, player text, stored real);
 """
+PROFILE_PAGE = 500              # events per sync answer (then "more": true)
 
 
 def token_hash(token):
@@ -323,6 +328,143 @@ class Store:
         if job:
             return self.q("update flags set dismissed=? where dismissed is null and job=? returning fid", (now, job))
         return []
+
+    # ---------------- profiles (§2.6; contract/schemas/profile*.json) ----------------
+    # The Studio keeps every profile event once (by eid) with a growing sequence number and who sent it, and relays
+    # them to the other players in that order; it doesn't merge them on the way (players merge by (at, eid) as the
+    # contract says). A tombstone (profile, deleted: true) erases everything of its uid, here and in the requests,
+    # flags and plays (they stay, without the uid), and is stored with a new position so every other player gets it;
+    # events for that uid that arrive later are dropped. The cursor is "s<sequence>".
+    @staticmethod
+    def cursor_seq(since):
+        """The sequence number in a cursor (0 = from the start); ValueError for a cursor this Studio didn't give."""
+        if since is None:
+            return 0
+        m = re.fullmatch(r"s(\d{1,15})", str(since))
+        if not m:
+            raise ValueError("unknown cursor")
+        return int(m.group(1))
+
+    def profiles_sync(self, player, events, since):
+        """Store a player's events (in order) and answer (events from other players after the cursor, cursor, more)."""
+        start = self.cursor_seq(since)
+        now = self.now()
+        with self.lock:
+            if start > self._top():
+                raise ValueError("unknown cursor")
+            for e in events:
+                uid = e["uid"]
+                if self.db.execute("select 1 from profile_tombs where uid=?", (uid,)).fetchone():
+                    continue  # deleted everywhere: a late event from an offline player is dropped
+                if self.db.execute("select 1 from profile_events where eid=?", (e["eid"],)).fetchone():
+                    continue  # the same event again: stored once
+                if e["stream"] == "profile" and e.get("deleted"):
+                    self._erase_uid(uid)
+                    tomb = {"eid": e["eid"], "stream": "profile", "uid": uid, "at": e["at"], "deleted": True,
+                            **({"merged_into": e["merged_into"]} if e.get("merged_into") else {})}
+                    cur = self.db.execute("insert into profile_events (eid, uid, stream, at, player, body, stored) "
+                                          "values (?, ?, 'profile', ?, ?, ?, ?)", (e["eid"], uid, e["at"], player, json.dumps(tomb), now))
+                    self.db.execute("insert into profile_tombs (uid, seq, at, merged_into, player, stored) values (?, ?, ?, ?, ?, ?)",
+                                    (uid, cur.lastrowid, e["at"], e.get("merged_into"), player, now))
+                    continue
+                self.db.execute("insert into profile_events (eid, uid, stream, at, player, body, stored) values (?, ?, ?, ?, ?, ?, ?)",
+                                (e["eid"], uid, e["stream"], e["at"], player, json.dumps(e, ensure_ascii=False), now))
+            self.db.commit()
+            rows = self.db.execute("select seq, body from profile_events where seq > ? and player != ? order by seq limit ?",
+                                   (start, player, PROFILE_PAGE + 1)).fetchall()
+            more = len(rows) > PROFILE_PAGE
+            rows = rows[:PROFILE_PAGE]
+            last = rows[-1]["seq"] if more else self._top()
+        out = {"cursor": f"s{max(last, start)}", "events": [json.loads(r["body"]) for r in rows]}
+        if more:
+            out["more"] = True
+        return out
+
+    def _top(self):
+        """The highest sequence number ever given (erased events keep theirs used)."""
+        r = self.db.execute("select seq from sqlite_sequence where name='profile_events'").fetchone()
+        return int(r[0]) if r else 0
+
+    def _erase_uid(self, uid):
+        """Delete-everywhere for one profile (call under the lock): its events go, and the requests, flags and plays
+        it sent stay without the uid."""
+        self.db.execute("delete from profile_events where uid=?", (uid,))
+        for t in ("requests", "flags", "plays"):
+            self.db.execute(f"update {t} set uid=null where uid=?", (uid,))
+
+    @staticmethod
+    def _wins(a, b):
+        """Does event a beat event b (latest (at, eid) wins)?"""
+        return (a["at"], a["eid"]) > (b["at"], b["eid"])
+
+    def profile_state(self, uid):
+        """The merged state of one profile: (deleted, merged_into, profile event or None, favorites, prefs, history,
+        players that sent events) or None for a uid this Studio never heard of."""
+        with self.lock:
+            tomb = self.db.execute("select * from profile_tombs where uid=?", (uid,)).fetchone()
+            rows = self.db.execute("select player, body from profile_events where uid=? order by seq", (uid,)).fetchall()
+        if not tomb and not rows:
+            return None
+        prof, favs, prefs, hist, senders = None, {}, {}, [], []
+        for r in rows:
+            e = json.loads(r["body"])
+            if r["player"] not in senders:
+                senders.append(r["player"])
+            if e["stream"] == "profile" and not e.get("deleted"):
+                prof = e if prof is None or self._wins(e, prof) else prof
+            elif e["stream"] == "favorites":
+                k = e["song"]
+                favs[k] = e if k not in favs or self._wins(e, favs[k]) else favs[k]
+            elif e["stream"] == "prefs":
+                k = e["key"]
+                prefs[k] = e if k not in prefs or self._wins(e, prefs[k]) else prefs[k]
+            elif e["stream"] == "history":
+                hist.append(e)
+        if tomb:
+            return {"deleted": True, "merged_into": tomb["merged_into"], "profile": None, "favorites": {}, "prefs": {},
+                    "history": [], "players": [tomb["player"]], "last": tomb["at"]}
+        hist.sort(key=lambda e: (e["at"], e["eid"]))
+        last = max([e["at"] for e in [prof] + list(favs.values()) + list(prefs.values()) + hist if e] or [0])
+        return {"deleted": False, "merged_into": None, "profile": prof, "favorites": favs, "prefs": prefs,
+                "history": hist, "players": senders, "last": last}
+
+    def profile_export(self, uid):
+        """GET /api/encore/profiles/<uid>/export: everything kept about one profile (never its PIN hash), or None."""
+        st = self.profile_state(uid)
+        if st is None:
+            return None
+        names = self.player_names()
+        seen = {r["player"]: r["last_seen"] for r in self.q("select player, last_seen from players")}
+        players = [{"player": p, "name": names.get(p) or "an unlinked player", "last_seen": seen.get(p)}
+                   for p in st["players"] if UUID_RE.match(p or "")]
+        if st["deleted"]:
+            return {"uid": uid, "deleted": True, "profile": None, "favorites": [], "prefs": [], "history": [], "players": []}
+        p = st["profile"]
+        return {"uid": uid, "deleted": False,
+                "profile": {"name": p["name"], "color": p["color"], "created": p["created"], "updated": p["at"],
+                            "pin": bool(p.get("pin_hash"))} if p else None,
+                "favorites": [{"song": e["song"], "on": e["on"], "at": e["at"]} for e in st["favorites"].values()],
+                "prefs": [{"key": e["key"], "value": e["value"], "at": e["at"]} for e in st["prefs"].values()],
+                "history": st["history"], "players": players}
+
+    def profiles(self):
+        """The admin list: name, colour, PIN set or not, last event, which players, deleted or not. No history."""
+        with self.lock:
+            uids = [r[0] for r in self.db.execute("select distinct uid from profile_events")]
+            uids += [r[0] for r in self.db.execute("select uid from profile_tombs") if r[0] not in uids]
+        names = self.player_names()
+        out = []
+        for uid in uids:
+            st = self.profile_state(uid)
+            if st is None:
+                continue
+            p = st["profile"]
+            out.append({"uid": uid, "name": p["name"] if p else None, "color": p["color"] if p else None,
+                        "pin": bool(p and p.get("pin_hash")), "created": p["created"] if p else None,
+                        "last": st["last"], "deleted": st["deleted"], "merged_into": st["merged_into"],
+                        "players": [names.get(x) or ("Preset player" if x == PRESET else "an unlinked player") for x in st["players"]]})
+        out.sort(key=lambda r: (r["deleted"], -(r["last"] or 0)))
+        return out
 
     # ---------------- plays ----------------
     def add_plays(self, player, plays, duration_of):

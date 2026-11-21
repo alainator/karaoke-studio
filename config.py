@@ -63,6 +63,16 @@ ENCORE_TOKEN = env("ENCORE_TOKEN", "").strip()
 # studio shares with Encore, so a player can't reach the rest of the studio, which has no login of its own
 ENCORE_ONLY_NETS = env("ENCORE_ONLY_NETS", "").strip()
 
+# ---- agents (AGENTS.md; README: "Finishing songs: by hand or with an agent") ----
+# the header your login proxy sets to the signed-in person's user name (Authentik: X-authentik-username; Authelia:
+# Remote-User; oauth2-proxy: X-Forwarded-User); edits are signed with it. It's trusted as sent, so only the proxy may
+# be able to reach the studio's port.
+PERSON_HEADER = env("STUDIO_PERSON_HEADER", "X-authentik-username").strip() or "X-authentik-username"
+# 1 = API calls (/api/, not the player API) need either that login header or an agent key (X-Studio-Agent-Key): for
+# installs where other programs can reach the studio's port directly. 0 (default) = as before: calls without a key
+# have full access, like the web app.
+AGENT_KEYS_REQUIRED = env("AGENT_KEYS_REQUIRED", "0").strip().lower() in ("1", "yes", "on", "true")
+
 
 # how the lyrics look (assgen.py); 1 = on, 0 = off. Existing songs change when their lyrics are next saved, or all at
 # once with deploy/rebuild-lyrics.py.
@@ -90,7 +100,7 @@ VENC = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-g", "48", "-pi
 
 # the modules that make songs (pipeline.py imports these), and the helper itself: a helper on different code is asked to
 # update (git pull) before it gets songs, so a change to helper.py reaches the helper PC once it's pushed
-CODE_FILES = ("pipeline.py", "assgen.py", "config.py", "romanize.py", "versions.py", "albumsync.py", "fonts.py", "earcheck.py", "linecheck.py", "karamoe.py", "lyricmap.py", "helper.py")
+CODE_FILES = ("pipeline.py", "assgen.py", "config.py", "romanize.py", "versions.py", "albumsync.py", "fonts.py", "earcheck.py", "linecheck.py", "karamoe.py", "lyricmap.py", "helper.py", "gpu.py")
 
 
 def code_version():

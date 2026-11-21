@@ -17,6 +17,7 @@ Type `Artist - Title`. The studio finds the music video on YouTube and the lyric
 - **Tells you what to fix.** Every song is checked by ear after it's made: lines heard somewhere other than where they sit are marked ⚠ with the reason, the song page lists them, and the song list shows how many each song has left.
 - **Colours singers.** Duets, groups of up to 8 named singers, and lines shared mid-way (paint the words of each singer). Pasting a Genius page with headers like `[Chorus: Name]` colours the lines for you.
 - **Remakes safely.** Older songs show what a remake would improve. A remake keeps your edits, changes nothing if it finds nothing better, and can be undone.
+- **Works with an agent, or without.** An AI agent (Claude Code, a local model, anything that can run a command) can do the first pass of checking and fixing through `ks`, with only the permissions you give it; every edit is signed and undoable. Or do it all by hand.
 - **Uses a second GPU.** A PC on your network can take songs when the main GPU is busy, or you can choose which GPU makes each song.
 - **Works with Encore.** Link the Encore party app (or any player that speaks [the contract](contract/ENCORE-STUDIO.md)): guests' song requests land in a Requests list, lyric flags from the party mark the lines to fix, and what was sung counts in the Library. Each published song also gets its sung melody (`.pitch.json`) for singing scores and its separated vocals (`.vocals.m4a`) for guide vocals.
 
@@ -35,6 +36,34 @@ Type `Artist - Title`. The studio finds the music video on YouTube and the lyric
 
 Tested with one song each in Russian, Ukrainian, Greek, Hindi, Thai, Arabic, Hebrew and Cantonese; the other scripts use the same path.
 
+## Local models, no cloud AI
+
+Making a song needs no API keys and sends nothing to an AI service: every model runs on your own GPU (the internet is
+used only to fetch the video and the lyrics). The optional agent (see *Finishing songs*) is the only piece that may be a
+cloud service, and only if you choose one.
+
+| Step | Model | Where |
+|---|---|---|
+| Vocals from music | BS-RoFormer (`model_bs_roformer_ep_317_sdr_12.9755.ckpt`, via [audio-separator](https://github.com/nomadkaraoke/python-audio-separator)) | pipeline |
+| Hearing the words | Whisper large-v3 (via [stable-ts](https://github.com/jianfch/stable-ts)) | pipeline |
+| Placing every word | MMS forced aligner (`torchaudio.pipelines.MMS_FA`) | pipeline, AI checks |
+| Talking vs singing | AST AudioSet classifier (`MIT/ast-finetuned-audioset-10-10-0.4593`) | pipeline |
+| Held notes, melody | CREPE (torchcrepe: tiny in the pipeline, full for `.pitch.json`) | pipeline, publish |
+| Who sings (experimental) | SpeechBrain ECAPA (`speechbrain/spkrec-ecapa-voxceleb`) | Detect 2 singers |
+| Lyrics and romaji checks (optional) | any [Ollama](https://ollama.com) model (`OLLAMA_MODEL`) | AI checks |
+
+TODO before a release: each model's weights licence, download size and VRAM, checked against its model card (not yet
+verified; don't rely on this table for licensing).
+
+| Model | Weights licence | Download | VRAM |
+|---|---|---|---|
+| BS-RoFormer | TODO | TODO | TODO |
+| Whisper large-v3 | TODO | TODO | TODO |
+| MMS_FA | TODO | TODO | TODO |
+| AST AudioSet | TODO | TODO | TODO |
+| CREPE (torchcrepe) | TODO | TODO | TODO |
+| ECAPA (SpeechBrain) | TODO | TODO | TODO |
+
 ## How it works
 
 1. [BS-RoFormer](https://github.com/nomadkaraoke/python-audio-separator) splits the vocals from the music.
@@ -45,7 +74,7 @@ Tested with one song each in Russian, Ukrainian, Greek, Hindi, Thai, Arabic, Heb
 
 ## Requirements
 
-- Linux with an NVIDIA GPU (about 9 GB free per song), Python 3.12, ffmpeg and Node.js.
+- Linux with an NVIDIA GPU (about 9 GB free per song), Python 3.12, ffmpeg and Node.js. Other GPUs aren't tested; see [CONTRIBUTING.md](CONTRIBUTING.md#hardware).
 - A player to publish to: [PiKaraoke](https://github.com/vicwomg/pikaraoke) 1.23 or newer, and/or Encore (or anything that reads `catalog.json`). Without PiKaraoke, leave `PIKARAOKE_URL` and `PIKARAOKE_DB` empty: publishing then skips its rescan. The studio works on its own for previews.
 - Optional: [Ollama](https://ollama.com) for the AI lyrics and romaji checks.
 
@@ -138,6 +167,27 @@ A player elsewhere (a party kit on Tailscale) should get a route that forwards o
 Settings: `STUDIO_PUBLIC_URL` (the web app's address, shown in Encore's host view), `STUDIO_NAME`, `KARAOKE_DATA`
 (where `encore.db` is kept: default the folder above the logs).
 
+## Finishing songs: by hand or with an agent
+
+Every song is checked by ear after it's made, and the lines that may be off are marked ⚠ with the reason. Finishing a
+song means going through those: by hand in the web editor, or by letting an agent do the first pass.
+
+**By hand.** Open the song: the ⚠ list jumps to each line; drag, stretch or tap **S** where it's sung, click the ⚠ if
+it's fine, Save. **Undo** takes back the last edit; *Undo all edits* goes back to the automatic version.
+
+**With an agent.** `tools/ks` does what the editor does, from a terminal, and lets an agent "see" a song: the Studio's
+by-ear check of the lines as they are now, the words it heard around a line, a picture of the vocals with the line
+blocks, and the video frame with the lyrics. On the **Agents** tab, make a key for each agent and tick what it may do:
+reading, editing timing and words, notes and making new songs are on by default; clearing ⚠ marks, publishing,
+remakes (and trims, custom videos, resets) and deleting are off. The agent leaves notes on lines ("Claude: looks fine: held note") for you
+to confirm in the editor, and every edit and note is signed with its name (people's with their login name). Undo
+works the same whoever made the edit, and the song page says who edited it last. [AGENTS.md](AGENTS.md) is the guide
+for agents (setup, rules, notes, the quality bar); `.claude/skills/` has the playbooks, which Claude Code loads as
+skills.
+
+`ks` needs only Python 3: `ks setup --url http://<studio>:5570` stores the address and the key (asked for, never
+shown), or set `STUDIO_URL` and `STUDIO_AGENT_KEY`.
+
 ## Logs
 
 - `data/logs/studio.log`: what the studio did and when (queued, started on which card, finished, failed and why, published).
@@ -145,7 +195,7 @@ Settings: `STUDIO_PUBLIC_URL` (the web app's address, shown in Encore's host vie
 
 ## Security
 
-**The studio has no login of its own**, and it can change your karaoke library. Keep it on `127.0.0.1`, or put it behind a reverse proxy that requires a login (Authentik, Authelia, oauth2-proxy…), and set `STUDIO_ORIGINS` to the address you use. The player API (`/api/encore/`) has its own keys (see Players): wrong keys get 401 and are rate-limited, pairing tries are limited to 5 a minute per address and a code dies after 5 wrong tries, and keys and codes are never logged.
+**The studio has no login of its own**, and it can change your karaoke library. Keep it on `127.0.0.1`, or put it behind a reverse proxy that requires a login (Authentik, Authelia, oauth2-proxy…), and set `STUDIO_ORIGINS` to the address you use. Agent keys (see Finishing songs) are checked on every call; set `AGENT_KEYS_REQUIRED=1` so that API calls without your proxy's login header need one (for when other programs can reach the studio's port; the login header named by `STUDIO_PERSON_HEADER` is trusted as sent, so only the proxy may reach the port). The player API (`/api/encore/`) has its own keys (see Players): wrong keys get 401 and are rate-limited, pairing tries are limited to 5 a minute per address and a code dies after 5 wrong tries, and keys and codes are never logged.
 
 ## Notes
 

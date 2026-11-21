@@ -1,0 +1,73 @@
+{
+  "name": "profiles-sync-push",
+  "about": "§2.6: the kit sends a new singer's profile, a favourite, a lyric-style pref and a song they sang (its first sync: since null). Nothing from other players yet; the cursor covers what it sent.",
+  "request": {
+    "method": "POST",
+    "path": "/api/encore/profiles/sync",
+    "headers": {
+      "Authorization": "Bearer <token from pairing>"
+    },
+    "body": {
+      "player": "6f1c2a90-3b7e-4c1d-9e55-0a7b8c9d1e2f",
+      "since": null,
+      "events": [
+        {
+          "eid": "db0adbdc-9973-5a39-8c59-97cf253ab5b7",
+          "stream": "profile",
+          "uid": "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d",
+          "at": 1794485120.0,
+          "name": "Mia",
+          "color": "#ff5fa2",
+          "pin_hash": {
+            "alg": "scrypt",
+            "n": 16384,
+            "r": 8,
+            "p": 1,
+            "salt": "00112233445566778899aabbccddeeff",
+            "hash": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+          },
+          "created": 1794485120.0,
+          "deleted": false
+        },
+        {
+          "eid": "11c131ef-cbc1-5ba6-85f0-db42d255b776",
+          "stream": "favorites",
+          "uid": "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d",
+          "at": 1794485132.5,
+          "song": "20261101-120000-nova-lane-paper-lanterns",
+          "on": true
+        },
+        {
+          "eid": "f6e1bf0e-4259-52c5-9757-39fe5a2c5698",
+          "stream": "prefs",
+          "uid": "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d",
+          "at": 1794485133.25,
+          "key": "style:ja",
+          "value": "romaji"
+        },
+        {
+          "eid": "4b2fbe76-c274-5232-935b-5d61d1272d6d",
+          "stream": "history",
+          "uid": "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d",
+          "at": 1794485420.75,
+          "song": "20261102-090000-the-quiet-arcade-two-small-rivers",
+          "base": "The Quiet Arcade - Two Small Rivers (Music Video)",
+          "result": "finished",
+          "party": "Friday at Ken's",
+          "style": "romaji",
+          "guide": "low"
+        }
+      ]
+    },
+    "schema": "profiles.sync.request.schema.json"
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "cursor": "s4",
+      "events": []
+    },
+    "schema": "profiles.sync.response.schema.json"
+  }
+}

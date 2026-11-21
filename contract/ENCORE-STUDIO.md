@@ -160,7 +160,7 @@ plays (finished, or stopped after more than half) plus PiKaraoke's history.
 Encore's host view shows "N songs are made but not published" with a link to the Studio (which asks for its own
 login). Encore never publishes.
 
-### 2.6 Profiles (planned: built after §2.0–2.5)
+### 2.6 Profiles (built 2026-11-20: Encore and the Studio)
 Roles: Encore runs everything locally (the kit works a whole party offline); the Studio makes/edits songs, keeps the
 master copies, and is home base: it backs up Encore's user profiles and syncs them between Encores (home, Ken's kit).
 
@@ -179,6 +179,25 @@ is per stream as above, so two Encores editing offline never overwrite each othe
 `profile` event with `deleted: true`; the Studio then erases that user's events from every stream and tells every
 player on its next sync. `GET /api/encore/profiles/<uid>/export` → everything stored about that user (for "download
 my data"). The Studio lists profiles (names, last seen, which players) for admins, no history browsing by default.
+
+Built as Encore proposed (its PROPOSED.md, 2026-11-20), with the schemas `profile-event.schema.json`,
+`profiles.sync.request.schema.json`, `profiles.sync.response.schema.json`, `profiles.export.response.schema.json` and
+fixtures 24–31. What the Studio does:
+- Stores each event once (by `eid`) with a growing sequence number and the sending player; relays events to the other
+  players in that order, never back to the sender, at most 500 per answer (`more: true` when cut). It doesn't merge on
+  the way: players merge by `(at, eid)` (latest wins per profile record, per (uid, song), per (uid, key); history whole).
+- The cursor is opaque (`"s<number>"`). One it didn't give (or beyond what it holds: a rebuilt Studio) answers 400;
+  Encore syncs again with `since: null`.
+- `player` in the body must be the token's player (403). The preset player (`ENCORE_TOKEN`) has no uuid of its own on
+  the Studio: any uuid is accepted, and its events are the preset's.
+- A body that fails the schema (one bad event) answers 400 for the whole call and stores nothing (other `/api/encore/`
+  bodies answer 422; §2.8.7 treats 400/413/422 alike).
+- A tombstone erases every event of that uid, clears the uid on the requests, flags and plays it sent (they stay), is
+  kept (eid, stream, uid, at, deleted, merged_into only) with a new position so every other player gets it, and makes
+  the Studio drop later events for that uid (a second tombstone included).
+- Export: unknown uid 404; deleted `{uid, deleted: true, profile: null, [] …}`; `profile.updated` = the winning
+  record's `at`; `pin` only as true/false, never the hash. Admins see a list (Players tab → Singer profiles: name,
+  colour, last activity, which players, PIN set); no history.
 
 ### 2.7 Transports and sync bundles (planned: kit phase)
 The Studio can be any PC (Linux, Windows, macOS with Docker; an NVIDIA GPU only for making songs) and doesn't have to

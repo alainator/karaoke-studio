@@ -24,6 +24,7 @@ from fastapi.responses import FileResponse
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import config as C  # noqa: E402
+import gpu as gpu_mod  # noqa: E402
 
 TOKEN = os.environ.get("HELPER_TOKEN", "")
 ALLOW = {a.strip() for a in os.environ.get("HELPER_ALLOW", "").split(",") if a.strip()}
@@ -56,13 +57,8 @@ def _deny(code, msg):
 
 
 def gpu():
-    try:
-        r = subprocess.run(["nvidia-smi", "--query-gpu=name,memory.total,memory.used", "--format=csv,noheader,nounits"],
-                           capture_output=True, text=True, timeout=10)
-        name, tot, used = [x.strip() for x in r.stdout.splitlines()[0].split(",")]
-        return name, int(tot) - int(used)
-    except Exception:
-        return "?", 0
+    """(name, free MiB) of this PC's GPU (gpu.py)."""
+    return gpu_mod.info()
 
 
 @app.get("/health")

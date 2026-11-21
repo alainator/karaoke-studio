@@ -1,0 +1,25 @@
+{
+  "name": "profiles-sync-bad-cursor",
+  "about": "§2.6: a cursor this Studio didn't give (a rebuilt Studio): 400; Encore syncs again with since null.",
+  "request": {
+    "method": "POST",
+    "path": "/api/encore/profiles/sync",
+    "headers": {
+      "Authorization": "Bearer <token from pairing>"
+    },
+    "body": {
+      "player": "6f1c2a90-3b7e-4c1d-9e55-0a7b8c9d1e2f",
+      "since": "s999999",
+      "events": []
+    },
+    "schema": "profiles.sync.request.schema.json"
+  },
+  "response": {
+    "status": 400,
+    "headers": {},
+    "body": {
+      "error": "unknown cursor: sync again with since null"
+    },
+    "schema": "error.schema.json"
+  }
+}

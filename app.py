@@ -30,6 +30,8 @@ import encore  # noqa: E402
 import pitch as pitchmod  # noqa: E402
 import guidevocals  # noqa: E402
 import schemalite  # noqa: E402
+import gpu as gpumod  # noqa: E402
+import agents  # noqa: E402
 
 # what the studio did and when: data/logs/studio.log (5 files of 2 MB kept)
 os.makedirs(C.LOGS, exist_ok=True)
@@ -110,13 +112,7 @@ def check_origin(req: Request):
 
 
 def gpu_free_mib():
-    try:
-        r = subprocess.run(["nvidia-smi", "--query-gpu=memory.total,memory.used", "--format=csv,noheader,nounits"],
-                           capture_output=True, text=True, timeout=10)
-        tot, used = (int(x) for x in r.stdout.split(","))
-        return tot - used
-    except Exception:
-        return 0
+    return gpumod.free_mib()
 
 
 def rebuild_lyrics(jid, job, lines=None, cast=None, offset=None):
@@ -428,6 +424,8 @@ def lyrics_preview(source: str, id: str):
 async def create_job(req: Request):
     check_origin(req)
     b = await req.json()
+    if b.get("replace"):  # "Change video or lyrics": the new song takes the old one's place
+        _agent_refuse(agents.actor_of(req), "remake", "changing a song's video or lyrics")
     yt, lrc_id = str(b.get("yt", "")), b.get("lrc_id")
     source = b.get("lyrics_source") or "lrclib"
     artist, title = str(b.get("artist", "")).strip(), str(b.get("title", "")).strip()
@@ -447,7 +445,7 @@ async def create_job(req: Request):
                "gpu_pref": b.get("gpu") if b.get("gpu") in ("local", "remote") else "auto",
                **({"lyrics_text": pasted} if source == "pasted" else {}),
                "created": time.time(), "offset": 0.0, "lyrics_display": C.LYRICS_DISPLAY if C.LYRICS_DISPLAY in MODES else "both",
-               "log": []})
+               "made_by": agents.stamp(agents.actor_of(req)), "log": []})
     log.info("queued %s | video %s | lyrics %s:%s | gpu %s%s", jid, yt, source, lrc_id if source != "pasted" else f"{len(pasted)} chars",
              b.get("gpu") or "auto", f" | replaces {b.get('replace')}" if b.get("replace") else "")
     # "Change video or lyrics" on an existing song: the new one takes its place once it has been made (if it fails,
@@ -504,7 +502,7 @@ def summary(job):
 def _summary(job):
     keys = ("id", "artist", "title", "yt", "status", "step", "created", "finished", "error", "offset",
             "published", "published_as", "video_title", "result", "waiting", "edited", "unpublished_changes", "lang", "gpu", "ai_romaji", "video_v", "gpu_pref", "reviewed", "lrc_id", "lyrics_source", "trim", "video_task",
-            "lyrics_display", "cancel_requested")
+            "lyrics_display", "cancel_requested", "last_edit", "published_by")
     return {k: job.get(k) for k in keys}
 
 
@@ -602,11 +600,17 @@ async def set_offset(jid: str, req: Request):
     off = float(b.get("offset", 0))
     if not -5 <= off <= 5:
         raise HTTPException(400, "offset must be within ±5 s")
+    actor = agents.actor_of(req)
     with lock:
         job = load(jid)
         rebuild_lyrics(jid, job, offset=off)
-        if round(off, 2) != job.get("offset") and job.get("published"):
-            job["unpublished_changes"] = True
+        if round(off, 2) != job.get("offset"):
+            if job.get("published"):
+                job["unpublished_changes"] = True
+            if job.get("status") == "done":  # (undoable like a lines edit)
+                what = f"whole-song offset {round(off, 2):+.2f} s"
+                agents.snapshot(job_path(jid), actor, what, offset=job.get("offset") or 0.0)
+                _edited(jid, job, actor, what)
         job["offset"] = round(off, 2)
         save(jid, job)
     return {"offset": job["offset"]}
@@ -630,6 +634,7 @@ async def set_display(jid: str, req: Request):
         if rebuild_lyrics(jid, job) and job.get("published"):
             job["unpublished_changes"] = True
         job.setdefault("log", []).append(f"lyrics shown as: {mode}")
+        _edited(jid, job, agents.actor_of(req), f"lyrics shown as: {mode}")
         save(jid, job)
     return {"lyrics_display": mode, "unpublished_changes": bool(job.get("unpublished_changes"))}
 
@@ -682,24 +687,49 @@ def _valid_lines(raw, duration):
                     "heard": heard.strip()[:200] if isinstance(heard, str) and heard.strip() else None,
                     "wwho": wwho if any(wwho) else None, "weak": bool(l.get("weak")),
                     "why": l["why"].strip()[:160] if l.get("weak") and isinstance(l.get("why"), str) and l["why"].strip() else None,
-                    "ok": bool(l.get("ok")) and not l.get("weak"), "backing": bool(l.get("backing"))})
+                    "ok": bool(l.get("ok")) and not l.get("weak"), "backing": bool(l.get("backing")),
+                    "note": l.get("note") if isinstance(l.get("note"), dict) else None})  # (signed in put_lines)
     if not out:
         raise HTTPException(400, "no lines left")
     out.sort(key=lambda l: l["words"][0][0])
     return out
 
 
+def _agent_refuse(actor, scope, what):
+    """403 for an agent whose key doesn't allow this (the gate checks the endpoint; this is for what's in the body)."""
+    if not agents.can(actor, scope):
+        raise HTTPException(403, f"this agent key ({actor['name']}) doesn't allow {what} (scope '{scope}': "
+                                 f"{agents.scope_label(scope)}); an admin can allow it on the Agents tab")
+
+
+def _check_edited(job, b):
+    """ks (and any client) can send the song's "edited" time it read: if the song changed since, nothing is saved."""
+    if "if_edited" in b and b.get("if_edited") != job.get("edited"):
+        who = (job.get("last_edit") or {}).get("by")
+        raise HTTPException(409, "the song was edited since you read it" + (f" (by {who})" if who else "") + "; read it again")
+
+
+def _edited(jid, job, actor, what):
+    """Record who edited the song and when (shown on its page)."""
+    job["last_edit"] = agents.stamp(actor, what)
+    log.info("edit %s by %s (%s): %s", jid, actor["name"], actor["kind"], what)
+
+
 @app.post("/api/jobs/{jid}/lines")
 async def put_lines(jid: str, req: Request):
     check_origin(req)
     b = await req.json()
+    actor = agents.actor_of(req)
     with lock:
         job = load(jid)
         if job["status"] != "done":
             raise HTTPException(400, "finish making it first")
+        _check_edited(job, b)
+        wp = job_path(jid, "words.json")
+        old, old_cast = load_lines(wp), load_cast(wp)
         lines = _valid_lines(b.get("lines"), (job.get("result") or {}).get("duration"))
         cast = b.get("cast")
-        cast = [str(x).strip()[:40] for x in cast if str(x).strip()][:8] if isinstance(cast, list) else load_cast(job_path(jid, "words.json"))
+        cast = [str(x).strip()[:40] for x in cast if str(x).strip()][:8] if isinstance(cast, list) else old_cast
         for l in lines:
             if l.get("members"):
                 l["members"] = [i for i in l["members"] if i < len(cast)] or None
@@ -707,15 +737,112 @@ async def put_lines(jid: str, req: Request):
                 l["wwho"] = [None if not x else x if "singer" in x else ({"members": [i for i in x["members"] if i < len(cast)]}
                              if any(i < len(cast) for i in x["members"]) else None) for x in l["wwho"]]
                 l["wwho"] = l["wwho"] if any(l["wwho"]) else None
+        notes = agents.keep_notes(old, lines, actor)
+        cleared = agents.marks_cleared(old, lines)
+        if cleared:  # a mark that goes because its line was moved or reworded is an edit, not this
+            _agent_refuse(actor, "clear_marks", f"clearing ⚠ marks ({cleared} line{'s' if cleared != 1 else ''})")
+        if notes:
+            _agent_refuse(actor, "notes", "changing notes")
+        what = " ".join(str(b.get("what") or "").split())[:120] or agents.describe(old, lines)
         if not os.path.exists(job_path(jid, "words.orig.json")):
-            shutil.copyfile(job_path(jid, "words.json"), job_path(jid, "words.orig.json"))
-        save_lines(job_path(jid, "words.json"), lines, cast)
+            shutil.copyfile(wp, job_path(jid, "words.orig.json"))
+        agents.snapshot(job_path(jid), actor, what, lines=old, cast=old_cast)
+        save_lines(wp, lines, cast)
         ass_same = not rebuild_lyrics(jid, job, lines, cast)
         job["edited"] = time.time()
+        _edited(jid, job, actor, what)
         if job.get("published") and not ass_same:  # clearing a ⚠ mark changes nothing on screen: nothing to republish
             job["unpublished_changes"] = True
         save(jid, job)
-    return {"lines": len(lines)}
+    return {"lines": len(lines), "edited": job["edited"]}
+
+
+@app.get("/api/jobs/{jid}/history")
+def edit_history(jid: str):
+    """The song's undoable edits, newest first: who (person, agent, ks or web), what, when."""
+    job_path(jid)
+    return {"history": agents.entries(job_path(jid)), "last_edit": load(jid).get("last_edit")}
+
+
+@app.post("/api/jobs/{jid}/lines/undo")
+async def undo_edit(jid: str, req: Request):
+    """Put back the song as it was before its last edit, whoever made it. {"id"}: undo only if that's still the last
+    one (a client that showed "Undo: <what>" mustn't undo someone else's newer edit)."""
+    check_origin(req)
+    b = await req.json() if (req.headers.get("content-length") or "0") != "0" else {}
+    actor = agents.actor_of(req)
+    with lock:
+        job = load(jid)
+        if job["status"] != "done":
+            raise HTTPException(400, "finish making it first")
+        e = agents.last(job_path(jid))
+        if not e:
+            raise HTTPException(400, "nothing to undo (Undo all edits goes back to the automatic version)")
+        if b.get("id") and b["id"] != e["id"]:
+            raise HTTPException(409, f"the last edit is now someone else's ({e.get('by')}: {e.get('what')}); look again")
+        changed = False
+        if "lines" in e:
+            wp = job_path(jid, "words.json")
+            save_lines(wp, e["lines"], e.get("cast") or [])
+            changed = rebuild_lyrics(jid, job, load_lines(wp), load_cast(wp))
+        if "offset" in e:
+            changed = rebuild_lyrics(jid, job, offset=e["offset"]) or changed
+            job["offset"] = round(float(e["offset"]), 2)
+        agents.drop(job_path(jid), e["id"])
+        job["edited"] = time.time()
+        _edited(jid, job, actor, f"undo: {e.get('what')} ({e.get('by')})")
+        if job.get("published") and changed:
+            job["unpublished_changes"] = True
+        save(jid, job)
+    return {"undone": {k: e.get(k) for k in ("id", "by", "kind", "what", "at")}, "left": len(agents.entries(job_path(jid))),
+            "edited": job["edited"]}
+
+
+@app.post("/api/jobs/{jid}/notes")
+async def put_notes(jid: str, req: Request):
+    """A note on lines, signed by whoever sends it (an agent's key name, the signed-in person): {"lines": [1-based line
+    numbers], "text", "mark": flag lines that aren't marked ⚠, "if_edited"}. Empty text removes the sender's own note.
+    Lines the person checked as fine (✓) get no note. Undo takes it back like any edit."""
+    check_origin(req)
+    b = await req.json()
+    actor = agents.actor_of(req)
+    text = " ".join(str(b.get("text") or "").split())[:300]
+    nums = b.get("lines")
+    if not isinstance(nums, list) or not nums or not all(isinstance(n, int) for n in nums) or len(nums) > 100:
+        raise HTTPException(400, "lines: a list of line numbers (1-based, as shown)")
+    with lock:
+        job = load(jid)
+        if job["status"] != "done":
+            raise HTTPException(400, "finish making it first")
+        _check_edited(job, b)
+        wp = job_path(jid, "words.json")
+        lines, cast = load_lines(wp), load_cast(wp)
+        old = json.loads(json.dumps(lines))
+        for n in nums:
+            if not 1 <= n <= len(lines):
+                raise HTTPException(400, f"line {n} doesn't exist (1-{len(lines)})")
+            l = lines[n - 1]
+            if not text:
+                if l.get("note") and l["note"].get("by") == actor["name"]:
+                    l["note"] = None
+                continue
+            if l.get("ok") and not l.get("weak"):
+                raise HTTPException(409, f"line {n} is checked as fine (✓): that's the person's call, so no note")
+            if not l.get("weak") and not b.get("mark"):
+                raise HTTPException(400, f"line {n} isn't marked ⚠; add mark (ks note --mark) to flag it with this note")
+            if not l.get("weak"):
+                l["weak"], l["ok"], l["why"] = True, False, f"flagged by {actor['name']}"
+            l["note"] = {"by": actor["name"], "kind": actor["kind"], "text": text, "at": round(time.time(), 3)}
+        if json.dumps(lines) == json.dumps(old):
+            return {"changed": 0, "edited": job.get("edited")}
+        what = (f"note on line{'s' if len(nums) != 1 else ''} " + ", ".join(map(str, nums))) if text else "note removed"
+        agents.snapshot(job_path(jid), actor, what, lines=old, cast=cast)
+        save_lines(wp, lines, cast)
+        rebuild_lyrics(jid, job, lines, cast)
+        job["edited"] = time.time()
+        _edited(jid, job, actor, what)
+        save(jid, job)
+    return {"changed": len(nums), "edited": job["edited"]}
 
 
 @app.post("/api/jobs/{jid}/trim")
@@ -724,6 +851,7 @@ async def trim_song(jid: str, req: Request):
     in the ORIGINAL video; start 0 and no end puts the whole video back. Lines move with the cut. Lines sung outside
     the kept part are refused unless drop_lines is true."""
     check_origin(req)
+    actor = agents.actor_of(req)
     b = await req.json()
     try:
         start = max(0.0, float(b.get("start") or 0))
@@ -767,6 +895,8 @@ async def trim_song(jid: str, req: Request):
                 job["trim"] = {"start": round(start, 2), "end": round(end, 2) if end else None}
             job["result"] = json.load(open(job_path(jid, "result.json")))
             job["edited"] = time.time()
+            agents.retire(jd)  # (earlier lines are in the old timing)
+            _edited(jid, job, actor, "trim " + (f"{start:.1f}-{(end or full):.1f} s" if start > 0.05 or end else "removed"))
             if job.get("published"):
                 job["unpublished_changes"] = True
             job.setdefault("log", []).append(f"trimmed to {start:.1f}-{(end or full):.1f} s of the video ({length:.1f} s)"
@@ -935,6 +1065,7 @@ async def add_video_link(jid: str, req: Request):
             raise HTTPException(409, VIDEO_BUSY)
         _check_new_version(jid, mode, name)
         claim_video(job, what)
+        _edited(jid, job, agents.actor_of(req), what)
         save(jid, job)
 
     def fn(progress):
@@ -972,6 +1103,7 @@ async def add_video_file(jid: str, req: Request, mode: str = "", name: str = "",
             raise HTTPException(409, VIDEO_BUSY)
         _check_new_version(jid, mode, name)
         claim_video(job, what)
+        _edited(jid, job, agents.actor_of(req), what)
         job["video_task"].update(step="upload", text="receiving the file")
         save(jid, job)
     inc = job_path(jid, "videos", f"incoming-{int(time.time() * 1000)}")
@@ -1044,6 +1176,7 @@ async def rerender_video(jid: str, key: str, req: Request):
             raise HTTPException(400, "that start is too far off")
         what = "the replacement video" if key == "replace" else f"the version “{meta.get('name')}”"
         claim_video(job, what)
+        _edited(jid, job, agents.actor_of(req), what)
         save(jid, job)
     fill, lead, realign = b.get("fill"), b.get("lead"), bool(b.get("realign"))
 
@@ -1069,6 +1202,7 @@ def remove_video(jid: str, key: str, req: Request):
         _, meta = _entry_meta(jid, key)
         videoswap.remove_version(job_path(jid), key)
         job.setdefault("log", []).append(f"removed the version “{meta.get('name')}”")
+        _edited(jid, job, agents.actor_of(req), f"removed the version “{meta.get('name')}”")
         save(jid, job)
         if meta.get("published_as"):  # its published copy stays: the catalog keeps it, from its last listing
             update_catalog()
@@ -1091,6 +1225,7 @@ async def restore_official(jid: str, req: Request):
         if job.get("published"):
             job["unpublished_changes"] = True
         job.setdefault("log", []).append("the official video is back")
+        _edited(jid, job, agents.actor_of(req), "official video restored")
         save(jid, job)
     return {"ok": True}
 
@@ -1137,7 +1272,8 @@ async def publish_version(jid: str, key: str, req: Request):
         os.replace(tmp, f"{MV_DIR}/{base}.mp4")
         publish_lyrics(jid, base)
         guidevocals.write(job_path(jid), MV_DIR, [base], log)  # the song's own sound: its vocals (never stops a publish)
-        meta.update(published=time.time(), published_as=base, unpublished_changes=False, lyrics_published=time.time())
+        meta.update(published=time.time(), published_as=base, unpublished_changes=False, lyrics_published=time.time(),
+                    published_by=agents.stamp(agents.actor_of(req)))
         videoswap.save_meta(d, meta)
         log.info("published %s version %s as %s", jid, key, base)
         job.setdefault("log", []).append(f"published the version “{meta.get('name')}” as '{base}'")
@@ -1566,6 +1702,8 @@ async def reset_lines(jid: str, req: Request):
         shutil.copyfile(orig, job_path(jid, "words.json"))
         rebuild_lyrics(jid, job)
         job["edited"] = None
+        agents.retire(job_path(jid))
+        _edited(jid, job, agents.actor_of(req), "all edits undone (back to the automatic version)")
         job["ai_romaji"] = None  # back to the plain automatic romaji
         if job.get("published"):
             job["unpublished_changes"] = True
@@ -1595,6 +1733,7 @@ async def set_reviewed(jid: str, req: Request):
         if job.get("status") != "done":
             raise HTTPException(400, "finish making it first")
         job["reviewed"] = time.time() if b.get("on", True) else None
+        _edited(jid, job, agents.actor_of(req), "checked by you: " + ("on" if job["reviewed"] else "off"))
         save(jid, job)
     return {"reviewed": job["reviewed"]}
 
@@ -1607,9 +1746,13 @@ async def rename(jid: str, req: Request):
     artist, title = str(b.get("artist", "")).strip()[:120], str(b.get("title", "")).strip()[:160]
     if not artist or not title:
         raise HTTPException(400, "give both artist and title")
+    actor = agents.actor_of(req)
     with lock:
         job = load(jid)
         old = job.get("published_as")
+        if old and os.path.exists(f"{MV_DIR}/{old}.mp4"):  # it renames files in the library too
+            _agent_refuse(actor, "publish", "renaming a published song (its files in the library change too)")
+        _edited(jid, job, actor, f"renamed to {artist} - {title}")
         job.update(artist=artist, title=title)
         new = final_base(job)
         moved = False
@@ -1678,6 +1821,8 @@ async def remake(jid: str, req: Request):
                    video_v=time.time(), remade=time.time(), reviewed=None, remake_merge=merge, remake_note=None, remake_undone=False,
                    pre_remake={**{k: job.get(k) for k in ("edited", "result", "offset", "reviewed", "ai_romaji", "remade", "remake_note")},
                                "log": job.get("log", [])[-30:], "unstarted": True})
+        agents.retire(job_path(jid))  # (the remake retimes the lines; Undo remake is the way back)
+        _edited(jid, job, agents.actor_of(req), "remake")
         save(jid, job)
     log.info("remake %s | gpu %s | keeps edits: %s", jid, job.get("gpu_pref", "auto"), merge)
     wake.set()
@@ -1700,6 +1845,8 @@ async def undo_remake(jid: str, req: Request):
         if job.get("published"):
             job["unpublished_changes"] = True
         job.setdefault("log", []).append("remake undone: the lyrics are back to the version before it")
+        agents.retire(job_path(jid))
+        _edited(jid, job, agents.actor_of(req), "undo remake")
         save(jid, job)
     return {"ok": True}
 
@@ -1750,6 +1897,8 @@ async def chinese_reading(jid: str, req: Request):
         job["lang"] = to  # a remake keeps the choice
         rebuild_lyrics(jid, job, lines, cast)  # (Cantonese is drawn with the traditional-character font)
         job["edited"] = time.time()
+        agents.retire(job_path(jid))  # (older lines are in the other reading)
+        _edited(jid, job, agents.actor_of(req), "reading: " + ("jyutping (Cantonese)" if to == "yue" else "pinyin (Mandarin)"))
         if job.get("published"):
             job["unpublished_changes"] = True
         save(jid, job)
@@ -1894,11 +2043,7 @@ helper_seen = {"at": 0.0, "health": None}
 
 
 def local_gpu_name():
-    try:
-        r = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"], capture_output=True, text=True, timeout=10)
-        return r.stdout.strip().splitlines()[0].replace("NVIDIA GeForce ", "")
-    except Exception:
-        return "this server's GPU"
+    return (gpumod.name() or "this server's GPU").replace("NVIDIA GeForce ", "")
 
 
 LOCAL_GPU = local_gpu_name()
@@ -2325,8 +2470,25 @@ def run_remote(jid):
                 except Exception:
                     if os.path.exists(job_path(jid, "heard.json.part")):
                         os.remove(job_path(jid, "heard.json.part"))
-                maybe_auto_romaji(jid, 0)
-                finish(jid, 0, None, False, "remote")
+                # a trimmed song (a remake): the helper made it untrimmed; cut it here exactly as pipeline.py does for
+                # a song made on this machine (it keeps the untrimmed copy here, for changing the trim later)
+                trim_err = None
+                try:
+                    said = trimtools.reapply(job_path(jid), load(jid).get("trim"))
+                    if said:
+                        with lock:
+                            j = load(jid)
+                            j.setdefault("log", []).append(said)
+                            save(jid, j)
+                        C.job_log(job_path(jid), said)
+                except Exception as e:
+                    log.exception("trim of %s after the helper", jid)
+                    trim_err = f"couldn't trim it as before ({str(e)[:100]})"
+                if trim_err:
+                    finish(jid, 1, trim_err, False, "remote")
+                else:
+                    maybe_auto_romaji(jid, 0)
+                    finish(jid, 0, None, False, "remote")
             else:
                 finish(jid, 1, st.get("error"), bool(st.get("oom")), "remote")
             try:
@@ -2519,8 +2681,9 @@ async def publish(jid: str, req: Request):
                 videoswap.save_meta(videoswap.version_dir(job_path(jid), m["slug"]), m)
         # the guide vocals (base.vocals.m4a), the song's and its versions' (the same sound); never stops a publish
         guidevocals.write(job_path(jid), MV_DIR, [base] + vbases, log)
-        job.update(status="done", published=time.time(), published_as=base, unpublished_changes=False)
-        log.info("published %s as %s", jid, base)
+        job.update(status="done", published=time.time(), published_as=base, unpublished_changes=False,
+                   published_by=agents.stamp(agents.actor_of(req)))
+        log.info("published %s as %s (by %s)", jid, base, job["published_by"]["by"])
         job.setdefault("log", []).append(f"published as '{base}'" + (f"; removed {len(removed)} old version(s)" if removed else ""))
         save(jid, job)
         update_catalog()
@@ -2721,6 +2884,49 @@ async def encore_gate(req: Request, call_next):
         return await call_next(req)
     except EncoreError as e:  # (normally turned into an answer by the handler below)
         return _err(e.status, e.msg)
+
+
+# ---------------- agents: keys, scopes, who is asking (agents.py; AGENTS.md) ----------------
+KEYS = agents.KeyStore()
+BAD_KEYS = encore.RateLimit(20, 60)           # wrong agent keys per address and minute, then 429
+
+
+@app.middleware("http")
+async def agent_gate(req: Request, call_next):
+    """Every API call (not the player API) gets an actor: an agent (X-Studio-Agent-Key, checked against its scopes
+    here), a person (the login proxy's header), ks or the web app. A wrong or revoked key is refused, never treated as
+    no key. AGENT_KEYS_REQUIRED: calls with neither a login header nor a key are refused."""
+    path = req.url.path
+    if not path.startswith("/api/") or path.startswith("/api/encore/"):
+        return await call_next(req)
+    key = req.headers.get(agents.KEY_HEADER)
+    row = None
+    if key is not None:
+        addr = _addr(req)
+        if BAD_KEYS.over(addr):
+            return JSONResponse({"detail": "too many wrong agent keys; wait a minute"}, status_code=429, headers={"Retry-After": "60"})
+        row = KEYS.auth(key.strip())
+        if not row:
+            BAD_KEYS.hit(addr)
+            return JSONResponse({"detail": "unknown agent key (revoked, or not made on this Studio): an admin makes keys on the Agents tab"},
+                                status_code=401)
+    elif C.AGENT_KEYS_REQUIRED and not (req.headers.get(agents.person_header()) or "").strip():
+        return JSONResponse({"detail": "this Studio needs a login (through its proxy) or an agent key (X-Studio-Agent-Key)"},
+                            status_code=401)
+    actor = agents.actor_from_headers(req.headers, row)
+    req.state.actor = actor
+    if row is not None and path != "/api/agent/whoami":
+        scope = agents.scope_for(req.method, path)
+        if scope in (None, agents.ADMIN):
+            return JSONResponse({"detail": f"agents can't use {req.method} {path}: it's for the Studio's admins, in the web app",
+                                 "scope": scope}, status_code=403)
+        if scope not in row["scopes"]:
+            return JSONResponse({"detail": f"this agent key ({row['name']}) doesn't allow: {agents.scope_label(scope)} "
+                                           f"(scope '{scope}'); an admin can allow it on the Agents tab", "scope": scope},
+                                status_code=403)
+        if req.method not in ("GET", "HEAD"):
+            log.info("agent %s: %s %s", row["name"], req.method, path)
+    return await call_next(req)
 
 
 @app.exception_handler(EncoreError)
@@ -3147,6 +3353,38 @@ async def encore_plays(req: Request):
     return {"stored": n}
 
 
+@app.post("/api/encore/profiles/sync")
+@_guard
+async def encore_profiles_sync(req: Request):
+    """§2.6: store this player's profile events, answer the other players' events since its cursor."""
+    try:
+        b = await _body(req, "profiles.sync.request.schema.json")
+    except EncoreError as e:  # (PROPOSED.md rule 9: an invalid event refuses the whole call with 400)
+        if e.status == 422:
+            raise EncoreError(400, e.msg)
+        raise
+    player = req.state.player
+    # (the preset player has no uuid of its own here: its events are kept as the preset's)
+    if player != encore.PRESET and b["player"] != player:
+        raise EncoreError(403, "player isn't this token's player")
+    try:
+        return await asyncio.to_thread(STORE.profiles_sync, player, b["events"], b["since"])
+    except ValueError:
+        raise EncoreError(400, "unknown cursor: sync again with since null")
+
+
+@app.get("/api/encore/profiles/{uid}/export")
+@_guard
+def encore_profile_export(uid: str, req: Request):
+    """§2.6: everything the Studio keeps about one profile (its PIN only as set / not set)."""
+    if not encore.UUID_RE.match(uid):
+        raise EncoreError(404, "no such profile")
+    x = STORE.profile_export(uid)
+    if x is None:
+        raise EncoreError(404, "no such profile")
+    return x
+
+
 @app.get("/api/encore/unpublished")
 @_guard
 def encore_unpublished(req: Request):
@@ -3204,6 +3442,12 @@ def encore_file(path: str, req: Request):
 
 
 # ---- the admin pages (the web app, behind its own login) ----
+@app.get("/api/profiles")
+def profiles_list():
+    """Encore user profiles backed up here (§2.6): names, colours, last activity, which players. No history."""
+    return {"profiles": STORE.profiles()}
+
+
 @app.get("/api/players")
 def players_list():
     return {"players": STORE.players(), "code": STORE.code_state(), "address": C.ENCORE_STUDIO_ADDRESS,
@@ -3329,6 +3573,170 @@ async def other_flags_dismiss(req: Request):
     b = await req.json()
     fids = [str(x) for x in (b.get("fids") or [])]
     return {"dismissed": len(STORE.dismiss_flags(fids=fids))}
+
+
+# ---- agents: keys (admins, in the web app) and what ks asks for ----
+@app.get("/api/agents")
+def agents_list():
+    return {"keys": KEYS.list(), "scopes": [{"scope": k, "label": t, "default": d} for k, t, d in agents.SCOPES],
+            "required": C.AGENT_KEYS_REQUIRED, "person_header": C.PERSON_HEADER}
+
+
+@app.post("/api/agents")
+async def agents_create(req: Request):
+    """A new agent key: {"name", "scopes"}. The key is in this answer only; the studio keeps its hash."""
+    check_origin(req)
+    b = await req.json()
+    try:
+        key, row = KEYS.create(b.get("name"), b.get("scopes"), by=agents.actor_of(req)["name"])
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    log.info("agents: a key was made for %s (%s)", row["name"], ", ".join(row["scopes"]))
+    return {"key": key, "agent": row}
+
+
+@app.patch("/api/agents/{kid}")
+async def agents_update(kid: str, req: Request):
+    check_origin(req)
+    b = await req.json()
+    try:
+        row = KEYS.update(kid, b.get("scopes"))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if not row:
+        raise HTTPException(404, "no such agent key")
+    log.info("agents: %s may now: %s", row["name"], ", ".join(row["scopes"]) or "nothing")
+    return {"agent": row}
+
+
+@app.delete("/api/agents/{kid}")
+def agents_revoke(kid: str, req: Request):
+    check_origin(req)
+    row = KEYS.get(kid)
+    if not row or not KEYS.revoke(kid):
+        raise HTTPException(404, "no such agent key")
+    log.info("agents: the key of %s was revoked", row["name"])
+    return {"ok": True}
+
+
+@app.get("/api/agent/whoami")
+def agent_whoami(req: Request):
+    """Who the studio takes the caller for, and (for an agent) what its key allows. Never the key."""
+    a = agents.actor_of(req)
+    allowed = a.get("scopes") if a["kind"] == "agent" else agents.SCOPE_NAMES
+    return {"kind": a["kind"], "name": a["name"], "scopes": allowed, "studio": C.STUDIO_NAME,
+            "labels": {k: t for k, t, _ in agents.SCOPES}, "required": C.AGENT_KEYS_REQUIRED}
+
+
+def _ks():
+    """tools/ks_helper.py (loaded by its path: "tools" is too common a name to import as a package)."""
+    m = sys.modules.get("ks_helper")
+    if m is None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("ks_helper", os.path.join(HERE, "tools", "ks_helper.py"))
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        sys.modules["ks_helper"] = m
+    return m
+
+
+def _done(jid):
+    job = load(jid)
+    if job.get("status") != "done":
+        raise HTTPException(400, "finish making it first")
+    return job
+
+
+@app.get("/api/jobs/{jid}/heard")
+def job_heard(jid: str):
+    """What the transcription heard in the song's vocals (heard.json: {"lang", "words": [[start, end, word]...]}, video
+    time without the offset), for ks heard."""
+    p = job_path(jid, "heard.json")
+    if not os.path.exists(p):
+        raise HTTPException(404, "this song has no record of what was heard (made before the by-ear check, or on a "
+                                 "helper on older code); deploy/check-library.py --missing-heard makes one")
+    return FileResponse(p, media_type="application/json", headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/jobs/{jid}/agent/check")
+async def agent_check(jid: str):
+    """The by-ear check of the lines as they are now: for each lead line, how far from it its words are heard."""
+    job = _done(jid)
+    return await asyncio.to_thread(_ks().check, job_path(jid), float(job.get("offset") or 0.0))
+
+
+@app.get("/api/jobs/{jid}/agent/look")
+async def agent_look(jid: str, t0: float, t1: float, line: int = 0):
+    """A picture (PNG) of [t0, t1] (video time): the vocals' spectrogram, the line blocks (orange = ⚠; line = the
+    1-based line drawn in white) and the words heard."""
+    import tempfile
+    job = _done(jid)
+    if not (0 <= t0 < t1 and t1 - t0 <= 120):
+        raise HTTPException(400, "t0 < t1, at most 120 s apart")
+    cache, png = job_path(jid, "spectro.webp"), job_path(jid, "spectro.png")
+    if not os.path.exists(cache) and not os.path.exists(png):
+        await asyncio.to_thread(_make_spectro, jid, cache)
+    fd, out = tempfile.mkstemp(suffix=".png")
+    os.close(fd)
+    try:
+        r = await asyncio.to_thread(_ks().look, job_path(jid), float(job.get("offset") or 0.0), t0, t1, line - 1, out)
+        data = open(out, "rb").read()
+    finally:
+        os.remove(out)
+    return Response(data, media_type="image/png", headers={"Cache-Control": "no-store", "X-Lines": ",".join(map(str, r["lines"]))})
+
+
+@app.get("/api/jobs/{jid}/agent/frame")
+async def agent_frame(jid: str, t: float, width: int = 960):
+    """The video at t seconds with the lyrics drawn as players show them (PNG)."""
+    import tempfile
+    _done(jid)
+    if not 0 <= t <= 7200 or not 160 <= width <= 1920:
+        raise HTTPException(400, "t in seconds of the video; width 160-1920")
+    jd = job_path(jid)
+    ass = os.path.join(jd, "lyrics.ass").replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
+    fonts = os.path.join(HERE, "static", "octopus").replace(":", "\\:")
+    fd, out = tempfile.mkstemp(suffix=".png")
+    os.close(fd)
+    try:
+        r = await asyncio.to_thread(subprocess.run, ["ffmpeg", "-v", "error", "-y", "-ss", f"{t:.2f}", "-copyts", "-i",
+                                    os.path.join(jd, "out.mp4"), "-vf", f"subtitles='{ass}':fontsdir='{fonts}',scale={width}:-2",
+                                    "-frames:v", "1", out], capture_output=True, text=True, timeout=120)
+        data = open(out, "rb").read() if os.path.getsize(out) else b""
+    finally:
+        os.remove(out)
+    if r.returncode or not data:
+        raise HTTPException(500, "ffmpeg: " + (r.stderr or "no picture").strip()[-300:])
+    return Response(data, media_type="image/png", headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/jobs/{jid}/agent/alt-lyrics")
+async def agent_alt_lyrics(jid: str, req: Request):
+    """How well other timed lyrics fit what's heard in this video: {"candidates": [{"id", "synced"}]} (at most 30, as
+    LRCLIB gives them) -> [{"id", "fit", "shift", "lines", "squeezed", "tested"}]. Nothing is saved."""
+    check_origin(req)
+    raw = await req.body()
+    if len(raw) > 3_000_000:
+        raise HTTPException(413, "at most 3 MB of lyrics")
+    try:
+        b = json.loads(raw or b"{}")
+    except ValueError:
+        raise HTTPException(400, "the body isn't JSON")
+    cands = [{"id": c.get("id"), "synced": str(c.get("synced") or "")} for c in (b.get("candidates") or [])
+             if isinstance(c, dict)][:30]
+    job = _done(jid)
+    if not os.path.exists(job_path(jid, "heard.json")):
+        raise HTTPException(400, "no heard.json for this song (made before the by-ear check): can't score lyrics against it")
+    return {"scores": await asyncio.to_thread(_ks().altlyrics, job_path(jid), float(job.get("offset") or 0.0), cands)}
+
+
+@app.post("/api/agent/romaji")
+async def agent_romaji(req: Request):
+    """Original-script lyric lines romanized the way the studio does: {"lines": [...]} -> {"romaji": [...]}."""
+    check_origin(req)
+    b = await req.json()
+    lines = [str(x)[:300] for x in (b.get("lines") or [])][:300]
+    return {"romaji": await asyncio.to_thread(_ks().romaji, lines) if lines else []}
 
 
 # ---------------- static ----------------

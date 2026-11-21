@@ -1,0 +1,1035 @@
+#!/usr/bin/env python3
+"""ks: Karaoke Studio from the command line, for agents (and anyone in a terminal). AGENTS.md says how to use it well.
+
+Everything the web app's song page and editor do, through the same API, so edits behave exactly as there:
+moving or stretching a line clears its ⚠, the subtitles are rebuilt, every edit is signed with who made it and can
+be undone (ks undo, or Undo in the editor), and nothing is saved if the song was edited elsewhere since ks read it.
+What an agent may do is set by its key (made on the Studio's Agents tab); without a key ks acts as "ks".
+
+  ks setup [--url URL]                    where the Studio is, and this agent's key (asked for, never shown)
+  ks whoami                               who the Studio takes you for, and what your key allows
+  ks status [--brief]                     studio, queue, songs with lines to fix
+  ks list [--fix] [--failed] [--q TEXT] [--limit N]
+  ks show SONG                            the lines: times, ⚠ marks and why, notes, singers, text
+  ks check SONG                           by ear, now: which lines sit away from where they're heard
+  ks heard SONG --line N | --at T [--span S]   what the transcription heard around there
+  ks look SONG --line N | --at T [--span S]    picture: vocals spectrogram + line blocks + heard words (PNG)
+  ks frame SONG --line N | --at T         the video at that moment with the lyrics on screen (PNG)
+  ks log SONG                             the end of the song's pipeline log
+  ks search "Artist - Title"              videos and lyrics to choose from
+  ks make --yt ID --lyrics ID [--source lrclib|karamoe] --artist A --title T [--gpu auto|local|remote]
+
+  editing (times are video times, as shown: m:ss.cc or seconds; N is the line number from ks show):
+  ks move SONG N (+0.8 | -1.2 | --to 1:23.40) [--ripple]   move a line (with --ripple, every later line too)
+  ks stretch SONG N [--start T] [--end T]  new start and/or end; the words keep their proportions
+  ks word SONG N W [--start T] [--end T]  one word's timing (e.g. a held last note), the rest of the line as is
+  ks text SONG N "new words"              same number of words keeps their timing, otherwise spread evenly
+  ks split SONG N W                       split before word W (1-based); join SONG N joins N and N+1
+  ks add SONG --start T [--end T] "words" | ks delete-line SONG N
+  ks trim SONG --start T [--end T]   cut ads or an intro off the video (times in the original video; --start 0 undoes it)
+  ks video SONG (--url URL | --file PATH) --mode replace|version [--name NAME] [--offset S] [--loop]
+                                          someone's own video for the song (its sound and lyrics, another picture):
+                                          in place of the official video, or as a named version; lined up by sound
+                                          unless --offset (seconds of the song where the video's start plays)
+  ks skipped SONG | ks unskip SONG K --start T [--end T]   lyric lines the studio left out; put one back where sung
+  ks copy SONG N --to T                   copy a line (a repeated chorus) to another time, original row and singers too
+  ks fill-orig SONG                       lines added by hand get their original-script row from an identical line
+  ks note SONG N... "text" [--mark] | --clear   your view on ⚠ lines, shown with the mark and signed with your name
+                                          (--mark flags an unmarked line; --clear removes your note)
+  ks ok SONG N [N ...] | --all            "this line is fine": clears its ⚠ (needs a key that allows clearing marks)
+  ks offset SONG SECONDS                  whole song earlier/later (-5..+5), as the timing slider
+  ks reading SONG zh|yue                  Chinese songs: pinyin (Mandarin) or jyutping (Cantonese)
+  ks rename SONG --artist A --title T     ks singers SONG (suggestions only, nothing saved)
+  ks history SONG                         the song's undoable edits: who, what, when
+  ks undo SONG [--any]                    undo the song's last edit if it was yours (--any: whoever made it)
+
+  ks alt-lyrics SONG [--artist A --title T]   every LRCLIB copy, scored against what's heard in this video
+  ks change SONG [--yt ID] [--lyrics ID] [--source lrclib|karamoe]   remake with another video and/or lyrics; the new
+                                          version replaces this one once it's made
+  publish, reviewed, reset, remake, undo-remake, retry, delete, change, trim, video: only when the person asks; the
+  Studio refuses them unless the key allows them.
+
+Where the Studio is: STUDIO_URL, else the file `url` in the config folder (ks setup), else http://127.0.0.1:5570.
+The agent key: STUDIO_AGENT_KEY, else the file `agent-key` in the config folder (~/.config/karaoke-studio/, or
+$XDG_CONFIG_HOME/karaoke-studio/; on Windows %APPDATA%\\karaoke-studio\\). Pictures go to ~/.cache/karaoke-studio/ks
+($KS_OUT to change it).
+"""
+import difflib, argparse, getpass, json, os, re, stat, sys, time, urllib.error, urllib.parse, urllib.request
+
+VERSION = "2.0"
+LATE, EARLY = 1.0, 2.5   # the studio's own tolerance (earcheck): late by more than 1 s, or more than 2.5 s early
+
+
+def config_dir():
+    if os.name == "nt" and os.environ.get("APPDATA"):
+        return os.path.join(os.environ["APPDATA"], "karaoke-studio")
+    return os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config"), "karaoke-studio")
+
+
+def _read_conf(name):
+    p = os.path.join(config_dir(), name)
+    try:
+        with open(p, encoding="utf-8") as f:
+            v = f.read().strip()
+    except OSError:
+        return None, p
+    return v or None, p
+
+
+def studio_url():
+    return (os.environ.get("STUDIO_URL") or _read_conf("url")[0] or "http://127.0.0.1:5570").rstrip("/")
+
+
+def agent_key():
+    k = os.environ.get("STUDIO_AGENT_KEY", "").strip()
+    if k:
+        return k
+    k, p = _read_conf("agent-key")
+    if k and os.name != "nt":
+        try:
+            if os.stat(p).st_mode & (stat.S_IRWXG | stat.S_IRWXO):
+                print(f"ks: warning: {p} can be read by others; chmod 600 it", file=sys.stderr)
+        except OSError:
+            pass
+    return k
+
+
+API = studio_url()
+KEY = agent_key()
+OUT = os.environ.get("KS_OUT") or os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache"),
+                                               "karaoke-studio", "ks")
+
+
+def die(msg):
+    sys.exit(f"ks: {msg}")
+
+
+def headers(extra=None):
+    h = {"User-Agent": f"ks/{VERSION}", "Accept": "application/json"}
+    if KEY:
+        h["X-Studio-Agent-Key"] = KEY
+    return dict(h, **(extra or {}))
+
+
+def call(path, body=None, method=None, timeout=60, raw=False):
+    method = method or ("POST" if body is not None else "GET")
+    req = urllib.request.Request(API + path, data=json.dumps(body).encode() if body is not None else None,
+                                 headers=headers({"Content-Type": "application/json"}), method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = r.read()
+            if raw:
+                return data
+            return json.loads(data) if data[:1] in (b"{", b"[") else data.decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        try:
+            msg = json.loads(e.read()).get("detail")
+        except Exception:
+            msg = e.reason
+        die(f"{method} {path}: {e.code} {msg}")
+    except urllib.error.URLError as e:
+        die(f"the studio doesn't answer at {API} ({e.reason}); is it running? set STUDIO_URL or run ks setup")
+
+
+def jobs():
+    j = call("/api/jobs")
+    return j if isinstance(j, list) else j["jobs"]
+
+
+def resolve(q):
+    """A job id, or a piece of 'artist - title' that matches one song."""
+    js = jobs()
+    for j in js:
+        if j["id"] == q:
+            return j
+    ql = q.lower()
+    hits = [j for j in js if ql in f"{j['artist']} - {j['title']}".lower() or ql in j["id"]]
+    if len(hits) == 1:
+        return hits[0]
+    if not hits:
+        die(f"no song matches '{q}'")
+    die(f"'{q}' matches {len(hits)} songs; use more of the name or the id:\n" + "\n".join(f"  {j['id']}  {j['artist']} - {j['title']}" for j in hits[:15]))
+
+
+def fmt(t):
+    if t is None:
+        return "  -   "
+    neg = t < 0
+    t = abs(t)
+    return f"{'-' if neg else ''}{int(t // 60)}:{t % 60:05.2f}"
+
+
+def parse_t(s):
+    s = str(s).strip()
+    m = re.fullmatch(r"(-?)(\d+):(\d{1,2}(?:\.\d+)?)", s)
+    if m:
+        v = int(m.group(2)) * 60 + float(m.group(3))
+        return -v if m.group(1) else v
+    try:
+        return float(s)
+    except ValueError:
+        die(f"not a time: {s} (use m:ss.cc or seconds)")
+
+
+def text_of(l):
+    return " ".join(w[2] for w in l["words"])
+
+
+def span(l):
+    return l["words"][0][0], l["words"][-1][1]
+
+
+def get_lines(job):
+    d = call(f"/api/jobs/{job['id']}/lines")
+    return d
+
+
+def line_no(lines, n):
+    n = int(n)
+    if not 1 <= n <= len(lines):
+        die(f"line {n} doesn't exist (1-{len(lines)})")
+    return n - 1
+
+
+# ---------------- editing: read, change, save (the studio keeps the undo copy and refuses if it changed meanwhile) ----------------
+def edit(job, change, what):
+    jid = job["id"]
+    before_edit = call(f"/api/jobs/{jid}")["edited"]
+    d = get_lines(job)
+    lines, cast, off = d["lines"], d.get("cast") or [], d.get("offset") or 0.0
+    old = json.loads(json.dumps(lines))
+    msg = change(lines, off)
+    if json.dumps(lines) == json.dumps(old):
+        print("nothing changed")
+        return
+    call(f"/api/jobs/{jid}/lines", {"lines": lines, "cast": cast, "what": what, "if_edited": before_edit})
+    print(msg or what)
+    after_save(job, lines)
+
+
+def after_save(job, lines):
+    # the studio keeps lines in time order: a moved line can get a new number, and so can the ones it passed
+    now = get_lines(job)["lines"]
+    if [text_of(l) for l in now] != [text_of(l) for l in lines]:
+        moved = [k for k, l in enumerate(lines) if k < len(now) and text_of(l) != text_of(now[k])]
+        print(f"line numbers changed from line {moved[0] + 1 if moved else '?'} on (lines are kept in time order); "
+              f"run ks show again before using line numbers")
+    left = sum(1 for l in now if l.get("weak"))
+    print(f"saved; {left} line{'s' if left != 1 else ''} still marked ⚠; ks undo SONG takes it back"
+          + ("" if not job.get("published") else "; players have the old version until it's published again"))
+
+
+def shift(l, delta):
+    l["words"] = [[round(max(0.0, a + delta), 3), round(max(0.0, b + delta), 3), w] for a, b, w in l["words"]]
+
+
+def scale(l, a1, b1):
+    a0, b0 = span(l)
+    k = (b1 - a1) / max(0.05, b0 - a0)
+    l["words"] = [[round(a1 + (a - a0) * k, 3), round(a1 + (b - a0) * k, 3), w] for a, b, w in l["words"]]
+
+
+def spread(texts, a, b):
+    """The web editor's spread(): words share the time by their length."""
+    w = [max(2, len(x)) for x in texts]
+    tot, sp, t, out = sum(w), max(0.4, b - a), a, []
+    for x, wi in zip(texts, w):
+        dd = sp * wi / tot
+        out.append([round(t, 3), round(t + dd * 0.92, 3), x])
+        t += dd
+    return out
+
+
+def by_ear(job):
+    return call(f"/api/jobs/{job['id']}/agent/check", timeout=300)
+
+
+def save_png(data, name):
+    os.makedirs(OUT, exist_ok=True)
+    p = os.path.join(OUT, name)
+    with open(p, "wb") as f:
+        f.write(data)
+    return p
+
+
+# ---------------- commands ----------------
+def cmd_status(a):
+    st, js = call("/api/status"), jobs()
+    run = [j for j in js if j["status"] == "running"]
+    q = [j for j in js if j["status"] == "queued"]
+    done = [j for j in js if j["status"] == "done"]
+    fix = [j for j in done if (j.get("to_check") or 0) > 0]
+    failed = [j for j in js if j["status"] == "failed"]
+    g = st["gpus"]
+    line = (f"Karaoke Studio: {len(done)} songs ({sum(1 for j in done if j.get('published'))} published), "
+            f"{len(fix)} with lines to fix ({sum(j.get('to_check') or 0 for j in fix)} lines), {len(failed)} failed; "
+            f"making: {', '.join(j['artist'] + ' - ' + j['title'] for j in run) or 'nothing'}"
+            f"{f', {len(q)} queued' if q else ''}; GPU {g['local']} {st['gpu_free_gb']} GB free"
+            + (f"; helper {g['helper']}: " + ("off" if not g.get("helper_online") else
+               "online but on older code (it updates from GitHub, so it waits until the studio's code is pushed)"
+               if g.get("helper_outdated") else "online") if g.get("helper") else ""))
+    print(line)
+    if not a.brief:
+        print("tools: ks list --fix | ks show SONG | ks check SONG | ks look SONG --line N (see `ks -h`)")
+
+
+def cmd_list(a):
+    js = jobs()
+    if a.fix:
+        js = [j for j in js if j["status"] == "done" and (j.get("to_check") or 0) > 0]
+        js.sort(key=lambda j: -(j.get("to_check") or 0))
+    if a.failed:
+        js = [j for j in js if j["status"] == "failed"]
+    if a.q:
+        ql = a.q.lower()
+        js = [j for j in js if ql in f"{j['artist']} - {j['title']}".lower()]
+    for j in js[:a.limit]:
+        r = j.get("result") or {}
+        c = r.get("confidence") or {}
+        heard = f"{c.get('sure')}/{c.get('lines')}" if c.get("sure") is not None else ("?" if j["status"] == "done" else "")
+        flags = ("P" if j.get("published") else " ") + ("*" if j.get("unpublished_changes") else " ") + ("✓" if j.get("reviewed") else " ") + ("e" if j.get("edited") else " ")
+        st = j["status"] if j["status"] != "done" else f"{j.get('to_check') or 0:2} ⚠"
+        print(f"{st:>9}  {heard:>7}  {(r.get('lang') or j.get('lang') or ''):3} {flags}  {j['artist'][:28]} - {j['title'][:44]}   [{j['id']}]")
+    print(f"({min(len(js), a.limit)} of {len(js)}; flags: P published, * unpublished changes, ✓ checked by you, e edited)")
+
+
+def cmd_show(a):
+    job = resolve(a.song)
+    j = call(f"/api/jobs/{job['id']}")
+    r = j.get("result") or {}
+    d = get_lines(job)
+    off = d.get("offset") or 0.0
+    c = r.get("confidence") or {}
+    print(f"{j['artist']} - {j['title']}   [{j['id']}]")
+    print(f"  video {j.get('yt')} | lyrics {j.get('lyrics_source')}:{j.get('lrc_id')} | lang {r.get('lang')} | {fmt(d.get('duration'))} long | "
+          f"offset {off:+.2f} s | heard in place {c.get('sure')}/{c.get('lines')} | to fix {j.get('to_check')}"
+          + (" | published" + (" (changes not published)" if j.get("unpublished_changes") else "") if j.get("published") else "")
+          + (" | checked by you" if j.get("reviewed") else "") + (" | edited" if j.get("edited") else ""))
+    if j.get("last_edit"):
+        le = j["last_edit"]
+        print(f"  last edited by {le.get('by')} ({le.get('kind')}) {ago(le.get('at'))}: {le.get('what') or ''}")
+    if d.get("cast"):
+        print("  singers: " + ", ".join(f"{i}={n}" for i, n in enumerate(d["cast"])))
+    for i, l in enumerate(d["lines"]):
+        a0, b0 = span(l)
+        mark = "⚠" if l.get("weak") else ("✓" if l.get("ok") else " ")
+        who = f" s{l['singer']}" if l.get("singer") else (f" m{','.join(map(str, l['members']))}" if l.get("members") else "")
+        print(f"{i + 1:3} {mark} {fmt(a0 + off)}-{fmt(b0 + off)}{' (backing)' if l.get('backing') else ''}{who}  {text_of(l)}")
+        if l.get("orig"):
+            print(f"      {l['orig']}")
+        if l.get("weak") and l.get("why"):
+            print(f"      ⚠ {l['why']}")
+        if l.get("note"):
+            print(f"      note, {l['note'].get('by')}: {l['note'].get('text')}")
+    if d.get("skipped"):
+        print(f"  {len(d['skipped'])} lyric lines aren't sung in this video (left out)")
+
+
+def cmd_check(a):
+    job = resolve(a.song)
+    d = get_lines(job)
+    res = by_ear(job)
+    off = d.get("offset") or 0.0
+    lines = d["lines"]
+    known = res["known"]
+    if not res.get("heard_words"):
+        die("this song has no record of what was heard (heard.json): made before the by-ear check, or on a GPU helper "
+            "on older code. On the Studio's machine, deploy/check-library.py --missing-heard makes one (GPU, about 20 s "
+            "a song). Until then, judge by the picture (ks look).")
+    print(f"by ear (now): {res['sure']} of {res['lead']} lines heard where they sit" + ("" if known else " — the song can't be followed by ear well; judge by the picture (ks look)"))
+    bad = 0
+    for k, x in res["offsets"].items():
+        i = int(k)
+        l = lines[i]
+        a0, _ = span(l)
+        if x is None:
+            if l.get("weak"):
+                print(f"{i + 1:3} ⚠ {fmt(a0 + off)}  not heard clearly anywhere ({l.get('why') or 'marked'})")
+            continue
+        if x < -LATE or x > EARLY:
+            bad += 1
+            side = f"heard {-x:.1f} s earlier: the line lights up too late" if x < 0 else f"heard {x:.1f} s later: the line runs ahead and may leave too soon"
+            print(f"{i + 1:3} {'⚠' if l.get('weak') else ' '} {fmt(a0 + off)}  {side}  → ks move SONG {i + 1} {x:+.2f}")
+        elif l.get("weak"):
+            print(f"{i + 1:3} ⚠ {fmt(a0 + off)}  heard in place now ({x:+.1f} s): if it looks right, ks ok SONG {i + 1}")
+    if not bad:
+        print("no line is heard somewhere else (beyond the studio's tolerance: 1 s late, 2.5 s early)")
+
+
+def window(job, d, a):
+    off = d.get("offset") or 0.0
+    if a.line:
+        i = line_no(d["lines"], a.line)
+        a0, b0 = span(d["lines"][i])
+        pad = a.span if a.span is not None else 4.0
+        return a0 + off - pad, b0 + off + pad, i
+    if a.at is None:
+        die("give --line N or --at TIME")
+    t = parse_t(a.at)
+    sp = a.span if a.span is not None else 12.0
+    return t - sp / 2, t + sp / 2, None
+
+
+def cmd_heard(a):
+    job = resolve(a.song)
+    d = get_lines(job)
+    t0, t1, i = window(job, d, a)
+    h = call(f"/api/jobs/{job['id']}/heard")
+    off = d.get("offset") or 0.0
+    print(f"heard ({h.get('lang')}) between {fmt(t0)} and {fmt(t1)}:")
+    ws = [w for w in h["words"] if t0 <= w[0] <= t1]
+    row, last = [], None
+    for s, e, w in ws:
+        if last is not None and s - last > 1.2 and row:
+            print("   " + " ".join(row)); row = []
+        row.append(f"{fmt(s)}·{w.strip()}")
+        last = e
+    if row:
+        print("   " + " ".join(row))
+    if not ws:
+        print("   (nothing: instrumental, talking that wasn't transcribed, or singing Whisper couldn't follow)")
+    print("lines there:")
+    for k, l in enumerate(d["lines"]):
+        a0, b0 = span(l)
+        if b0 + off >= t0 and a0 + off <= t1:
+            print(f"{k + 1:3} {'⚠' if l.get('weak') else ' '} {fmt(a0 + off)}-{fmt(b0 + off)}  {text_of(l)}")
+
+
+def cmd_look(a):
+    job = resolve(a.song)
+    d = get_lines(job)
+    t0, t1, i = window(job, d, a)
+    t0 = max(0.0, t0)
+    q = urllib.parse.urlencode({"t0": f"{t0:.2f}", "t1": f"{t1:.2f}", "line": i + 1 if i is not None else 0})
+    out = save_png(call(f"/api/jobs/{job['id']}/agent/look?{q}", timeout=300, raw=True), f"{job['id']}-look-{t0:.0f}-{t1:.0f}.png")
+    print(f"{out}\n(top: the vocals, voices are the bright stripes; middle: line blocks (orange = ⚠, white = the one asked for), "
+          f"with their numbers; bottom: words Whisper heard at those times; {t1 - t0:.0f} s shown)")
+
+
+def cmd_frame(a):
+    job = resolve(a.song)
+    d = get_lines(job)
+    if a.line:
+        i = line_no(d["lines"], a.line)
+        t = span(d["lines"][i])[0] + (d.get("offset") or 0.0) + 0.3
+    elif a.at is not None:
+        t = parse_t(a.at)
+    else:
+        die("give --line N or --at TIME")
+    out = save_png(call(f"/api/jobs/{job['id']}/agent/frame?t={t:.2f}", timeout=180, raw=True), f"{job['id']}-frame-{t:.1f}.png")
+    print(f"{out}\n(the video at {fmt(t)} with the lyrics as players show them)")
+
+
+def cmd_log(a):
+    job = resolve(a.song)
+    text = call(f"/api/jobs/{job['id']}/log")
+    print("".join(str(text).splitlines(True)[-a.n:]), end="")
+
+
+def cmd_search(a):
+    r = call("/api/search?q=" + urllib.parse.quote(a.query), timeout=300)
+    for n in r.get("notes") or []:
+        print("note:", n)
+    print("videos:")
+    for v in r.get("videos", [])[:10]:
+        print(f"  {v['id']} {v['duration'] // 60}:{v['duration'] % 60:02d} {'OC' if v.get('official_channel') else '  '} "
+              f"{v['score']:5.1f} {v['title'][:70]} | {v['channel'][:24]}" + (f"  [{', '.join(v['flags'])}]" if v.get("flags") else ""))
+    print("lyrics:")
+    for l in r.get("lyrics", [])[:15]:
+        du = int(l.get("duration") or 0)
+        print(f"  {l['source']}:{l['id']} {du // 60}:{du % 60:02d} {'timed' if l.get('timed') else 'plain'} "
+              f"{'name✓' if l.get('name_match') else '     '} {l.get('script')} | {(l.get('artist') or '')[:24]} - {(l.get('title') or '')[:36]}")
+
+
+def cmd_make(a):
+    lid = a.lyrics if a.source == "karamoe" else int(a.lyrics)
+    r = call("/api/jobs", {"yt": a.yt, "lrc_id": lid, "lyrics_source": a.source, "artist": a.artist, "title": a.title,
+                           "video_title": a.video_title or "", "gpu": a.gpu})
+    print(f"queued {r['id']}")
+
+
+def lrclib(path):
+    for k in range(4):
+        try:
+            req = urllib.request.Request("https://lrclib.net" + path, headers={"User-Agent": "karaoke-studio-ks/1.0 (+https://github.com/alainator/karaoke-studio)"})
+            return json.load(urllib.request.urlopen(req, timeout=30))
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and k < 3:
+                time.sleep(5 * (k + 1)); continue
+            if e.code == 404:
+                return None
+            raise
+
+
+def cmd_alt_lyrics(a):
+    """Every LRCLIB copy of the song, scored against what's heard in this song's video."""
+    job = resolve(a.song)
+    j = call(f"/api/jobs/{job['id']}")
+    q = [urllib.parse.urlencode({"track_name": a.title or j["title"], "artist_name": a.artist or j["artist"]}),
+         urllib.parse.urlencode({"q": f"{a.artist or j['artist']} {a.title or j['title']}"})]
+    seen, cands = set(), []
+    for qq in q:
+        for x in lrclib("/api/search?" + qq) or []:
+            if x["id"] not in seen and x.get("syncedLyrics"):
+                seen.add(x["id"]); cands.append(x)
+    if j.get("lyrics_source") == "lrclib" and j.get("lrc_id") not in seen:
+        x = lrclib(f"/api/get/{j['lrc_id']}")
+        if x and x.get("syncedLyrics"):
+            cands.append(x)
+    cands = cands[:30]
+    if not cands:
+        die("LRCLIB has no timed lyrics for this name; try --artist/--title with another spelling")
+    res = call(f"/api/jobs/{job['id']}/agent/alt-lyrics", {"candidates": [{"id": x["id"], "synced": x["syncedLyrics"]} for x in cands]},
+               timeout=300)
+    res = {r["id"]: r for r in res["scores"]}
+    by = {x["id"]: x for x in cands}
+    print(f"{len(cands)} timed copies on LRCLIB, scored against what's heard in this video (fit: share of lines heard "
+          f"at their time after the best whole-song shift; squeezed: lines under 0.8 s apart):")
+    for r in sorted(res.values(), key=lambda r: (-r["fit"], r["squeezed"])):
+        x = by[r["id"]]
+        du = int(x.get("duration") or 0)
+        cur = "  <- this song's lyrics now" if j.get("lyrics_source") == "lrclib" and r["id"] == j.get("lrc_id") else ""
+        print(f"  {r['id']:>9}  fit {r['fit'] * 100:3.0f}%  shift {r['shift']:+6.2f}s  {r['lines']:3} lines  {r['squeezed']:2} squeezed  "
+              f"{du // 60}:{du % 60:02d}  {(x.get('artistName') or '')[:20]} - {(x.get('trackName') or '')[:30]}{cur}")
+
+
+def cmd_change(a):
+    """The web app's "Change video or lyrics": a new version of the song is made, and replaces this one when it's
+    done (if it fails, this one stays)."""
+    job = resolve(a.song)
+    j = call(f"/api/jobs/{job['id']}")
+    src = a.source or (j.get("lyrics_source") if not a.lyrics else "lrclib")
+    lid = a.lyrics or j.get("lrc_id")
+    body = {"yt": a.yt or j["yt"], "lrc_id": lid if src == "karamoe" else int(lid), "lyrics_source": src,
+            "artist": j["artist"], "title": j["title"], "video_title": j.get("video_title", "") if not a.yt else "",
+            "gpu": a.gpu, "replace": job["id"]}
+    r = call("/api/jobs", body)
+    print(f"queued {r['id']}: {j['artist']} - {j['title']} with video {body['yt']} and lyrics {src}:{lid}; "
+          f"it replaces {job['id']} once it's made (if it fails, the old one stays)")
+
+
+def cmd_move(a):
+    job = resolve(a.song)
+
+    def ch(lines, off):
+        i = line_no(lines, a.n)
+        a0 = span(lines[i])[0]
+        delta = (parse_t(a.to) - off - a0) if a.to is not None else parse_t(a.delta)
+        shift(lines[i], delta)
+        lines[i]["weak"] = False
+        if a.ripple:
+            for l in lines[i + 1:]:
+                shift(l, delta)
+        return f"line {a.n} moved {delta:+.2f} s to {fmt(a0 + delta + off)}" + (f", and the {len(lines) - i - 1} lines after it" if a.ripple else "")
+    if a.delta is None and a.to is None:
+        die("give a change (+0.8, -1.2) or --to TIME")
+    edit(job, ch, f"move line {a.n}")
+
+
+def cmd_stretch(a):
+    job = resolve(a.song)
+
+    def ch(lines, off):
+        i = line_no(lines, a.n)
+        a0, b0 = span(lines[i])
+        s = parse_t(a.start) - off if a.start is not None else a0
+        e = parse_t(a.end) - off if a.end is not None else b0
+        if e <= s + 0.1:
+            die("the end has to come after the start")
+        scale(lines[i], s, e)
+        lines[i]["weak"] = False
+        return f"line {a.n} now {fmt(s + off)}-{fmt(e + off)}"
+    edit(job, ch, f"stretch line {a.n}")
+
+
+def cmd_word(a):
+    """One word's start and/or end (e.g. a held last note), the rest of the line untouched; it can't cross its
+    neighbours in the line."""
+    job = resolve(a.song)
+
+    def ch(lines, off):
+        i = line_no(lines, a.n)
+        ws = lines[i]["words"]
+        k = int(a.w) - 1
+        if not 0 <= k < len(ws):
+            die(f"line {a.n} has words 1-{len(ws)}")
+        s0 = parse_t(a.start) - off if a.start is not None else ws[k][0]
+        e0 = parse_t(a.end) - off if a.end is not None else ws[k][1]
+        lo = ws[k - 1][1] if k > 0 else 0.0
+        hi = ws[k + 1][0] if k + 1 < len(ws) else 1e9
+        if not lo - 0.001 <= s0 < e0 <= hi + 0.001:
+            die(f"word {a.w} has to stay between {fmt(lo + off)} and {fmt(hi + off) if hi < 1e9 else 'the end'}, start before end")
+        ws[k] = [round(s0, 3), round(e0, 3), ws[k][2]]
+        lines[i]["weak"] = False
+        return f"line {a.n} word {a.w} now {fmt(s0 + off)}-{fmt(e0 + off)}"
+    edit(job, ch, f"word {a.w} of line {a.n}")
+
+
+def cmd_text(a):
+    job = resolve(a.song)
+
+    def ch(lines, off):
+        i = line_no(lines, a.n)
+        l = lines[i]
+        words = a.words.split()
+        if not words:
+            die("give the words (to remove a line: ks delete-line)")
+        if len(words) == len(l["words"]):
+            l["words"] = [[w[0], w[1], t] for w, t in zip(l["words"], words)]
+        else:
+            a0, b0 = span(l)
+            l["words"] = spread(words, a0, b0)
+            if l.get("wwho"):
+                l["wwho"] = None
+                print("(its words changed: per-word singers were cleared, as in the web app)")
+        return f"line {a.n} text changed ({len(words)} words)"
+    edit(job, ch, f"text of line {a.n}")
+
+
+def cmd_split(a):
+    job = resolve(a.song)
+
+    def ch(lines, off):
+        i = line_no(lines, a.n)
+        l, j = lines[i], int(a.w) - 1
+        if not 1 <= j < len(l["words"]):
+            die(f"split before word 2-{len(l['words'])}")
+        second = dict(l, words=l["words"][j:], wwho=l["wwho"][j:] if l.get("wwho") else None, weak=False)
+        l["words"], l["wwho"], l["weak"] = l["words"][:j], (l["wwho"][:j] if l.get("wwho") else None), False
+        lines.insert(i + 1, second)
+        return f"line {a.n} split before word {a.w}"
+    edit(job, ch, f"split line {a.n}")
+
+
+def cmd_join(a):
+    job = resolve(a.song)
+
+    def ch(lines, off):
+        i = line_no(lines, a.n)
+        if i + 1 >= len(lines):
+            die("that's the last line")
+        l, nx = lines[i], lines[i + 1]
+        ww = (l.get("wwho") or [None] * len(l["words"])) + (nx.get("wwho") or [None] * len(nx["words"])) if (l.get("wwho") or nx.get("wwho")) else None
+        both = sorted(zip(l["words"] + nx["words"], ww or [None] * (len(l["words"]) + len(nx["words"]))), key=lambda x: x[0][0])
+        l["words"], l["wwho"], l["weak"] = [x[0] for x in both], ([x[1] for x in both] if ww else None), False
+        del lines[i + 1]
+        return f"lines {a.n} and {int(a.n) + 1} joined"
+    edit(job, ch, f"join line {a.n}")
+
+
+def cmd_add(a):
+    job = resolve(a.song)
+
+    def ch(lines, off):
+        s = parse_t(a.start) - off
+        words = a.words.split()
+        e = parse_t(a.end) - off if a.end is not None else s + min(6.0, 0.45 * len(words) + 0.8)
+        lines.append({"words": spread(words, s, e), "orig": None})
+        lines.sort(key=lambda l: l["words"][0][0])
+        return f"added a line at {fmt(s + off)}"
+    edit(job, ch, "add a line")
+
+
+def skipped_of(job):
+    r = (call(f"/api/jobs/{job['id']}").get("result") or {})
+    return r.get("skipped") or []
+
+
+def cmd_skipped(a):
+    job = resolve(a.song)
+    sk = skipped_of(job)
+    if not sk:
+        print("no lyric lines were left out of this song")
+    for k, t in enumerate(sk, 1):
+        print(f"{k:3}  {t}")
+    if sk:
+        print("(lines the studio left out as not sung in this video; put one back where it IS sung with: ks unskip SONG K --start T)")
+
+
+def cmd_unskip(a):
+    """Put a left-out lyric line back where it's sung (its own words, from the song's lyrics)."""
+    job = resolve(a.song)
+    sk = skipped_of(job)
+    k = int(a.k)
+    if not 1 <= k <= len(sk):
+        die(f"left-out lines are 1-{len(sk)} (ks skipped SONG)")
+    words = str(sk[k - 1]).split()
+
+    def ch(lines, off):
+        s0 = parse_t(a.start) - off
+        e0 = parse_t(a.end) - off if a.end is not None else s0 + min(6.0, 0.45 * len(words) + 0.8)
+        lines.append({"words": spread(words, s0, e0), "orig": None})
+        lines.sort(key=lambda l: l["words"][0][0])
+        return f"left-out line {k} put back at {fmt(s0 + off)}-{fmt(e0 + off)} (its original-script row: ks fill-orig SONG, or the web editor)"
+    edit(job, ch, f"unskip {k}")
+
+
+def cmd_copy(a):
+    """Copy a line (a repeated chorus line, for example) to another time: words, original-script line and singers
+    come along; only its timing is new."""
+    job = resolve(a.song)
+
+    def ch(lines, off):
+        i = line_no(lines, a.n)
+        src = json.loads(json.dumps(lines[i]))
+        t = parse_t(a.to) - off
+        shift(src, t - src["words"][0][0])
+        src["weak"], src["ok"], src["why"] = False, False, None
+        lines.append(src)
+        lines.sort(key=lambda l: l["words"][0][0])
+        return f"line {a.n} copied to {fmt(t + off)}"
+    edit(job, ch, f"copy line {a.n}")
+
+
+def lyric_origs(job):
+    """(original line, its romaji) for every original-script line of the song's lyrics."""
+    j = call(f"/api/jobs/{job['id']}")
+    text = ""
+    if j.get("lyrics_source") == "lrclib" and j.get("lrc_id"):
+        x = lrclib(f"/api/get/{j['lrc_id']}") or {}
+        text = x.get("syncedLyrics") or x.get("plainLyrics") or ""
+    text = text or j.get("lyrics_text") or ""
+    origs = []
+    for line in text.splitlines():
+        t = re.sub(r"\[[^\]]*\]", "", line).strip()
+        if t and re.search(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]", t) and t not in origs:
+            origs.append(t)
+    if not origs:
+        return []
+    return list(zip(origs, call("/api/agent/romaji", {"lines": origs}, timeout=120)["romaji"]))
+
+
+def cmd_trim(a):
+    """Cut the start/end off the song's video (ads, an intro skit). Times are in the ORIGINAL video; ks trim SONG
+    --start 0 puts the whole video back. Lines move with the cut; undo can't cross a trim."""
+    job = resolve(a.song)
+    body = {"start": parse_t(a.start), "end": parse_t(a.end) if a.end else None, "drop_lines": a.drop_lines}
+    r = call(f"/api/jobs/{job['id']}/trim", body, timeout=900)  # (the studio retires older undo steps: other timing)
+    t = r.get("trim")
+    print(f"trimmed: the song now runs {fmt(r['duration'])}" + (f" (from {fmt(t['start'])} of the original video" + (f" to {fmt(t['end'])}" if t.get('end') else "") + ")" if t else " (the whole video again)")
+          + (f"; dropped lines {r['dropped']}" if r.get("dropped") else "") + ("; players have the old version until it's published again" if job.get("published") else ""))
+
+
+def cmd_video(a):
+    """Add a custom video to a song (studio admins only, like the web app's Videos box): a link or a file; it replaces
+    the official video or becomes a named version. Waits while the studio downloads, lines it up and renders it."""
+    job = resolve(a.song)
+    if bool(a.url) == bool(a.file):
+        die("give --url or --file (one of them)")
+    if a.mode == "version" and not a.name:
+        die("a version needs --name (e.g. --name \"Mia's version\")")
+    off = parse_t(a.offset) if a.offset not in (None, "") else None
+    q = {"mode": a.mode, "name": a.name or "", "fill": "loop" if a.loop else "hold"}
+    if a.url:
+        call(f"/api/jobs/{job['id']}/videos", dict(q, url=a.url, offset=off))
+    else:
+        path = os.path.expanduser(a.file)
+        if not os.path.isfile(path):
+            die(f"no such file: {path}")
+        qs = urllib.parse.urlencode(dict(q, offset="" if off is None else off, filename=os.path.basename(path)))
+        size = os.path.getsize(path)
+        print(f"uploading {os.path.basename(path)} ({size / 1e6:.0f} MB)...", flush=True)
+        with open(path, "rb") as f:
+            req = urllib.request.Request(f"{API}/api/jobs/{job['id']}/videos/upload?{qs}", data=f, method="PUT",
+                                         headers=headers({"Content-Type": "application/octet-stream", "Content-Length": str(size)}))
+            try:
+                urllib.request.urlopen(req, timeout=3600).read()
+            except urllib.error.HTTPError as e:
+                try:
+                    msg = json.loads(e.read()).get("detail")
+                except Exception:
+                    msg = e.reason
+                die(f"upload: {e.code} {msg}")
+            except urllib.error.URLError as e:
+                die(f"the studio doesn't answer at {API} ({e.reason})")
+    last = None
+    while True:
+        v = call(f"/api/jobs/{job['id']}/videos")
+        t = v.get("task") or {}
+        if t.get("running"):
+            if t.get("text") != last:
+                print(f"  {t.get('text')}...", flush=True)
+                last = t.get("text")
+            time.sleep(2)
+            continue
+        break
+    if t.get("error"):
+        die(f"couldn't make it: {t['error']}")
+    key = "replace" if a.mode == "replace" else None
+    items = [x for x in v.get("items", []) if (x["key"] == key if key else x.get("name") == a.name.strip())]
+    x = items[0] if items else {}
+    how = {"sound": f"lined up by sound, confidence {round(100 * (x.get('confidence') or 0))}%", "manual": "start set by hand",
+           "none": f"NOT lined up ({x.get('reason')}): it starts with the song; nudge it in the web app or redo with --offset"}.get(x.get("aligned"), "?")
+    print(("replaced the official video" if a.mode == "replace" else f"added the version '{a.name}'") + f": its start plays at {x.get('offset', 0):+.2f} s of the song ({how})"
+          + (f"; the match drifts {x['drift']:+.2f} s over the song (other speed or an edit)" if x.get("drift") and abs(x["drift"]) > 0.3 else ""))
+    if a.mode == "version" and x.get("publish_name"):
+        print(f"  publishes (in the web app) as '{x['publish_name']}'")
+    elif a.mode == "replace" and job.get("published"):
+        print("  players have the official video until the song is published again")
+
+
+def cmd_fill_orig(a):
+    """Lines without their original-script row (added by hand) get it from a line with the same words."""
+    job = resolve(a.song)
+
+    def ch(lines, off):
+        known = {text_of(l).lower(): l["orig"] for l in lines if l.get("orig")}
+        n = 0
+        for l in lines:
+            if not l.get("orig") and known.get(text_of(l).lower()):
+                l["orig"] = known[text_of(l).lower()]; n += 1
+        missing = [l for l in lines if not l.get("orig")]
+        m = 0
+        if missing and any(l.get("orig") for l in lines):  # a song with original-script rows: look in its lyrics
+            pairs = lyric_origs(job)
+            key = lambda t: re.sub(r"[^a-z]", "", t.lower())
+            for l in missing:
+                k = key(text_of(l))
+                best = max(pairs, key=lambda p: difflib.SequenceMatcher(None, k, key(p[1]), autojunk=False).ratio(), default=None)
+                if best and k and difflib.SequenceMatcher(None, k, key(best[1]), autojunk=False).ratio() >= 0.8:
+                    l["orig"] = best[0]; m += 1
+        left = sum(1 for l in lines if not l.get("orig")) if m or n else len(missing)
+        return (f"{n + m} line{'s' if n + m != 1 else ''} got their original-script row back"
+                + (f" ({m} from the song's lyrics)" if m else "") + (f"; {left} still without one" if left else ""))
+    edit(job, ch, "fill original-script rows")
+
+
+def cmd_delete_line(a):
+    job = resolve(a.song)
+
+    def ch(lines, off):
+        i = line_no(lines, a.n)
+        del lines[i]
+        return f"line {a.n} removed"
+    edit(job, ch, f"delete line {a.n}")
+
+
+def cmd_ok(a):
+    job = resolve(a.song)
+
+    def ch(lines, off):
+        idx = [i for i, l in enumerate(lines) if l.get("weak")] if a.all else [line_no(lines, n) for n in a.n]
+        for i in idx:
+            lines[i]["weak"], lines[i]["ok"] = False, True
+        return f"cleared the ⚠ on {len(idx)} line{'s' if len(idx) != 1 else ''}"
+    if not a.all and not a.n:
+        die("give line numbers or --all")
+    edit(job, ch, "ok " + ("all" if a.all else " ".join(a.n)))
+
+
+def cmd_note(a):
+    """Leave your view on lines for the person: shown next to the ⚠ reason in the web editor, signed with your agent's
+    name by the Studio. --mark flags an unmarked line with it; --clear removes your note. Lines the person checked (✓)
+    are left alone."""
+    job = resolve(a.song)
+    nums = [int(n) for n in a.n]
+    if a.clear:
+        text = ""
+    elif a.text is None:
+        die('give the note text (or --clear)')
+    else:
+        text = a.text
+    before = call(f"/api/jobs/{job['id']}")["edited"]
+    r = call(f"/api/jobs/{job['id']}/notes", {"lines": nums, "text": text, "mark": a.mark, "if_edited": before})
+    if not r.get("changed"):
+        print("nothing changed")
+    else:
+        print(("note removed from" if a.clear else "note on") + f" line{'s' if len(nums) != 1 else ''} {', '.join(map(str, nums))}"
+              " (ks undo SONG takes it back)")
+
+
+def me():
+    return call("/api/agent/whoami")
+
+
+def cmd_history(a):
+    job = resolve(a.song)
+    h = call(f"/api/jobs/{job['id']}/history")
+    le = h.get("last_edit")
+    if le:
+        print(f"last edited by {le['by']} ({le['kind']}) {ago(le['at'])}: {le.get('what') or ''}")
+    if not h["history"]:
+        print("no undoable edits (a trim, remake or reset starts the history again)")
+    for k, e in enumerate(h["history"], 1):
+        print(f"{k:3}  {ago(e['at']):>12}  {e['by']} ({e['kind']}): {e.get('what') or ''}")
+
+
+def ago(t):
+    d = max(0, time.time() - float(t or 0))
+    return "just now" if d < 60 else f"{d / 60:.0f} min ago" if d < 3600 else f"{d / 3600:.0f} h ago" if d < 86400 else \
+        time.strftime("%Y-%m-%d %H:%M", time.localtime(float(t)))
+
+
+def cmd_undo(a):
+    """Undo the song's last edit, whoever made it with --any; without it, only if it was yours (so an agent doesn't
+    take back the person's own edit)."""
+    job = resolve(a.song)
+    h = call(f"/api/jobs/{job['id']}/history")["history"]
+    if not h:
+        die("nothing to undo for this song (the web app's 'Undo all edits' is: ks reset)")
+    e = h[0]
+    if not a.any:
+        w = me()
+        if e["by"] != w["name"] or e["kind"] != w["kind"]:
+            die(f"the last edit was made by {e['by']} ({e['kind']}): {e.get('what')}; ks undo --any undoes it anyway")
+    r = call(f"/api/jobs/{job['id']}/lines/undo", {"id": e["id"]})
+    print(f"undone: {e.get('what')} (by {e['by']}); {r['left']} earlier edit{'s' if r['left'] != 1 else ''} can still be undone")
+
+
+def cmd_whoami(a):
+    w = me()
+    print(f"{w['studio']} at {API} takes you for: {w['name']} ({w['kind']})")
+    if w["kind"] == "agent":
+        print("your key allows: " + ", ".join(w["scopes"]))
+        no = [k for k in w["labels"] if k not in w["scopes"]]
+        if no:
+            print("not allowed: " + "; ".join(f"{k} ({w['labels'][k]})" for k in no))
+    elif not KEY:
+        print("no agent key (ks setup stores one): edits are signed 'ks'" + ("; this Studio requires a key" if w.get("required") else ""))
+
+
+def cmd_setup(a):
+    """Store where the Studio is and this agent's key in the config folder (the key file readable only by you)."""
+    d = config_dir()
+    os.makedirs(d, exist_ok=True)
+    if a.url:
+        with open(os.path.join(d, "url"), "w", encoding="utf-8") as f:
+            f.write(a.url.rstrip("/") + "\n")
+        print(f"Studio address saved: {a.url.rstrip('/')}")
+    if not a.no_key:
+        k = getpass.getpass("Agent key (from the Studio's Agents tab; Enter keeps the current one): ").strip()
+        if k:
+            if not k.startswith("ksa_"):
+                die("that doesn't look like an agent key (they start with ksa_)")
+            p = os.path.join(d, "agent-key")
+            fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(k + "\n")
+            try:
+                os.chmod(p, 0o600)
+            except OSError:
+                pass
+            print(f"key saved in {p} (only you can read it)")
+    global API, KEY
+    API, KEY = studio_url(), agent_key()
+    cmd_whoami(a)
+
+
+def cmd_offset(a):
+    job = resolve(a.song)
+    r = call(f"/api/jobs/{job['id']}/offset", {"offset": float(a.seconds)})
+    print(f"whole song offset now {r['offset']:+.2f} s")
+
+
+def cmd_reading(a):
+    job = resolve(a.song)
+    r = call(f"/api/jobs/{job['id']}/chinese-reading", {"to": a.to})
+    print(f"{r['lines']} lines now in {'jyutping (Cantonese)' if a.to == 'yue' else 'pinyin (Mandarin)'}")
+
+
+def cmd_rename(a):
+    job = resolve(a.song)
+    r = call(f"/api/jobs/{job['id']}/rename", {"artist": a.artist, "title": a.title})
+    print(f"now '{r['name']}' ({r['message']})")
+
+
+def cmd_singers(a):
+    job = resolve(a.song)
+    r = call(f"/api/jobs/{job['id']}/detect-singers", {}, timeout=400)
+    print(json.dumps(r, ensure_ascii=False)[:3000])
+
+
+def cmd_publish(a):
+    job = resolve(a.song)
+    info = call(f"/api/jobs/{job['id']}/publish-info")
+    remove = info.get("old_versions", []) if a.remove_old else []
+    if info.get("old_versions") and not a.remove_old:
+        print("older versions in the library (kept; --remove-old removes them): " + "; ".join(info["old_versions"]))
+    r = call(f"/api/jobs/{job['id']}/publish", {"remove": remove}, timeout=300)
+    print(f"published as '{r['name']}'" + (f", removed {len(r['removed'])} old version(s)" if r.get("removed") else "") + f" ({r['message']})")
+
+
+def cmd_simple(path, body=None, label=""):
+    def run(a):
+        job = resolve(a.song)
+        if path == "DELETE":
+            call(f"/api/jobs/{job['id']}", method="DELETE")
+        else:
+            call(f"/api/jobs/{job['id']}/{path}", body if body is not None else {})
+        print(f"{label}: {job['artist']} - {job['title']}")
+    return run
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="ks", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    s = sub.add_parser("setup"); s.add_argument("--url"); s.add_argument("--no-key", action="store_true"); s.set_defaults(f=cmd_setup)
+    s = sub.add_parser("whoami"); s.set_defaults(f=cmd_whoami)
+    s = sub.add_parser("history"); s.add_argument("song"); s.set_defaults(f=cmd_history)
+    s = sub.add_parser("status"); s.add_argument("--brief", action="store_true"); s.set_defaults(f=cmd_status)
+    s = sub.add_parser("list"); s.add_argument("--fix", action="store_true"); s.add_argument("--failed", action="store_true")
+    s.add_argument("--q"); s.add_argument("--limit", type=int, default=60); s.set_defaults(f=cmd_list)
+    for name, f in (("show", cmd_show), ("check", cmd_check)):
+        s = sub.add_parser(name); s.add_argument("song"); s.set_defaults(f=f)
+    for name, f in (("heard", cmd_heard), ("look", cmd_look), ("frame", cmd_frame)):
+        s = sub.add_parser(name); s.add_argument("song"); s.add_argument("--line", type=int); s.add_argument("--at")
+        s.add_argument("--span", type=float); s.set_defaults(f=f)
+    s = sub.add_parser("log"); s.add_argument("song"); s.add_argument("-n", type=int, default=40); s.set_defaults(f=cmd_log)
+    s = sub.add_parser("search"); s.add_argument("query"); s.set_defaults(f=cmd_search)
+    s = sub.add_parser("make"); s.add_argument("--yt", required=True); s.add_argument("--lyrics", required=True)
+    s.add_argument("--source", default="lrclib", choices=["lrclib", "karamoe"]); s.add_argument("--artist", required=True)
+    s.add_argument("--title", required=True); s.add_argument("--video-title"); s.add_argument("--gpu", default="auto", choices=["auto", "local", "remote"])
+    s.set_defaults(f=cmd_make)
+    s = sub.add_parser("alt-lyrics"); s.add_argument("song"); s.add_argument("--artist"); s.add_argument("--title")
+    s.set_defaults(f=cmd_alt_lyrics)
+    s = sub.add_parser("change"); s.add_argument("song"); s.add_argument("--yt"); s.add_argument("--lyrics")
+    s.add_argument("--source", choices=["lrclib", "karamoe"]); s.add_argument("--gpu", default="auto", choices=["auto", "local", "remote"])
+    s.set_defaults(f=cmd_change)
+    s = sub.add_parser("move"); s.add_argument("song"); s.add_argument("n"); s.add_argument("delta", nargs="?")
+    s.add_argument("--to"); s.add_argument("--ripple", action="store_true"); s.set_defaults(f=cmd_move)
+    s = sub.add_parser("stretch"); s.add_argument("song"); s.add_argument("n"); s.add_argument("--start"); s.add_argument("--end"); s.set_defaults(f=cmd_stretch)
+    s = sub.add_parser("word"); s.add_argument("song"); s.add_argument("n"); s.add_argument("w"); s.add_argument("--start"); s.add_argument("--end")
+    s.set_defaults(f=cmd_word)
+    s = sub.add_parser("text"); s.add_argument("song"); s.add_argument("n"); s.add_argument("words"); s.set_defaults(f=cmd_text)
+    s = sub.add_parser("split"); s.add_argument("song"); s.add_argument("n"); s.add_argument("w"); s.set_defaults(f=cmd_split)
+    s = sub.add_parser("join"); s.add_argument("song"); s.add_argument("n"); s.set_defaults(f=cmd_join)
+    s = sub.add_parser("add"); s.add_argument("song"); s.add_argument("--start", required=True); s.add_argument("--end")
+    s.add_argument("words"); s.set_defaults(f=cmd_add)
+    s = sub.add_parser("trim"); s.add_argument("song"); s.add_argument("--start", default="0"); s.add_argument("--end")
+    s.add_argument("--drop-lines", action="store_true"); s.set_defaults(f=cmd_trim)
+    s = sub.add_parser("video"); s.add_argument("song"); s.add_argument("--url"); s.add_argument("--file")
+    s.add_argument("--mode", required=True, choices=["replace", "version"]); s.add_argument("--name"); s.add_argument("--offset")
+    s.add_argument("--loop", action="store_true", help="loop the video when it's shorter than the song (default: hold its last picture)")
+    s.set_defaults(f=cmd_video)
+    s = sub.add_parser("skipped"); s.add_argument("song"); s.set_defaults(f=cmd_skipped)
+    s = sub.add_parser("unskip"); s.add_argument("song"); s.add_argument("k"); s.add_argument("--start", required=True); s.add_argument("--end")
+    s.set_defaults(f=cmd_unskip)
+    s = sub.add_parser("copy"); s.add_argument("song"); s.add_argument("n"); s.add_argument("--to", required=True); s.set_defaults(f=cmd_copy)
+    s = sub.add_parser("fill-orig"); s.add_argument("song"); s.set_defaults(f=cmd_fill_orig)
+    s = sub.add_parser("delete-line"); s.add_argument("song"); s.add_argument("n"); s.set_defaults(f=cmd_delete_line)
+    s = sub.add_parser("ok"); s.add_argument("song"); s.add_argument("n", nargs="*"); s.add_argument("--all", action="store_true"); s.set_defaults(f=cmd_ok)
+    s = sub.add_parser("note"); s.add_argument("song"); s.add_argument("n", nargs="+", help="line numbers, then the note text")
+    s.add_argument("--mark", action="store_true"); s.add_argument("--clear", action="store_true"); s.set_defaults(f=cmd_note)
+    s = sub.add_parser("undo"); s.add_argument("song"); s.add_argument("--any", action="store_true"); s.set_defaults(f=cmd_undo)
+    s = sub.add_parser("offset"); s.add_argument("song"); s.add_argument("seconds"); s.set_defaults(f=cmd_offset)
+    s = sub.add_parser("reading"); s.add_argument("song"); s.add_argument("to", choices=["zh", "yue"]); s.set_defaults(f=cmd_reading)
+    s = sub.add_parser("rename"); s.add_argument("song"); s.add_argument("--artist", required=True); s.add_argument("--title", required=True); s.set_defaults(f=cmd_rename)
+    s = sub.add_parser("singers"); s.add_argument("song"); s.set_defaults(f=cmd_singers)
+    s = sub.add_parser("publish"); s.add_argument("song"); s.add_argument("--remove-old", action="store_true"); s.set_defaults(f=cmd_publish)
+    s = sub.add_parser("reviewed"); s.add_argument("song"); s.add_argument("--off", action="store_true")
+    s.set_defaults(f=lambda a: (call(f"/api/jobs/{resolve(a.song)['id']}/reviewed", {"on": not a.off}), print("checked by you: " + ("off" if a.off else "on"))))
+    for name, path, label in (("reset", "lines/reset", "all edits undone (back to the automatic version)"),
+                              ("remake", "remake", "queued for a remake (your edits are carried over)"),
+                              ("undo-remake", "undo-remake", "lyrics put back as before the remake"),
+                              ("retry", "retry", "queued again"), ("delete", "DELETE", "deleted from the studio")):
+        s = sub.add_parser(name); s.add_argument("song"); s.set_defaults(f=cmd_simple(path, label=label))
+    a = ap.parse_args()
+    if a.cmd == "note":  # ks note SONG N [N ...] "text": the text is the last argument unless --clear
+        a.text = None if a.clear else (a.n.pop() if len(a.n) > 1 else None)
+        if not a.n or not all(re.fullmatch(r"\d+", n) for n in a.n):
+            die('usage: ks note SONG N [N ...] "text" [--mark] | ks note SONG N [N ...] --clear')
+    a.f(a)
+
+
+if __name__ == "__main__":
+    main()

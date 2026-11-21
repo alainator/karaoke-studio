@@ -22,6 +22,8 @@ import json, os, subprocess, sys, time
 import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+if HERE not in sys.path:  # (gpu.py, when run as a script with -I)
+    sys.path.insert(0, HERE)
 HOP = 0.02                      # seconds per frame (as the file says)
 SR = 16000
 EXT = ".pitch.json"
@@ -42,13 +44,8 @@ def _stamp(path):
 
 
 def gpu_free_mib():
-    try:
-        r = subprocess.run(["nvidia-smi", "--query-gpu=memory.total,memory.used", "--format=csv,noheader,nounits"],
-                           capture_output=True, text=True, timeout=10)
-        tot, used = (int(x) for x in r.stdout.splitlines()[0].split(","))
-        return tot - used
-    except Exception:
-        return 0
+    import gpu
+    return gpu.free_mib()
 
 
 def extract(job_dir, device="cpu"):
@@ -59,7 +56,7 @@ def extract(job_dir, device="cpu"):
     raw = subprocess.run(["ffmpeg", "-v", "error", "-i", src, "-ac", "1", "-ar", str(SR), "-f", "f32le", "-"],
                          capture_output=True, check=True).stdout
     a = torch.from_numpy(np.frombuffer(raw, dtype=np.float32).copy()).unsqueeze(0)
-    if device == "cuda":
+    if device != "cpu":  # a GPU
         model, batch = "full", 1024
     else:
         torch.set_num_threads(min(4, os.cpu_count() or 1))
@@ -75,9 +72,15 @@ def extract(job_dir, device="cpu"):
     os.replace(tmp, os.path.join(job_dir, CACHE))
 
 
+def _gpu_device():
+    """The GPU's torch device name ("cuda" on NVIDIA), without importing torch here (extract runs in its own process)."""
+    import gpu
+    return os.environ.get(gpu.ENV, "").strip() or "cuda"
+
+
 def frames(job_dir, timeout=900, log=None, device=None):
     """(f0 in Hz, periodicity) per 20 ms frame of the job's vocals, from the cache or computed now (a subprocess, GPU
-    if it has room, else CPU; device "cpu"/"cuda" forces one). Raises if it can't be made."""
+    if it has room, else CPU; device "cpu"/"cuda" (or another torch device) forces one). Raises if it can't be made."""
     src = _vocals(job_dir)
     if not os.path.exists(src):
         raise FileNotFoundError("no vocals.m4a")
@@ -90,11 +93,11 @@ def frames(job_dir, timeout=900, log=None, device=None):
                 return z["f0"].astype(np.float64), z["per"].astype(np.float64)
         except Exception:
             pass
-    device = device or ("cuda" if gpu_free_mib() >= GPU_MIN_FREE_MIB else "cpu")
+    device = device or (_gpu_device() if gpu_free_mib() >= GPU_MIN_FREE_MIB else "cpu")
     t0 = time.time()
     r = subprocess.run([sys.executable, "-I", os.path.join(HERE, "pitch.py"), "extract", job_dir, device],
                        capture_output=True, text=True, timeout=timeout)
-    if r.returncode != 0 and device == "cuda":  # the GPU got busy in between: the CPU does it
+    if r.returncode != 0 and device != "cpu":  # the GPU got busy in between: the CPU does it
         device = "cpu"
         r = subprocess.run([sys.executable, "-I", os.path.join(HERE, "pitch.py"), "extract", job_dir, device],
                            capture_output=True, text=True, timeout=timeout)
@@ -209,4 +212,4 @@ if __name__ == "__main__":
     if len(sys.argv) >= 3 and sys.argv[1] == "extract":
         extract(sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else "cpu")
     else:
-        sys.exit("usage: pitch.py extract JOB_DIR [cuda|cpu]")
+        sys.exit("usage: pitch.py extract JOB_DIR [cuda|cpu|<torch device>]")

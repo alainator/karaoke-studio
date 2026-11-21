@@ -120,3 +120,15 @@ def apply_trim(job_dir, new_start, new_end, old_start=0.0, fresh=False, offset=0
     job["result"] = r
     write_lyrics(job_dir, job, offset=offset)
     return length
+
+
+def reapply(job_dir, trim):
+    """A fresh, untrimmed render of a song that has a trim (a remake, on this machine or on the GPU helper): cut it
+    the same way, lines and all, and keep the fresh render as the new untrimmed copy. Returns what to log, or None
+    when there's no trim. pipeline.py calls this for songs made here; app.run_remote for songs made on the helper."""
+    t = trim or {}
+    start, end = float(t.get("start") or 0), t.get("end")
+    if not start and not end:
+        return None
+    apply_trim(job_dir, start, end, old_start=0.0, fresh=True)
+    return f"trimmed to {start:.1f} s" + (f"-{float(end):.1f} s" if end else "") + " of the video, as before"

@@ -38,7 +38,8 @@ from sklearn.cluster import KMeans  # noqa: E402
 from sklearn.metrics import silhouette_score  # noqa: E402
 from speechbrain.inference.speaker import EncoderClassifier  # noqa: E402
 
-dev = "cuda:0" if torch.cuda.is_available() else "cpu"
+import gpu  # noqa: E402
+dev = gpu.device()  # a GPU if there is one (gpu.py), else the CPU
 enc = EncoderClassifier.from_hparams(source="speechbrain/spkrec-ecapa-voxceleb",
                                      savedir=os.path.join(C.MODELS, "spkrec-ecapa-voxceleb"), run_opts={"device": dev})
 embs, idx = [], []

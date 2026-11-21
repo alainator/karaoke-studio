@@ -1,0 +1,64 @@
+{
+  "name": "profiles-export",
+  "about": "§2.6: everything the Studio keeps about one singer (\"Download my data\"): the winning favourite per song and pref per key, all history, the players that sent them; the PIN only as set or not.",
+  "request": {
+    "method": "GET",
+    "path": "/api/encore/profiles/7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d/export",
+    "headers": {
+      "Authorization": "Bearer <token from pairing>"
+    },
+    "body": null,
+    "schema": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "uid": "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d",
+      "deleted": false,
+      "profile": {
+        "name": "Mia",
+        "color": "#ff5fa2",
+        "created": 1794485120.0,
+        "updated": 1794485120.0,
+        "pin": true
+      },
+      "favorites": [
+        {
+          "song": "20261101-120000-nova-lane-paper-lanterns",
+          "on": true,
+          "at": 1794485132.5
+        }
+      ],
+      "prefs": [
+        {
+          "key": "style:ja",
+          "value": "romaji",
+          "at": 1794485133.25
+        }
+      ],
+      "history": [
+        {
+          "eid": "4b2fbe76-c274-5232-935b-5d61d1272d6d",
+          "stream": "history",
+          "uid": "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d",
+          "at": 1794485420.75,
+          "song": "20261102-090000-the-quiet-arcade-two-small-rivers",
+          "base": "The Quiet Arcade - Two Small Rivers (Music Video)",
+          "result": "finished",
+          "party": "Friday at Ken's",
+          "style": "romaji",
+          "guide": "low"
+        }
+      ],
+      "players": [
+        {
+          "player": "6f1c2a90-3b7e-4c1d-9e55-0a7b8c9d1e2f",
+          "name": "Encore on kit-01",
+          "last_seen": 1794485520.0
+        }
+      ]
+    },
+    "schema": "profiles.export.response.schema.json"
+  }
+}

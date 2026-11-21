@@ -85,7 +85,8 @@ def normalize(data):
                         "singer": sg if sg in (1, 2, 3) else None, "heard": l.get("heard") or None,
                         "members": sorted(set(mem)) or None, "wwho": ww if ww and any(ww) else None,
                         "weak": bool(l.get("weak")), "why": (l.get("why") or None) if l.get("weak") else None,
-                        "ok": bool(l.get("ok")), "backing": bool(l.get("backing"))})
+                        "ok": bool(l.get("ok")), "backing": bool(l.get("backing")),
+                        "note": l["note"] if isinstance(l.get("note"), dict) and l["note"].get("text") else None})
         else:
             out.append({"words": [list(w) for w in l], "orig": None, "singer": None, "heard": None, "members": None, "wwho": None})
     return [l for l in out if l["words"]]
@@ -121,7 +122,9 @@ def save_lines(path, lines, cast=_KEEP):
                               **({"why": str(l["why"])[:160]} if l.get("weak") and l.get("why") else {}),
                               **({"ok": True} if l.get("ok") and not l.get("weak") else {}),
                               **({"backing": True} if l.get("backing") else {}),
-                              **({"heard": l["heard"]} if l.get("heard") else {})}
+                              **({"heard": l["heard"]} if l.get("heard") else {}),
+                              # a note on the line: {"by", "kind", "text", "at"}, signed by the studio (agents.py)
+                              **({"note": l["note"]} if isinstance(l.get("note"), dict) and l["note"].get("text") else {})}
                              for l in lines]}, f, ensure_ascii=False)
     os.replace(tmp, path)
 

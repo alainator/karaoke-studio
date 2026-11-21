@@ -86,6 +86,18 @@ td.n { text-align: right; font-variant-numeric: tabular-nums; }
 .edtab tr.cur input.tx { border-color: var(--gold); }
 .edtab tr.sel td { background: rgba(60,180,255,.12); }
 .weakmark { color: #ffb020; margin-left: 4px; cursor: pointer; }
+.lnote { font-size: 12.5px; margin-top: 3px; color: var(--dim); }
+.lnote b { color: var(--info); font-weight: 600; }
+.lnote.agent b::before { content: "🤖 "; font-weight: 400; }
+.lastedit { margin: -4px 0 10px; }
+.agentkey { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 14px; background: var(--bg); border: 1px dashed var(--gold); border-radius: 8px; padding: 10px; overflow-wrap: anywhere; user-select: all; }
+.scopes { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 4px 16px; margin: 8px 0; }
+.scopes label { display: flex; gap: 8px; align-items: flex-start; font-size: 14px; color: var(--text); justify-content: flex-start; margin: 0; }
+.scopes label .hint { display: block; }
+.scopes label.off { color: var(--dim); }
+.ktab td { vertical-align: top; }
+.kscope { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 99px; margin: 1px 3px 1px 0; background: var(--panel2); color: var(--dim); }
+.kscope.risky { background: rgba(255,176,32,.15); color: #ffb020; }
 .lyrview { margin-top: 6px; max-height: 260px; overflow: auto; font-size: 13px; line-height: 1.45; padding: 8px 10px; border-radius: 8px; background: rgba(127,127,127,.12); cursor: text; user-select: text; }
 .lyrview .lt { display: inline-block; width: 3.2em; opacity: .55; font-variant-numeric: tabular-nums; }
 .speeds button { padding: 5px 10px; font-size: 13px; }
@@ -216,6 +228,7 @@ a.lnk:hover { text-decoration: underline; }
     <button data-v="lib">Library</button>
     <button data-v="requests" title="Songs guests asked for in Encore">Requests<span class="nbadge" id="reqbadge"></span></button>
     <button data-v="players" title="Players linked to the studio (Encore)">Players</button>
+    <button data-v="agents" title="Keys for AI agents (and scripts) that check and fix songs through the studio's API">Agents</button>
   </nav>
   <div id="gpu"></div>
 </header>
@@ -271,6 +284,10 @@ a.lnk:hover { text-decoration: underline; }
   <section id="v-players" class="view">
     <div id="players"></div>
   </section>
+
+  <section id="v-agents" class="view">
+    <div id="agents"></div>
+  </section>
 </main>
 <div class="toast" id="toast"></div>
 
@@ -295,6 +312,7 @@ function show(v) {
   if (v === "lib") loadLib();
   if (v === "requests") loadRequests();
   if (v === "players") loadPlayers(); else clearInterval(PL.timer);
+  if (v === "agents") loadAgents();
   if (v !== "jobs") closePlayer();
 }
 document.querySelectorAll("nav button").forEach(b => b.onclick = () => { if (leaveOk()) { ed = null; location.hash = b.dataset.v; } });
@@ -743,12 +761,13 @@ async function openJob(id) {
     else detailTimer = setTimeout(() => { openJob(id); loadJobs(); }, 2500);
     return;
   }
-  if (document.getElementById("pv") && document.getElementById("pv").dataset.id === id) { renderVideos(id, j); return renderPublish(id, j); }
+  if (document.getElementById("pv") && document.getElementById("pv").dataset.id === id) { renderVideos(id, j); showLastEdit(j); return renderPublish(id, j); }
   const r = j.result || {};
   $("#jobdetail").innerHTML = `${backLink()}
     <div class="row" style="justify-content:space-between;margin:6px 0 10px"><h2 style="margin:0">${esc(j.artist)} – ${esc(j.title)}</h2>
       <span class="row"><input id="rn-artist" class="rn" value="${esc(j.artist)}" placeholder="Artist" title="Artist (sets the song's name in PiKaraoke)">
       <input id="rn-title" class="rn" value="${esc(j.title)}" placeholder="Title"><button class="ghost" id="rnbtn" style="padding:6px 10px;font-size:13px">Rename</button><a class="tag" href="/api/jobs/${esc(id)}/log" target="_blank" rel="noopener" title="Everything the studio printed while making this song">log ↗</a>${j.status !== "running" ? `<button class="ghost" id="chpicks" style="padding:6px 10px;font-size:13px" title="Wrong video or wrong lyrics? Go back to the search for this song, pick again, and make it again in place of this one">← Change video or lyrics</button>` : ""}${r.script === "zh" || r.lang === "zh" || r.lang === "yue" ? `<button class="ghost" id="zhread" style="padding:6px 10px;font-size:13px" title="Whisper can't tell Mandarin from Cantonese singing. Switch the romanization here; the timing stays.">${r.lang === "yue" ? "Jyutping → Pinyin (Mandarin)" : "Pinyin → Jyutping (Cantonese)"}</button>` : ""}</span></div>
+    <div class="hint lastedit" id="lastedit"></div>
     ${j.updates && j.updates.length ? `<div class="aibox" style="margin-bottom:12px"><div class="row" style="justify-content:space-between">
       <b>Made with an older version: remaking it now would add</b>
       <span class="row">${gpuMenu("gpupick2")}<button class="primary" id="remake">↻ Remake with the latest version</button></span></div>
@@ -811,6 +830,7 @@ async function openJob(id) {
   };
   renderPublish(id, j);
   renderVideos(id, j);
+  showLastEdit(j);
   initEditor(id, j);
   renderFlags(id, j);
   if ($("#remake")) $("#remake").onclick = async () => {
@@ -864,11 +884,24 @@ async function initEditor(id, j) {
   let d; try { d = await api(`/api/jobs/${id}/lines`); } catch (e) { $("#editor").textContent = e.message; return; }
   if (currentJob !== id) return;
   ed = {id, j, lines: d.lines, cast: d.cast || [], ripple: rippleDefault, sel: null, dirty: false, spec: lsFlag("ks-spec", false), snap: lsFlag("ks-snap", true), onsets: null, specImg: null, canReset: d.can_reset, skipped: d.skipped || [], view: {span: 12, start: 0}, peaks: null};
+  loadHistory(id);
   api(`/api/jobs/${id}/peaks`).then(p => { if (ed && ed.id === id) { ed.peaks = p; drawWave(); } }).catch(() => {});
   api(`/api/jobs/${id}/onsets`).then(o => { if (ed && ed.id === id) { ed.onsets = o.onsets; drawWave(); } }).catch(() => {});
   renderEditor();
   const v = $("#pv");
   v.addEventListener("timeupdate", markCurrent);
+}
+async function loadHistory(id) {
+  try { const h = await api(`/api/jobs/${id}/history`); if (ed && ed.id === id) { ed.hist = h.history; if (h.last_edit) ed.j = {...ed.j, last_edit: h.last_edit}; renderEditor(); showLastEdit(ed.j); } } catch {}
+}
+const KIND = {agent: "agent", ks: "command line", web: "web app", person: ""};
+function noteHtml(l) {
+  return l.note ? `<div class="lnote ${l.note.kind === "agent" ? "agent" : ""}" title="${esc((KIND[l.note.kind] ? l.note.by + " (" + KIND[l.note.kind] + ")" : l.note.by) + ", " + ago(l.note.at))}"><b>${esc(l.note.by)}</b>: ${esc(l.note.text)}</div>` : "";
+}
+function showLastEdit(j) {
+  const el = $("#lastedit"); if (!el) return;
+  const e = j && j.last_edit;
+  el.innerHTML = e ? `Last edited by <b>${esc(e.by)}</b>${KIND[e.kind] ? ` (${KIND[e.kind]})` : ""} ${esc(ago(e.at))}${e.what ? ": " + esc(e.what) : ""}` : "";
 }
 // ---------- waveform ----------
 const SING = {1: "#ffc94d", 2: "#3cb4ff", 3: "#78e678"};
@@ -1123,7 +1156,7 @@ function fixBox() {
   return `<div class="aibox" style="margin-bottom:10px;border-color:#ffb020"><b>⚠ ${marked.length} line${marked.length === 1 ? "" : "s"} to fix or confirm</b>
     <span class="hint"> — click one to jump there; move the line if it's off, or click its ⚠ in the list below if it's fine.</span>
     <div style="margin-top:6px;display:flex;flex-direction:column;gap:3px;max-height:150px;overflow:auto">${marked.map(([l, i]) =>
-      `<button class="ghost" data-fix="${i}" style="text-align:left;padding:4px 8px;font-size:13px"><b>${fmtT(l.words[0][0] + curOff())}</b> · line ${i + 1} · ${esc(l.words.map(w => w[2]).join(" ").slice(0, 46))} <span class="hint">— ${esc(l.why || "the studio is unsure about its timing")}</span></button>`).join("")}</div></div>`;
+      `<button class="ghost" data-fix="${i}" style="text-align:left;padding:4px 8px;font-size:13px"><b>${fmtT(l.words[0][0] + curOff())}</b> · line ${i + 1} · ${esc(l.words.map(w => w[2]).join(" ").slice(0, 46))} <span class="hint">— ${esc(l.why || "the studio is unsure about its timing")}${l.note ? ` · <b>${esc(l.note.by)}</b>: ${esc(l.note.text)}` : ""}</span></button>`).join("")}</div></div>`;
 }
 function renderEditor() {
   if (!ed) return;
@@ -1138,6 +1171,7 @@ function renderEditor() {
         <button class="ghost" id="pastebtn" title="Paste the lyrics from a lyrics site (e.g. Genius): fixes words/readings and, from section headers like [Chorus: Name], colours lines by singer; you review every change">${ed.lines.some(l => l.orig) ? "Paste romaji" : "Paste lyrics"}</button>
         ${STATUS.romaji_ai && (ed.lines.some(l => l.orig && /[\u3040-\u30ff]/.test(l.orig)) || !ed.lines.some(l => l.orig)) ? `<button class="ghost" id="aicheck" title="Compares the lyrics with what's actually sung and suggests fixes; you review every change">${ed.lines.some(l => l.orig) ? "Check romaji with AI" : "Check lyrics with AI"}</button>` : ""}
         <button class="ghost" id="trimbtn" title="Cut ads, an intro skit or a title card off the start of the video (or extra video off the end)">Trim video</button>
+        ${ed.hist && ed.hist.length ? `<button class="ghost" id="edundo" title="Undo the last saved edit (${esc(ed.hist[0].what || "")}, by ${esc(ed.hist[0].by)} ${esc(ago(ed.hist[0].at))}); ${ed.hist.length} step${ed.hist.length === 1 ? "" : "s"} can be undone">↶ Undo${ed.hist[0].kind === "agent" ? " " + esc(ed.hist[0].by) + "'s edit" : ""}</button>` : ""}
         ${ed.canReset ? '<button class="ghost" id="edreset">Undo all edits</button>' : ""}
         <button class="primary" id="edsave" ${ed.dirty ? "" : "disabled"}>Save</button></div>
     </div>
@@ -1174,11 +1208,11 @@ function renderEditor() {
       ${ed.skipped.map((s, i) => `<button class="chip" data-sk="${i}" title="Not sung in this video according to the aligner">+ ${esc(s)}</button>`).join("")}</div>
     <div class="edwrap"><table class="edtab"><tbody>${ed.lines.map((l, i) => `
       <tr data-i="${i}" class="${ed.sel === i ? "sel" : ""}">
-        <td><button class="ib" data-act="play" title="Play from just before this line">▶</button>${l.weak ? `<span class="weakmark" data-act="okline" title="${esc(l.why ? "Check this line: " + l.why : "The studio is unsure about this line's timing")}. Click if it's fine as it is.">⚠</span>` : ""}</td>
+        <td><button class="ib" data-act="play" title="Play from just before this line">▶</button>${l.weak ? `<span class="weakmark" data-act="okline" title="${esc((l.why ? "Check this line: " + l.why : "The studio is unsure about this line's timing") + (l.note ? " — " + l.note.by + ": " + l.note.text : ""))}. Click if it's fine as it is.">⚠</span>` : ""}</td>
         <td><input class="tm" data-act="time" value="${fmtT(l.words[0][0] + off)}" title="Line start (m:ss.cc)"></td>
         <td class="nowrap"><button class="ib" data-act="m" title="0.1 s earlier">−</button><button class="ib" data-act="p" title="0.1 s later">+</button><button class="ib" data-act="now" title="Start this line at the current playback time">⏱</button></td>
         <td class="nowrap">${l.unsure ? '<span class="unsure" title="Detect 2 singers wasn\'t sure about this line">?</span>' : ""}${ed.cast.length ? memberSelect(l) : `<select class="sg" data-act="singer" title="Who sings this line">${[["", "–"], [1, "1"], [2, "2"], [3, "Both"]].map(([v, t]) => `<option value="${v}" ${(l.singer || "") == v ? "selected" : ""}>${t}</option>`).join("")}</select>`}</td>
-        <td class="txc"><input class="tx ${l.backing ? "backing" : ""}" data-act="text" value="${esc(lineText(l))}" ${l.backing ? 'title="Backing vocals: shown on their own row, in italics"' : ""}>${l.orig ? `<div class="hint">${esc(l.orig)}</div>` : ""}
+        <td class="txc"><input class="tx ${l.backing ? "backing" : ""}" data-act="text" value="${esc(lineText(l))}" ${l.backing ? 'title="Backing vocals: shown on their own row, in italics"' : ""}>${l.orig ? `<div class="hint">${esc(l.orig)}</div>` : ""}${noteHtml(l)}
           ${ed.cutFor === l ? `<div class="wchips"><span class="hint">Split before:</span>${l.words.map((w, j) => j ? `<span class="wchip cutchip" data-cj="${j}">${esc(w[2])}</span>` : `<span class="hint">${esc(w[2])}</span>`).join("")}</div>` : ""}
           ${ed.splitFor === l || l.wwho ? `<div class="wchips"><span class="hint" style="margin-right:2px">Paint with</span>${whoCycle().map((w, k) =>
               `<span class="brush ${sameWho(w, ed.brush || whoCycle()[1]) ? "on" : ""}" data-b="${k}" style="--c:${whoColour(w)}">${esc(whoName(w))}</span>`).join("")}
@@ -1382,7 +1416,7 @@ function renderEditor() {
     $("#edsave").disabled = true;
     try {
       await api(`/api/jobs/${ed.id}/lines`, {method: "POST", body: JSON.stringify({lines: ed.lines, cast: ed.cast})});
-      ed.dirty = false; ed.canReset = true; reloadLyrics(); renderEditor(); toast("Saved: the preview shows your changes");
+      ed.dirty = false; ed.canReset = true; reloadLyrics(); renderEditor(); loadHistory(ed.id); toast("Saved: the preview shows your changes");
       if (ed.j.published) renderPublish(ed.id, {...ed.j, unpublished_changes: true});
     } catch (e) { toast(e.message); $("#edsave").disabled = false; }
   };
@@ -1406,6 +1440,15 @@ function renderEditor() {
     doTrim(s0, e0);
   };
   if ($("#trimundo")) $("#trimundo").onclick = () => doTrim(0, null);
+  if ($("#edundo")) $("#edundo").onclick = async () => {
+    const e = ed.hist[0];
+    if (ed.dirty && !confirm("You have unsaved changes; Undo drops them. Go on?")) return;
+    try {
+      await api(`/api/jobs/${ed.id}/lines/undo`, {method: "POST", body: JSON.stringify({id: e.id})});
+      toast(`Undone: ${e.what || "the last edit"} (${e.by})`); reloadLyrics(); await initEditor(ed.id, ed.j);
+      if (ed.j.published) renderPublish(ed.id, {...ed.j, unpublished_changes: true});
+    } catch (err) { toast(err.message); loadHistory(ed.id); }
+  };
   if ($("#edreset")) $("#edreset").onclick = async () => {
     if (!confirm("Undo every lyric edit and go back to the automatic timing?")) return;
     try { await api(`/api/jobs/${ed.id}/lines/reset`, {method: "POST"}); reloadLyrics(); await initEditor(ed.id, ed.j); if (ed.j.published) renderPublish(ed.id, {...ed.j, unpublished_changes: true}); }
@@ -1782,7 +1825,9 @@ function renderPlayers(d) {
         <td class="c-opt">${esc(whenT(p.created))}</td>
         <td>${p.preset ? "" : `<button class="ghost danger sm" data-unlink="${esc(p.player)}" data-name="${esc(p.name)}">Unlink</button>`}</td></tr>`).join("")}</tbody></table>`
       : `<div class="empty">No players linked yet. <b>Connect a player</b> above.</div>`}
-    <p class="hint">Unlink stops a player's key at once: it then shows "This Studio unlinked us; link again" and keeps what it hadn't sent.</p>`;
+    <p class="hint">Unlink stops a player's key at once: it then shows "This Studio unlinked us; link again" and keeps what it hadn't sent.</p>
+    <h2>Singer profiles</h2><div id="profiles"><div class="hint">Loading…</div></div>`;
+  loadProfiles();
   $("#newcode").onclick = async () => {
     try { const r = await api("/api/players/code", {method: "POST"}); PL.code = r.code; PL.expires = r.expires; PL.address = r.address; loadPlayers(); }
     catch (e) { toast(e.message); }
@@ -1799,6 +1844,73 @@ function renderPlayers(d) {
     el.textContent = codeLeft();
     if (PL.expires <= Date.now() / 1000 || Math.round(Date.now() / 1000) % 5 === 0) loadPlayers();  // used or expired: the list shows the new player
   }, 1000);
+}
+
+// ---------- singer profiles (Encore users, §2.6): a backup kept here and shared between players; no history shown ----------
+async function loadProfiles() {
+  let d; try { d = await api("/api/profiles"); } catch (e) { if ($("#profiles")) $("#profiles").innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  if (!$("#profiles")) return;
+  const ps = d.profiles;
+  $("#profiles").innerHTML = ps.length ? `<table class="ptable"><thead><tr><th>Singer</th><th>Last active</th><th>From</th><th class="c-opt">PIN</th></tr></thead><tbody>
+    ${ps.map(p => p.deleted ? `<tr style="opacity:.6"><td><i>deleted</i>${p.merged_into ? ' <span class="hint">(merged into another profile)</span>' : ""}<div class="hint">${esc(p.uid.slice(0, 8))}</div></td><td>${esc(ago(p.last))}</td><td>${esc(p.players.join(", "))}</td><td class="c-opt"></td></tr>`
+      : `<tr><td><b><span style="color:${/^#[0-9a-f]{6}$/i.test(p.color || "") ? p.color : "inherit"}">●</span> ${esc(p.name || "(no name yet)")}</b><div class="hint">${esc(p.uid.slice(0, 8))}</div></td>
+        <td>${esc(ago(p.last))}</td><td>${esc(p.players.join(", "))}</td><td class="c-opt">${p.pin ? "set" : "–"}</td></tr>`).join("")}</tbody></table>
+    <p class="hint">Profiles are made and used in Encore (favourites, lyric styles, what they sang); the studio keeps a backup and shares them between linked players. Deleting one in Encore deletes it here and on every player; Encore's "Download my data" gives a singer everything kept about them.</p>`
+    : `<div class="empty">No singer profiles yet. Singers make one in Encore; linked players back them up here.</div>`;
+}
+
+// ---------- agents: keys with scopes (agents.py, AGENTS.md) ----------
+let AG = {newKey: null, newName: ""};
+const RISKY = new Set(["clear_marks", "publish", "remake", "delete"]);
+async function loadAgents() {
+  try { renderAgents(await api("/api/agents")); } catch (e) { $("#agents").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+}
+function scopeBoxes(d, chosen, prefix) {
+  return `<div class="scopes">${d.scopes.map(s => `<label class="${chosen.includes(s.scope) ? "" : "off"}"><input type="checkbox" class="${prefix}" value="${esc(s.scope)}" ${chosen.includes(s.scope) ? "checked" : ""}>
+    <span>${RISKY.has(s.scope) ? "⚠ " : ""}<b>${esc(s.scope.replace("_", " "))}</b><span class="hint">${esc(s.label)}</span></span></label>`).join("")}</div>`;
+}
+function renderAgents(d) {
+  const keyBox = AG.newKey ? `<div class="aibox" style="margin-top:12px;border-color:var(--gold)">
+      <b>The key for ${esc(AG.newName)}</b> <span class="hint">— shown only now; the studio keeps only a fingerprint of it. Copy it into the agent's machine:</span>
+      <div class="agentkey" id="agentkey" style="margin-top:8px">${esc(AG.newKey)}</div>
+      <div class="hint" style="margin-top:8px">With ks: run <code>ks setup --url ${esc(location.origin)}</code> and paste it when asked (it's stored readable only by you), or set <code>STUDIO_AGENT_KEY</code>. See AGENTS.md in the studio's repository.</div>
+      <div class="row" style="margin-top:8px"><button class="ghost sm" id="copykey">Copy</button><button class="primary sm" id="keydone">I've stored it</button></div></div>` : "";
+  $("#agents").innerHTML = `<div class="ctl" style="margin-bottom:18px">
+      <b style="font-size:16px">Let an agent check and fix songs</b>
+      <div class="hint" style="margin-top:6px">The studio is made so an AI agent (Claude Code, a local model, any tool that can run <code>ks</code>) can do the first pass: find the ⚠ lines, listen, look, move and retime lines, and leave you notes. You make the final calls. Each agent gets its own key and only what you tick here; everything it does is signed with its name and can be undone in the editor.</div>
+      <div class="row" style="margin-top:12px;align-items:flex-end"><label style="flex:0 1 260px;display:block"><span class="hint">Name (shown on its edits and notes)</span><br><input type="text" id="agname" placeholder="e.g. Claude" maxlength="40" style="padding:9px 12px;font-size:15px;width:100%"></label></div>
+      ${scopeBoxes(d, d.scopes.filter(s => s.default).map(s => s.scope), "agnew")}
+      <div class="hint">⚠ = off by default: these change what players get or redo work. Your own rule can be "agents never publish": leave them off.</div>
+      <div class="row" style="margin-top:10px"><button class="primary" id="agcreate">Make a key</button></div>${keyBox}</div>
+    <h2>Agent keys</h2>
+    ${d.keys.length ? `<table class="ktab"><thead><tr><th>Agent</th><th>May</th><th>Last used</th><th class="c-opt">Made</th><th></th></tr></thead><tbody>
+      ${d.keys.map(k => `<tr data-kid="${esc(k.id)}"><td><b>${esc(k.name)}</b><div class="hint">key ${esc(k.id.slice(0, 6))}…</div></td>
+        <td>${k.scopes.length ? k.scopes.map(s => `<span class="kscope ${RISKY.has(s) ? "risky" : ""}">${esc(s.replace("_", " "))}</span>`).join("") : '<span class="hint">nothing</span>'}
+          <details class="kedit"><summary class="hint" style="cursor:pointer">change</summary>${scopeBoxes(d, k.scopes, "agk-" + esc(k.id))}<button class="ghost sm" data-save="${esc(k.id)}">Save</button></details></td>
+        <td>${esc(ago(k.last_used))}${k.uses ? `<div class="hint">${k.uses} time${k.uses === 1 ? "" : "s"}+</div>` : ""}</td>
+        <td class="c-opt">${esc(whenT(k.created))}${k.created_by ? `<div class="hint">by ${esc(k.created_by)}</div>` : ""}</td>
+        <td><button class="ghost danger sm" data-revoke="${esc(k.id)}" data-name="${esc(k.name)}">Revoke</button></td></tr>`).join("")}</tbody></table>`
+      : `<div class="empty">No agent keys yet. Without one, <code>ks</code> still works from this machine and signs its edits "ks"${d.required ? " — except that this studio requires a key (AGENT_KEYS_REQUIRED)" : ""}.</div>`}
+    <p class="hint">Revoke stops a key at once. Edits and notes an agent made stay signed with its name. Requests without a key ${d.required ? "are refused unless they come through your login (AGENT_KEYS_REQUIRED is on)" : "have full access, like this web app (set AGENT_KEYS_REQUIRED=1 if other programs can reach the studio's port)"}.</p>`;
+  const picked = cls => [...document.querySelectorAll("input." + cls)].filter(x => x.checked).map(x => x.value);
+  document.querySelectorAll(".scopes input").forEach(x => x.onchange = () => x.closest("label").classList.toggle("off", !x.checked));
+  $("#agcreate").onclick = async () => {
+    const name = $("#agname").value.trim();
+    if (!name) return toast("Give the agent a name first");
+    try { const r = await api("/api/agents", {method: "POST", body: JSON.stringify({name, scopes: picked("agnew")})}); AG.newKey = r.key; AG.newName = r.agent.name; loadAgents(); }
+    catch (e) { toast(e.message); }
+  };
+  if ($("#copykey")) $("#copykey").onclick = async () => { try { await navigator.clipboard.writeText(AG.newKey); toast("Copied"); } catch { toast("Select the key and copy it"); } };
+  if ($("#keydone")) $("#keydone").onclick = () => { AG.newKey = null; loadAgents(); };
+  document.querySelectorAll("[data-save]").forEach(b => b.onclick = async () => {
+    try { await api("/api/agents/" + encodeURIComponent(b.dataset.save), {method: "PATCH", body: JSON.stringify({scopes: picked("agk-" + b.dataset.save)})}); toast("Saved"); loadAgents(); }
+    catch (e) { toast(e.message); }
+  });
+  document.querySelectorAll("[data-revoke]").forEach(b => b.onclick = async () => {
+    if (!confirm(`Revoke the key of “${b.dataset.name}”? It stops working at once.`)) return;
+    try { await api("/api/agents/" + encodeURIComponent(b.dataset.revoke), {method: "DELETE"}); toast("Revoked"); } catch (e) { toast(e.message); }
+    loadAgents();
+  });
 }
 
 // ---------- the song page: flagged in Encore ----------

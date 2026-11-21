@@ -49,7 +49,8 @@ src = wav if os.path.exists(wav) else f"{job_dir}/vocals.m4a"
 audio = np.frombuffer(subprocess.run(["ffmpeg", "-v", "error", "-i", src, "-ac", "1", "-ar", str(SR), "-f", "f32le", "-"],
                                      capture_output=True, check=True).stdout, dtype=np.float32)
 import torch, torchaudio  # noqa: E402
-dev = "cuda" if torch.cuda.is_available() else "cpu"
+import gpu  # noqa: E402
+dev = gpu.device()  # a GPU if there is one (gpu.py), else the CPU
 fa = torchaudio.pipelines.MMS_FA
 model = fa.get_model(with_star=False).to(dev)
 tok = fa.get_tokenizer()

@@ -152,6 +152,14 @@ class SchemaChecker(Base):
             "pitch.schema.json": {"version": 1, "base": "b", "duration": 1, "hop": 0, "notes": [[1, 2, 200]], "range": None},
             "words.schema.json": {"version": 1, "base": "b", "parts": [], "lines": [{"i": 0, "start": 0, "end": 1, "words": [], "parts": []}]},
             "catalog.schema.json": {"version": 2, "songs": [{"id": "x"}]},
+            # §2.6 profiles; the profile one also checks "not" (merged_into only on a tombstone)
+            "profile-event.schema.json": {"eid": u, "stream": "profile", "uid": u, "at": 1, "name": "x", "color": "#000000",
+                                          "pin_hash": None, "created": 1, "deleted": False, "merged_into": u},
+            "profiles.sync.request.schema.json": {"player": u, "since": None, "events": [{"eid": u, "stream": "prefs", "uid": u, "at": 1,
+                                                                                         "key": "Bad Key", "value": 1}]},
+            "profiles.sync.response.schema.json": {"cursor": "", "events": []},
+            "profiles.export.response.schema.json": {"uid": u, "deleted": False, "profile": {"name": "x", "color": "#000000",
+                                                     "created": 1, "pin": "yes"}, "favorites": [], "prefs": [], "history": []},
         }
         self.assertEqual(sorted(bad), sorted(os.listdir(S.SCHEMAS)))
         for n, d in bad.items():
@@ -820,7 +828,7 @@ class Fixtures(Base):
             if f.endswith((".words.json", ".pitch.json")):
                 self.valid("words.schema.json" if f.endswith(".words.json") else "pitch.schema.json", json.load(open(os.path.join(mv, f))))
         names = sorted(os.listdir(os.path.join(fx, "api")))
-        self.assertEqual(len(names), 23)
+        self.assertEqual(len(names), 31)  # (24-31: §2.6 profiles)
         for n in names:
             x = json.load(open(os.path.join(fx, "api", n)))
             if x["request"]["schema"]:
