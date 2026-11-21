@@ -24,6 +24,7 @@ from assgen import (MODES, display_modes, job_display, load_cast, load_lines, sa
                     who_of, write_lyrics)
 import versions  # noqa: E402
 import catalog  # noqa: E402
+import romanize  # noqa: E402
 import trimtools  # noqa: E402
 import videoswap  # noqa: E402
 import encore  # noqa: E402
@@ -435,6 +436,12 @@ def new_job(fields, actor):
             n += 1
             jid = f"{stamp}-{slug[:57].strip('-')}-{n}"
         os.makedirs(f"{JOBS}/{jid}")
+        # a title in its own script ("踊り子"): kept as the original title, the title romanized ("Odoriko"), so it reads
+        # and sorts in Latin letters everywhere and players show the original next to it
+        if not fields.get("title_orig") and catalog.has_own_script(fields.get("title")):
+            rt = romanize.romanize_title(fields["title"])
+            if rt:
+                fields = dict(fields, title_orig=fields["title"], title=rt)
         save(jid, {"id": jid, "status": "queued", "step": "queued", "gpu_pref": "auto", **fields,
                    "created": time.time(), "offset": 0.0, "lyrics_display": C.LYRICS_DISPLAY if C.LYRICS_DISPLAY in MODES else "both",
                    "made_by": agents.stamp(actor), "log": []})
@@ -515,6 +522,7 @@ def summary(job):
     out["keep_backing"] = bool(job.get("keep_backing"))   # the song page's switch (the render's own: result.backing)
     out["voice_swaps"] = page_swaps(job)                    # in the page's video time; the render's: voice_swaps_now
     out["voice_swaps_now"] = page_swaps(job, used=True)
+    out["title_orig"] = job.get("title_orig")              # the song page's Original title (its own script)
     return out
 
 
@@ -1830,6 +1838,17 @@ async def rename(jid: str, req: Request):
     actor = agents.actor_of(req)
     with lock:
         job = load(jid)
+        # the original title (its own script: 紅蓮華 for Gurenge): players show it next to the title; no file changes
+        if "title_orig" in b:
+            orig = str(b.get("title_orig") or "").strip()[:160] or None
+            if orig != job.get("title_orig"):
+                _edited(jid, job, actor, f"original title: {orig or '(none)'}")
+                job["title_orig"] = orig
+                if artist == job.get("artist") and title == job.get("title"):   # only that: saved, the catalog says it
+                    save(jid, job)
+                    if job.get("published"):
+                        update_catalog()
+                    return {"artist": artist, "title": title, "title_orig": orig, "name": final_base(job), "message": "original title"}
         old = job.get("published_as")
         if old and os.path.exists(f"{MV_DIR}/{old}.mp4"):  # it renames files in the library too
             _agent_refuse(actor, "publish", "renaming a published song (its files in the library change too)")
@@ -1867,7 +1886,7 @@ async def rename(jid: str, req: Request):
     if moved:
         pitch_later(jid)  # the pitch files say their song's name: written again (from the cache, quick)
     msg = (pk_rescan() or "renamed in the library") if moved else "renamed"
-    return {"artist": artist, "title": title, "name": new, "message": msg}
+    return {"artist": artist, "title": title, "title_orig": job.get("title_orig"), "name": new, "message": msg}
 
 
 @app.post("/api/jobs/{jid}/remake")

@@ -90,6 +90,7 @@
           "type": "string"
         },
         "title_orig": {
+          "description": "The title in its own script (紅蓮華 for Gurenge): the Studio song page's Original title, else the title itself when it's in its own script. Players show it next to the title and search it too.",
           "type": [
             "string",
             "null"

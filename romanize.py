@@ -335,3 +335,30 @@ def derune(text):
         return text
     return RUNE_RE.sub(lambda m: RUNES.get(m.group(0), ""), text)
 
+
+
+def romanize_title(title):
+    """A song title in its own script, in Latin letters for the title people search and see first ("踊り子" ->
+    "Odoriko"; the original stays as title_orig). None when it's already Latin or can't be romanized."""
+    import unicodedata
+    if not title or not any(c.isalpha() and not unicodedata.name(c, "").startswith("LATIN") for c in title):
+        return None
+    try:
+        sc = script_of([(title + " ") * 10])   # (script_of wants 10 letters: a title is short)
+        if sc == "zh" and not KANA.search(title):
+            return None   # only Han characters: Chinese, or Japanese kanji (紅蓮華)? Left as it is, not guessed
+        if sc == "ja":
+            import cutlet
+            out = cutlet.Cutlet().romaji(title)
+        elif sc == "ko":
+            out = romanize_korean(title)
+        elif sc != "latin":
+            out = romanize_generic(title, sc)
+        else:   # (a short title in another script: script_of wants 10 letters)
+            return None
+    except Exception:
+        return None
+    out = " ".join((out or "").split())
+    if not out or "?" in out:
+        return None
+    return " ".join(w[:1].upper() + w[1:] for w in out.split(" "))
