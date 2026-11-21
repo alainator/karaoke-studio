@@ -312,8 +312,10 @@ def _row_text(pieces, groups, lead_cs, kt, base_fill, families=None, main=None):
 
 
 def make_ass(lines, offset=0.0, show_orig=True, video_size=None, cast=None, embed_fonts=True, title=None, artist=None,
-             mode=None, style=None, lang=None):
+             mode=None, style=None, lang=None, backing_faint=False):
     """lines: words.json content (v1 or v2). offset shifts everything (+ = later).
+    backing_faint: the music keeps the backing vocals ("Keep backing vocals"): their row is drawn see-through, so
+    singers can tell the music sings it (they may join in, or leave it).
     video_size (w, h): on videos narrower than 16:9 the text is scaled down so lines don't wrap as much.
     title/artist: shown during a long intro. mode: both | original | romaji | kana (songs with original-script lines;
     default both, or romaji when show_orig is False). style: overrides of the settings (see STYLE_DEFAULTS).
@@ -530,7 +532,8 @@ def make_ass(lines, offset=0.0, show_orig=True, video_size=None, cast=None, embe
         base_fill = fill_of(l)
         fx = "" if sx == 100 else "\\fscx%d" % sx
         fc = "" if base_fill is None else "\\1c" + base_fill
-        head = f"{{\\an2\\pos({W_ // 2},{round(y)}){fx}\\fs{size}{fc}\\i1}}"
+        fade = "\\alpha&H80&" if backing_faint else ""
+        head = f"{{\\an2\\pos({W_ // 2},{round(y)}){fx}\\fs{size}{fc}\\i1{fade}}}"
         rtl = bool(RTL_RE.search(" ".join(w for _, _, w in words)))
         events.append((show, f"Dialogue: 0,{ts(show)},{ts(h)},Back,,0,0,0,,{head}"
                              f"{_row_text(pieces, groups, round((start - show) * 100), 'k' if rtl else sweep, base_fill, families, F.main)}"))
@@ -636,7 +639,8 @@ def write_lyrics(job_dir, job=None, lines=None, cast=None, offset=None, style=No
     lines = normalize(lines)
     off = job.get("offset", 0.0) if offset is None else offset
     kw = dict(offset=off or 0.0, video_size=video_size_of(job), cast=cast or None, title=job.get("title"),
-              artist=job.get("artist"), style=style, lang=((job.get("result") or {}).get("lang") or job.get("lang")))
+              artist=job.get("artist"), style=style, lang=((job.get("result") or {}).get("lang") or job.get("lang")),
+              backing_faint=bool((job.get("result") or {}).get("backing")))
     modes = display_modes(lines)
     default = job_display(job, lines, modes)
     texts = {m: make_ass(lines, mode=m, **kw) for m in modes}

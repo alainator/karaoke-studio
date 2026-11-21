@@ -39,3 +39,19 @@ class BackingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FaintBackingRowTests(unittest.TestCase):
+    """With the backing vocals kept in the music, their lyric row is drawn see-through (the music sings it)."""
+    LINES = {"version": 2, "lines": [{"words": [[1.0, 1.5, "la"], [1.5, 2.0, "la"]]},
+                                     {"words": [[2.5, 3.0, "ooh"]], "backing": True}]}
+
+    def back_events(self, faint):
+        import assgen
+        text = assgen.make_ass(self.LINES, embed_fonts=False, backing_faint=faint)
+        return [l for l in text.splitlines() if l.startswith("Dialogue:") and ",Back," in l]
+
+    def test_see_through_only_when_kept(self):
+        self.assertTrue(self.back_events(True))
+        self.assertTrue(all("\\alpha&H80&" in l for l in self.back_events(True)))
+        self.assertFalse(any("\\alpha&H80&" in l for l in self.back_events(False)))
