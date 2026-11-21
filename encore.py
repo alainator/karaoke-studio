@@ -56,6 +56,7 @@ create table if not exists profile_events (seq integer primary key autoincrement
     at real, player text, body text, stored real);
 create index if not exists profile_events_uid on profile_events (uid);
 create table if not exists profile_tombs (uid text primary key, seq integer, at real, merged_into text, player text, stored real);
+create table if not exists bundle_have (player text primary key, have text, at real);
 """
 PROFILE_PAGE = 500              # events per sync answer (then "more": true)
 
@@ -203,6 +204,28 @@ class Store:
                 found = r["player"]
         return found
 
+    # ---- sync bundles (§2.7, bundle.py) ----
+    def key_hash(self, player):
+        """sha256(token) for a linked player (the bundle key's root), or None. Never logged or sent anywhere."""
+        if player == PRESET:
+            return self.preset_hash
+        r = self.q("select token_hash from players where player=?", (player,))
+        return r[0]["token_hash"] if r and r[0]["token_hash"] else None
+
+    def set_have(self, player, have):
+        self.q("insert or replace into bundle_have (player, have, at) values (?, ?, ?)", (player, json.dumps(have), self.now()))
+
+    def get_have(self, player):
+        r = self.q("select have from bundle_have where player=?", (player,))
+        return json.loads(r[0]["have"]) if r else None
+
+    def applied_ids(self, player, days=90):
+        """Ids from this player the Studio has stored in the last `days` (a bundle's answers.applied)."""
+        t = self.now() - days * 86400
+        return {"requests": [r[0] for r in self.q("select rid from requests where player=? and created>=?", (player, t))],
+                "flags": [r[0] for r in self.q("select fid from flags where player=? and created>=?", (player, t))],
+                "plays": [r[0] for r in self.q("select pid from plays where player=? and created>=?", (player, t))]}
+
     def seen(self, player, encore=None, contract=None, backlog=None):
         """A player called: remember when (at most one write a minute), and what it says about itself."""
         now = self.now()
@@ -246,6 +269,7 @@ class Store:
             raise PairError(400, "the preset player is set by the server config (ENCORE_TOKEN)")
         with self.lock:
             n = self.db.execute("delete from players where player=?", (player,)).rowcount
+            self.db.execute("delete from bundle_have where player=?", (player,))
             self.db.commit()
             self._seen.pop(player, None)
         return n > 0

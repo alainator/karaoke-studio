@@ -165,6 +165,11 @@ class SchemaChecker(Base):
                                                      "X-Encore-Base": "b", "X-Encore-Start": "1.5", "X-Encore-Rate": "1"},
             "score-words.post.response.schema.json": {"job": "abc", "eta": 1, "status": "queued"},
             "score-words.get.response.schema.json": {"status": "done", "words": []},
+            # §2.7 sync bundles
+            "bundle.manifest.schema.json": {"bundle": 1, "kind": "player", "contract": "1", "studio_id": u, "player": u,
+                                            "player_name": "x", "made": 1, "calls": {"member": "evil.json", "size": 1, "sha256": "0" * 64}},
+            "bundle.answers.schema.json": {"requests": [], "unpublished": {}, "applied": {"requests": ["nope"], "flags": [], "plays": []}},
+            "bundle.calls.schema.json": {"requests": [], "flags": [], "plays": [], "have": {"a.mp4": 5}},
         }
         self.assertEqual(sorted(bad), sorted(os.listdir(S.SCHEMAS)))
         for n, d in bad.items():

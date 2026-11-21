@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:encore-studio:contract:bundle.calls.schema.json",
+  "title": "Sync bundle (§2.7), player -> Studio: calls.json",
+  "description": "requests: POST /api/encore/requests bodies (requests.post.request); flags: POST /api/encore/flags bodies (flags.post.request); plays: the items of POST /api/encore/plays (plays.post.request) - each checked against that schema.",
+  "type": "object",
+  "required": [
+    "requests",
+    "flags",
+    "plays",
+    "have"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "requests": {
+      "type": "array",
+      "maxItems": 20000,
+      "items": {
+        "type": "object"
+      }
+    },
+    "flags": {
+      "type": "array",
+      "maxItems": 20000,
+      "items": {
+        "type": "object"
+      }
+    },
+    "plays": {
+      "type": "array",
+      "maxItems": 100000,
+      "items": {
+        "type": "object"
+      }
+    },
+    "have": {
+      "type": "object",
+      "maxProperties": 200000,
+      "additionalProperties": {
+        "type": "string",
+        "maxLength": 80
+      },
+      "description": "library path -> the §2.0b ETag the player has (its library sync's record)"
+    }
+  }
+}

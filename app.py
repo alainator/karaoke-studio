@@ -14,7 +14,7 @@ import logging, logging.handlers
 import unicodedata, urllib.error, urllib.parse, urllib.request
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -27,6 +27,7 @@ import catalog  # noqa: E402
 import trimtools  # noqa: E402
 import videoswap  # noqa: E402
 import encore  # noqa: E402
+import bundle  # noqa: E402
 import pitch as pitchmod  # noqa: E402
 import guidevocals  # noqa: E402
 import schemalite  # noqa: E402
@@ -635,6 +636,24 @@ async def set_offset(jid: str, req: Request):
         job["offset"] = round(off, 2)
         save(jid, job)
     return {"offset": job["offset"]}
+
+
+@app.post("/api/jobs/{jid}/backing")
+async def set_backing(jid: str, req: Request):
+    """{on: bool}: "Keep backing vocals": the next make or remake takes only the lead singer out of the music (the
+    harmonies and choirs stay; the guide vocals are the lead only). Nothing changes until it's remade."""
+    check_origin(req)
+    on = bool((await req.json()).get("on"))
+    with lock:
+        job = load(jid)
+        if job.get("status") not in ("done", "failed"):
+            raise HTTPException(409, "wait until it's finished")
+        job["keep_backing"] = on
+        job.setdefault("log", []).append("backing vocals: " + ("kept in the music (from the next remake)" if on else "taken out with the lead (from the next remake)"))
+        _edited(jid, job, agents.actor_of(req), "keep backing vocals " + ("on" if on else "off"))
+        save(jid, job)
+    log.info("job %s: keep backing vocals %s", jid, "on" if on else "off")
+    return {"keep_backing": on}
 
 
 @app.post("/api/jobs/{jid}/display")
@@ -3602,16 +3621,21 @@ def encore_hello(req: Request):
 @_guard
 async def encore_request(req: Request):
     b = await _body(req, "requests.post.request.schema.json")
+    return apply_request(req.state.player, b)
+
+
+def apply_request(player, b):
+    """A song request (§2.2), from the API or a sync bundle (§2.7: those come without auto). Idempotent by rid."""
     old = STORE.get_request(b["rid"])
     if old:
         return json.loads(old["answer"])
     st, jid, sid, base = match_song(b.get("artist") or "", b["title"])
-    ans, new = STORE.add_request(req.state.player, b, (st, jid, sid, base))
+    ans, new = STORE.add_request(player, b, (st, jid, sid, base))
     if new:
         if jid and st in ("ready", "making"):
             link_request(jid, b["rid"])
         elif b.get("auto") and st == "open":  # party auto-make (§2.2b): taken only if the admin allows it for this player
-            ans = automake_take(req.state.player, b, ans)
+            ans = automake_take(player, b, ans)
         log.info("players: request %s… %r - %r from %s: %s", b["rid"][:8], b.get("artist"), b["title"], b["by"], st)
     return ans
 
@@ -3642,6 +3666,11 @@ def encore_requests(req: Request, rids: str = "", since: str = ""):
 @_guard
 async def encore_flag(req: Request):
     b = await _body(req, "flags.post.request.schema.json")
+    return apply_flag(req.state.player, b)
+
+
+def apply_flag(player, b):
+    """A lyric flag (§2.3), from the API or a sync bundle. Idempotent by fid."""
     old = STORE.get_flag(b["fid"])
     if old:
         return {"fid": b["fid"], "status": old["status"]}
@@ -3649,7 +3678,7 @@ async def encore_flag(req: Request):
     with lock:
         if STORE.get_flag(b["fid"]):  # the same flag arrived twice at once
             return {"fid": b["fid"], "status": STORE.get_flag(b["fid"])["status"]}
-        STORE.add_flag(req.state.player, b, st, job=jid, version=version, mapped=idx)
+        STORE.add_flag(player, b, st, job=jid, version=version, mapped=idx)
         _FC["at"] = 0
         if st == "marked" and idx is not None:
             try:
@@ -3665,13 +3694,18 @@ async def encore_flag(req: Request):
 @_guard
 async def encore_plays(req: Request):
     b = await _body(req, "plays.post.request.schema.json")
+    return apply_plays(req.state.player, b["plays"])
+
+
+def apply_plays(player, plays):
+    """Plays (§2.4), from the API or a sync bundle. Idempotent by pid."""
     cv = catalog_view()
 
     def duration_of(sid, base):
         e = (cv["by_base"].get(base) or (None,))[0] or cv["by_id"].get(sid)
         return (e or {}).get("duration")
     before = STORE.q("select count(*) from plays where counted=1")[0][0]
-    n = STORE.add_plays(req.state.player, b["plays"], duration_of)
+    n = STORE.add_plays(player, plays, duration_of)
     if STORE.q("select count(*) from plays where counted=1")[0][0] != before:
         catalog_soon()
     return {"stored": n}
@@ -3712,6 +3746,10 @@ def encore_profile_export(uid: str, req: Request):
 @app.get("/api/encore/unpublished")
 @_guard
 def encore_unpublished(req: Request):
+    return unpublished_view()
+
+
+def unpublished_view():
     songs = [{"job": j["id"], "artist": j["artist"], "title": j["title"], "made": j.get("finished") or j.get("created") or 0}
              for j in job_index() if j["status"] == "done" and not j.get("published")]
     songs.sort(key=lambda s: -s["made"])
@@ -3859,6 +3897,11 @@ def encore_catalog(req: Request):
 TYPES = {".mp4": "video/mp4", ".m4a": "audio/mp4", ".ass": "text/plain; charset=utf-8", ".json": "application/json"}
 
 
+def file_etag(path, st):
+    """A library file's §2.0b ETag (also what sync bundles carry, so a player's next network sync agrees)."""
+    return '"' + hashlib.sha256(f"{path}|{st.st_size}|{st.st_mtime_ns}".encode()).hexdigest()[:24] + '"'
+
+
 @app.get("/api/encore/files/{path:path}")
 @_guard
 def encore_file(path: str, req: Request):
@@ -3870,7 +3913,7 @@ def encore_file(path: str, req: Request):
     if not full.startswith(root + os.sep) or not os.path.isfile(full):
         raise EncoreError(404, "not found")
     st = os.stat(full)
-    etag = '"' + hashlib.sha256(f"{path}|{st.st_size}|{st.st_mtime_ns}".encode()).hexdigest()[:24] + '"'
+    etag = file_etag(path, st)
     h = {"ETag": etag, "Cache-Control": "no-cache", "Accept-Ranges": "bytes"}
     if _etag_match(req, etag):
         return Response(status_code=304, headers=h)
@@ -3890,6 +3933,143 @@ def players_list():
     return {"players": STORE.players(), "code": STORE.code_state(), "address": C.ENCORE_STUDIO_ADDRESS,
             "studio_name": C.STUDIO_NAME, "contract": encore.CONTRACT, "studio": encore.VERSION,
             "preset": bool(C.ENCORE_TOKEN)}
+
+
+# ---- sync bundles (§2.7, bundle.py): Players -> Export for <player> / Import a bundle. Admin only (the web app);
+# the players-only network never reaches these (ENCORE_ONLY_NETS: /api/encore/ only). ----
+HASHES = bundle.Hashes(os.path.join(C.DATA, "bundle-hashes.db"))
+EXPORTS = {}            # player -> {"state": hashing|ready|failed, "done", "total", "plan", "error", "at"}
+PART_GB_MIN = 0.5
+
+
+def _export_answers(player):
+    rows = STORE.requests(player=player, since=time.time() - bundle.KEEP_DAYS * 86400)
+    rows.sort(key=lambda r: r["updated"])
+    return {"requests": [STORE.public_request(r) for r in rows], "unpublished": unpublished_view(),
+            "applied": STORE.applied_ids(player, bundle.KEEP_DAYS)}
+
+
+@app.post("/api/players/{player}/export")
+async def players_export_prepare(player: str, req: Request):
+    """{everything: bool, part_gb: number or null}: work out the bundle (hashing new library files first; a job)."""
+    check_origin(req)
+    if not STORE.key_hash(player):
+        raise HTTPException(404, "no such linked player")
+    b = await req.json()
+    everything = bool(b.get("everything"))
+    pg = b.get("part_gb")
+    part_bytes = None
+    if pg not in (None, "", 0):
+        try:
+            pg = float(pg)
+        except (TypeError, ValueError):
+            raise HTTPException(400, "part_gb is a number")
+        if not PART_GB_MIN <= pg <= 1000:
+            raise HTTPException(400, f"parts are at least {PART_GB_MIN} GB")
+        part_bytes = int(pg * 1e9)
+    cur = EXPORTS.get(player)
+    if cur and cur["state"] == "hashing":
+        return players_export_view(player)
+    job = {"state": "hashing", "done": 0, "total": 0, "plan": None, "error": None, "at": time.time()}
+    EXPORTS[player] = job
+
+    def work():
+        try:
+            if not os.path.exists(os.path.join(LIB, catalog.CATALOG)):
+                update_catalog()
+            cat_bytes = open(os.path.join(LIB, catalog.CATALOG), "rb").read()
+            prog = lambda d, t: job.update(done=d, total=t)
+            job["plan"] = bundle.plan(player, STORE.studio_id(), C.STUDIO_NAME or "Karaoke Studio", LIB, cat_bytes,
+                                      _export_answers(player), catalog.files_of, file_etag, HASHES,
+                                      have=None if everything else STORE.get_have(player), everything=everything,
+                                      part_bytes=part_bytes, progress=prog)
+            job["state"] = "ready"
+            v = job["plan"].view()
+            log.info("players: bundle for %s ready: %d song(s) in %d part(s)", player[:8], v["songs"], len(v["parts"]))
+        except Exception as e:
+            job.update(state="failed", error=str(e) if isinstance(e, bundle.BundleError) else "the Studio hit an error; it's in its log")
+            log.exception("players: bundle for %s failed", player[:8])
+    threading.Thread(target=work, daemon=True).start()
+    return players_export_view(player)
+
+
+@app.get("/api/players/{player}/export")
+def players_export_view(player: str):
+    job = EXPORTS.get(player)
+    if not job:
+        return {"state": None}
+    out = {k: job[k] for k in ("state", "done", "total", "error", "at")}
+    if job["plan"]:
+        k = bundle.key(STORE.key_hash(player) or "00")
+        out |= job["plan"].view()
+        for p in out["parts"]:
+            p["bytes"] = job["plan"].size(p["part"] - 1, k)
+    return out
+
+
+@app.get("/api/players/{player}/export/{part}")
+def players_export_download(player: str, part: int):
+    """One part of the prepared bundle, as a download with its exact length."""
+    job = EXPORTS.get(player)
+    kh = STORE.key_hash(player)
+    if not job or job["state"] != "ready" or not kh:
+        raise HTTPException(409, "prepare the export first")
+    plan = job["plan"]
+    if not 1 <= part <= len(plan.parts):
+        raise HTTPException(404, "no such part")
+    k = bundle.key(kh)
+    name = re.sub(r"[^A-Za-z0-9._-]+", "-", (STORE.player_names().get(player) or "player"))[:40].strip("-") or "player"
+    n = len(plan.parts)
+    fname = f"{name}-{time.strftime('%Y%m%d', time.localtime(plan.made))}{f'-part-{part}-of-{n}' if n > 1 else ''}.karaoke-sync.tar"
+    log.info("players: bundle part %d/%d for %s downloading (%d bytes)", part, n, player[:8], plan.size(part - 1, k))
+    return StreamingResponse(plan.stream(part - 1, k), media_type="application/x-tar",
+                             headers={"Content-Length": str(plan.size(part - 1, k)),
+                                      "Content-Disposition": f'attachment; filename="{fname}"', "Cache-Control": "no-store"})
+
+
+@app.post("/api/players/import")
+async def players_import(req: Request):
+    """A player's bundle (the raw tar as the body): its requests, flags and plays, as if it had sent them."""
+    check_origin(req)
+    try:
+        if int(req.headers.get("content-length") or 0) > bundle.UPLOAD_MAX:
+            raise HTTPException(413, "that's far too big for a player's bundle")
+    except ValueError:
+        raise HTTPException(400, "bad Content-Length")
+    data = await req.body()
+
+    def key_for(p):
+        kh = STORE.key_hash(p) if isinstance(p, str) and (p == encore.PRESET or encore.UUID_RE.match(p)) else None
+        return bundle.key(kh) if kh else None
+    try:
+        player, m, calls = bundle.read_player(data, key_for, STORE.studio_id(), schemalite.errors)
+    except bundle.BundleError as e:
+        log.info("players: a bundle was refused: %s", e)
+        raise HTTPException(400, str(e))
+    bad = []
+    for kind, schema in (("requests", "requests.post.request.schema.json"), ("flags", "flags.post.request.schema.json")):
+        for x in calls[kind]:
+            bad += schemalite.errors(schema, x)[:1]
+    if calls["plays"]:   # (the API's schema wants at least one: a bundle may have none)
+        bad += schemalite.errors("plays.post.request.schema.json", {"plays": calls["plays"]})[:1]
+    if bad:
+        raise HTTPException(400, "the bundle's items aren't right: " + "; ".join(bad[:3]))
+    got = {"requests": 0, "flags": 0, "plays": 0}
+    for b in calls["requests"]:
+        b = {k: v for k, v in b.items() if k not in ("auto", "queue")}   # §2.7: never made by itself from a stick
+        apply_request(player, b)
+        got["requests"] += 1
+    for b in calls["flags"]:
+        apply_flag(player, b)
+        got["flags"] += 1
+    for i in range(0, len(calls["plays"]), 200):
+        got["plays"] += apply_plays(player, calls["plays"][i:i + 200])["stored"]
+    STORE.set_have(player, calls["have"])
+    STORE.seen(player)
+    log.info("players: bundle from %s imported: %d request(s), %d flag(s), %d play(s)", player[:8], got["requests"],
+             got["flags"], len(calls["plays"]))
+    return {"player": player, "player_name": STORE.player_names().get(player) or m.get("player_name"), "made": m["made"],
+            "requests": got["requests"], "flags": got["flags"], "plays": len(calls["plays"]), "have": len(calls["have"])}
 
 
 @app.post("/api/players/code")

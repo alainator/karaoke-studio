@@ -20,6 +20,10 @@ fixtures/api/NN-name.json: {"name", "about", "request": {method, path, headers, 
   headers (only ETag, Content-Range, Accept-Ranges, Retry-After), body, schema}}; a body {"$file": path} is that fixture
   file (with "$range": [first, last] the bytes of it). The bearer token shows as "<token from pairing>". A request
   whose headers carry what describes the body (§2.9 words scoring) also names a "headers_schema".
+fixtures/bundles/ (§2.7): sync bundles made by the Studio's own bundle code for the fixture player: studio-to-player.tar
+  (everything, one part), studio-to-player-part-<i>-of-3.tar (one song a part), player-to-studio.tar (a request, a flag,
+  a play and its `have`, made to the spec and imported here to check the Studio takes it), key.json (the fixture
+  player's made-up token, so a player's tests can make the key; never a real one).
 fixtures/audio/sung.ogg: the §2.9 recording, made-up "singing" (a 330 Hz tone on the words a singer sang, silence
   elsewhere; 8 s of Opus, 8.7 KB, made once with ffmpeg and kept below). The words aligner is tests/fake_wordscore.py
   (a word is heard where the recording is loud) and the song has no real vocals to compare with, so every word is judged.
@@ -325,7 +329,52 @@ def ex(n, name, about, method, path, body=None, schema=None, res_schema=None, he
 
 
 TOKEN = None
+BUNDLES = {}     # §2.7: file name -> bytes
 MASKED = set()   # other players' tokens from pairing, shown as TOKEN_SHOWN too
+
+
+def make_bundles():
+    """§2.7 sync bundles for the fixture player (still linked here), with the Studio's own code."""
+    import bundle, hashlib, io
+    out = {}
+    k = bundle.key(A.STORE.key_hash(PLAYER))
+    cat = open(os.path.join(A.LIB, "catalog.json"), "rb").read()
+    common = dict(player=PLAYER, studio_id=A.STORE.studio_id(), studio_name="Karaoke Studio", lib=A.LIB, cat_bytes=cat,
+                  answers=A._export_answers(PLAYER), files_of=A.catalog.files_of, etag_of=A.file_etag, hashes=A.HASHES,
+                  everything=True, now=CLOCK[0])
+    one = bundle.plan(**common)
+    out["studio-to-player.tar"] = b"".join(one.stream(0, k))
+    parts = bundle.plan(**dict(common, part_bytes=1))
+    assert len(parts.parts) == 3, len(parts.parts)
+    for i in range(3):
+        out[f"studio-to-player-part-{i + 1}-of-3.tar"] = b"".join(parts.stream(i, k))
+    m = json.loads(one.built(0, k)[0])
+    song0 = json.loads(cat)["songs"][0]
+    calls = {"requests": [{"rid": "0c8d7e6f-5a4b-4c3d-9e2f-1a0b9c8d7e6f", "artist": "Velvet Comets", "title": "Midnight Ferry",
+                           "note": "from the stick", "by": "Ken", "party": "Cabin weekend", "at": int(CLOCK[0])}],
+             "flags": [{"fid": "1d9e8f7a-6b5c-4d4e-8f3a-2b1c0d9e8f7a", "id": song0["id"],
+                        "base": song0["base"], "t": None, "line": None, "kind": "words", "note": "",
+                        "by": "Ken", "party": "Cabin weekend", "at": int(CLOCK[0])}],
+             "plays": [{"pid": "2e0f9a8b-7c6d-4e5f-9a4b-3c2d1e0f9a8b", "id": song0["id"],
+                        "base": song0["base"], "at": int(CLOCK[0]), "seconds": 30, "result": "finished",
+                        "singers": 1, "style": "classic", "party": "Cabin weekend"}],
+             "have": {f["path"]: f["etag"] for f in m["files"]}}
+    raw = json.dumps(calls, ensure_ascii=False, separators=(",", ":")).encode()
+    man = json.dumps({"bundle": 1, "kind": "player", "contract": "1", "studio_id": A.STORE.studio_id(), "player": PLAYER,
+                      "player_name": "Encore on kit-01", "made": CLOCK[0],
+                      "calls": {"member": "calls.json", "size": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}},
+                     separators=(",", ":")).encode()
+    buf = io.BytesIO()
+    for name, data in (("manifest.json", man), ("manifest.sig", bundle.sign(k, man).encode()), ("calls.json", raw)):
+        buf.write(bundle.header(name, len(data), CLOCK[0]) + data + b"\0" * bundle.pad(len(data)))
+    buf.write(b"\0" * 1024)
+    out["player-to-studio.tar"] = buf.getvalue()
+    st, _, b = call(A.app, "POST", "/api/players/import", out["player-to-studio.tar"], {"Content-Type": "application/x-tar"})
+    assert st == 200 and json.loads(b)["requests"] == 1, b
+    out["key.json"] = (json.dumps({"about": "Made-up fixture values (never a real link): the fixture player's token, so a player's "
+                                            "tests can make the §2.7 key.", "player": PLAYER, "token": TOKEN,
+                                   "studio_id": A.STORE.studio_id()}, indent=2) + "\n").encode()
+    return out
 
 
 def main():
@@ -661,12 +710,19 @@ def main():
     ex(44, "profiles-sync-score-relayed", "§2.6: the home Encore gets the scored history event exactly as it was sent.", "POST",
        "/api/encore/profiles/sync", {"player": HOME, "since": None, "events": []}, sreq, sres, auth=HOME_TOKEN, expect=200)
 
+    BUNDLES.update(make_bundles())
+
     CLOCK[0] += 60
     ex(21, "unpair", "Unlink from Encore's side (the token stops working).", "POST", "/api/encore/unpair", {},
        "unpair.request.schema.json", "unpair.response.schema.json", expect=200)
 
     # ---- write
     lib_out, api_out, audio_out = os.path.join(OUT, "library"), os.path.join(OUT, "api"), os.path.join(OUT, "audio")
+    bundles_out = os.path.join(OUT, "bundles")
+    shutil.rmtree(bundles_out, ignore_errors=True)
+    os.makedirs(bundles_out)
+    for name, data in sorted(BUNDLES.items()):
+        open(os.path.join(bundles_out, name), "wb").write(data)
     for d in (lib_out, api_out, audio_out):
         shutil.rmtree(d, ignore_errors=True)
     os.makedirs(os.path.join(lib_out, "Music Videos"))

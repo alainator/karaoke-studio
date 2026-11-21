@@ -48,6 +48,7 @@ ROUTES = [
     (("POST",), J + r"/lines/undo", "edit"),
     (("POST",), J + r"/offset", "edit"),
     (("POST",), J + r"/display", "edit"),
+    (("POST",), J + r"/backing", "edit"),
     (("POST",), J + r"/chinese-reading", "edit"),
     (("POST",), J + r"/rename", "edit"),                    # (a published song: publish too, see app.rename)
     (("POST",), J + r"/detect-singers", "edit"),            # (suggestions only, nothing saved)

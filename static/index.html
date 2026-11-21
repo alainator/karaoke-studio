@@ -754,6 +754,7 @@ async function openJob(id) {
       <span class="row">${gpuMenu("gpupick2")}<button class="primary" id="remake">↻ Remake with the latest version</button></span></div>
       <ul style="margin:6px 0 0 18px;padding:0">${j.updates.map(u => `<li>${esc(u)}</li>`).join("")}</ul>
       <div class="hint" style="margin-top:6px">Takes 1–2 minutes. ${j.edited ? "Your edits are kept: lines you moved by hand keep your timing, other lines get the new timing with your singers, colours and word fixes, and if the remake finds nothing to change, your version stays exactly as it is. <i>Undo remake</i> brings back this version if you prefer it" : "The new timing replaces this one"}${j.published ? "; publish it afterwards to update PiKaraoke" : ""}.</div></div>` : ""}
+    ${j.status === "done" ? backingBox(j) : ""}
     ${j.can_undo_remake ? `<div class="aibox" style="margin-bottom:12px"><div class="row" style="justify-content:space-between">
       <span><b>Remade with the latest version</b>${j.remake_note ? `: ${esc(j.remake_note)}` : ""}.</span>
       <button class="ghost" id="undoremake" title="Put back the lyrics this song had before the remake">Undo remake</button></div></div>` : ""}
@@ -818,6 +819,15 @@ async function openJob(id) {
     if (ed && ed.dirty && !confirm("You have unsaved edits; remaking replaces the timing. Remake anyway?")) return;
 
     try { await api(`/api/jobs/${id}/remake`, {method: "POST", body: JSON.stringify({gpu: ($("#gpupick2") || {}).value || null})}); if (ed) ed.dirty = false; closePlayer(); ed = null; openJob(id); loadJobs(); }
+    catch (e) { toast(e.message); }
+  };
+  if ($("#keepbacking")) $("#keepbacking").onchange = async e => {
+    try { await api(`/api/jobs/${id}/backing`, {method: "POST", body: JSON.stringify({on: e.target.checked})}); openJob(id); }
+    catch (err) { toast(err.message); e.target.checked = !e.target.checked; }
+  };
+  if ($("#remakebk")) $("#remakebk").onclick = async () => {
+    if (ed && ed.dirty && !confirm("You have unsaved edits; remaking replaces the timing. Remake anyway?")) return;
+    try { await api(`/api/jobs/${id}/remake`, {method: "POST", body: JSON.stringify({gpu: null})}); if (ed) ed.dirty = false; closePlayer(); ed = null; openJob(id); loadJobs(); }
     catch (e) { toast(e.message); }
   };
   if ($("#undoremake")) $("#undoremake").onclick = async () => {
@@ -1778,6 +1788,17 @@ async function pickHave(r) {
   inp.oninput = draw; draw(); inp.focus();
 }
 
+// ---------- "Keep backing vocals" (pipeline 3b): the song's switch, applied by a remake ----------
+function backingBox(j) {
+  const on = !!j.keep_backing, now = !!(j.result && j.result.backing);
+  const stale = on !== now;
+  return `<div class="ctl" style="margin-bottom:12px"><div class="row" style="justify-content:space-between;gap:12px">
+      <label class="switch" title="Only the lead singer is taken out of the music: backing vocals, choirs and harmonies stay"><input type="checkbox" id="keepbacking" ${on ? "checked" : ""}> <b>Keep backing vocals</b></label>
+      ${stale ? `<button class="primary sm" id="remakebk">↻ Remake to ${on ? "keep" : "remove"} them</button>` : ""}</div>
+    <div class="hint" style="margin-top:4px">${now ? "This video keeps the backing vocals in the music; the guide vocals are the lead singer only." : "This video takes every voice out (lead and backing)."}
+      ${stale ? (on ? " Turned on: remake to put the backing vocals back (the lyric timing stays as it is; your edits are kept)." : " Turned off: remake to take them out again.") : " Turn it on for songs whose choir or \"aah\"s belong in the music; listen afterwards: a doubled lead can be mistaken for backing."}</div></div>`;
+}
+
 // ---------- players: connect (pair) and linked players ----------
 let PL = {timer: null, code: null, expires: 0, address: ""};
 async function loadPlayers() {
@@ -1806,9 +1827,14 @@ function renderPlayers(d) {
         <td>${esc(ago(p.last_seen))}</td><td class="c-opt">${esc(p.encore || "?")}</td><td class="c-opt">${p.backlog == null ? '<span class="hint">not reported</span>' : p.backlog ? `${p.backlog} item${p.backlog === 1 ? "" : "s"}` : "nothing"}</td>
         <td class="c-opt">${esc(whenT(p.created))}</td>
         <td><label class="switch" title="Its parties may have missing songs made and published by the studio (Party auto-make below must be on too)"><input type="checkbox" data-am="${esc(p.player)}" ${p.automake ? "checked" : ""}><span class="hint">${p.automake ? "yes" : "no"}</span></label></td>
-        <td>${p.preset ? "" : `<button class="ghost danger sm" data-unlink="${esc(p.player)}" data-name="${esc(p.name)}">Unlink</button>`}</td></tr>`).join("")}</tbody></table>`
+        <td><button class="ghost sm" data-export="${esc(p.player)}" data-name="${esc(p.name)}" title="Songs and answers for this player on a USB stick (no network needed)">Export…</button>
+          ${p.preset ? "" : `<button class="ghost danger sm" data-unlink="${esc(p.player)}" data-name="${esc(p.name)}">Unlink</button>`}</td></tr>`).join("")}</tbody></table>`
       : `<div class="empty">No players linked yet. <b>Connect a player</b> above.</div>`}
     <p class="hint">Unlink stops a player's key at once: it then shows "This Studio unlinked us; link again" and keeps what it hadn't sent.</p>
+    <h2>No network? A USB stick</h2>
+    <div class="ctl"><div class="hint">A player that can't reach the studio (a kit at a party far away) syncs by stick: <b>Export…</b> on its row makes a file with the songs it doesn't have yet and its requests' answers; copy it to a stick, and the player imports it (station → System → USB stick). The player writes its own file back (its requests, lyric flags and plays): import that here. Each file only works for its player's link. Profiles only sync over the network.</div>
+      <div id="bundlebox">${bundleBox()}</div>
+      <div class="row" style="margin-top:10px"><label class="ghost sm" style="cursor:pointer">Import a player's bundle…<input type="file" id="bundlein" accept=".tar,.karaoke-sync.tar" style="display:none"></label><span class="hint" id="bundlemsg">${esc(PL.importMsg || "")}</span></div></div>
     <h2>Party auto-make</h2><div id="automake"><div class="hint">Loading…</div></div>
     <h2>Singer profiles</h2><div id="profiles"><div class="hint">Loading…</div></div>`;
   loadProfiles();
@@ -1823,6 +1849,19 @@ function renderPlayers(d) {
     catch (e) { toast(e.message); }
   };
   if ($("#nocode")) $("#nocode").onclick = async () => { try { await api("/api/players/code", {method: "DELETE"}); } catch {} PL.code = null; loadPlayers(); };
+  document.querySelectorAll("[data-export]").forEach(b => b.onclick = () => { PL.exp = {player: b.dataset.export, name: b.dataset.name, view: null}; loadPlayers(); });
+  wireBundleBox();
+  $("#bundlein").onchange = async e => {
+    const f = e.target.files[0]; if (!f) return;
+    PL.importMsg = "Importing…"; $("#bundlemsg").textContent = PL.importMsg;
+    try {
+      const r = await fetch("/api/players/import", {method: "POST", headers: {"Content-Type": "application/x-tar"}, body: f});
+      let b; try { b = await r.json(); } catch { b = {}; }
+      if (!r.ok) throw new Error(b.detail || `HTTP ${r.status}`);
+      PL.importMsg = `From ${b.player_name || "the player"}: ${b.requests} request(s), ${b.flags} lyric flag(s), ${b.plays} play(s). Its next export carries only what it's missing.`;
+    } catch (err) { PL.importMsg = "Not imported: " + err.message; }
+    loadPlayers();
+  };
   document.querySelectorAll("[data-unlink]").forEach(b => b.onclick = async () => {
     if (!confirm(`Unlink “${b.dataset.name}”? It stops sending and receiving at once (it can be linked again with a new code).`)) return;
     try { await api("/api/players/" + encodeURIComponent(b.dataset.unlink), {method: "DELETE"}); toast("Unlinked"); } catch (e) { toast(e.message); }
@@ -1834,6 +1873,47 @@ function renderPlayers(d) {
     el.textContent = codeLeft();
     if (PL.expires <= Date.now() / 1000 || Math.round(Date.now() / 1000) % 5 === 0) loadPlayers();  // used or expired: the list shows the new player
   }, 1000);
+}
+
+// ---------- sync bundles (bundle.py; contract §2.7): Export for a player ----------
+const GB = n => n >= 1e9 ? (n / 1e9).toFixed(2) + " GB" : Math.max(1, Math.round(n / 1e6)) + " MB";
+function bundleBox() {
+  const x = PL.exp;
+  if (!x) return "";
+  const v = x.view;
+  let h = `<div class="aibox" style="margin-top:10px"><div class="row" style="justify-content:space-between"><b>Export for ${esc(x.name)}</b><button class="ghost sm" id="bxclose">Close</button></div>`;
+  if (!v || !v.state || v.state === "failed") {
+    h += `${v && v.state === "failed" ? `<div style="color:var(--bad)">${esc(v.error || "It didn't work")}</div>` : ""}
+      <div class="row" style="margin-top:8px;gap:16px"><label><input type="checkbox" id="bxall"> Everything (not only what it doesn't have yet)</label>
+      <label>Files: <select id="bxpart"><option value="">one file (exFAT or NTFS stick)</option><option value="3.9">parts of 3.9 GB (FAT32 stick)</option></select></label>
+      <button class="primary sm" id="bxgo">Prepare</button></div>
+      <div class="hint">The first export reads every song file once (to fingerprint it); later ones only read new files.</div>`;
+  } else if (v.state === "hashing") {
+    h += `<div class="hint" style="margin-top:8px">Preparing… ${v.total ? Math.floor(100 * v.done / v.total) + "% of the files checked" : ""}</div>`;
+  } else {
+    h += `<div class="hint" style="margin-top:6px">${v.songs} song(s) to carry, in ${v.parts.length} file(s). Save each one onto the stick (keep the names):</div>
+      <div style="margin-top:6px">${v.parts.map(p => `<div><a href="/api/players/${encodeURIComponent(x.player)}/export/${p.part}" download>${v.parts.length > 1 ? `Part ${p.part} of ${v.parts.length}` : "The bundle"}</a> <span class="hint">${GB(p.bytes)}, ${p.songs} song(s)</span></div>`).join("")}</div>
+      <div class="hint" style="margin-top:6px">Its catalog is the one from when you pressed Prepare. <button class="ghost sm" id="bxagain">Prepare again</button></div>`;
+  }
+  return h + "</div>";
+}
+function wireBundleBox() {
+  const x = PL.exp; if (!x) return;
+  if ($("#bxclose")) $("#bxclose").onclick = () => { PL.exp = null; clearTimeout(PL.expTimer); loadPlayers(); };
+  if ($("#bxagain")) $("#bxagain").onclick = () => { x.view = null; $("#bundlebox").innerHTML = bundleBox(); wireBundleBox(); };
+  if ($("#bxgo")) $("#bxgo").onclick = async () => {
+    try {
+      x.view = await api(`/api/players/${encodeURIComponent(x.player)}/export`, {method: "POST", body: JSON.stringify({everything: $("#bxall").checked, part_gb: $("#bxpart").value ? Number($("#bxpart").value) : null})});
+      pollExport();
+    } catch (e) { toast(e.message); }
+  };
+}
+async function pollExport() {
+  const x = PL.exp; if (!x) return;
+  try { x.view = await api(`/api/players/${encodeURIComponent(x.player)}/export`); } catch (e) { x.view = {state: "failed", error: e.message}; }
+  if ($("#bundlebox")) { $("#bundlebox").innerHTML = bundleBox(); wireBundleBox(); }
+  clearTimeout(PL.expTimer);
+  if (x.view && x.view.state === "hashing") PL.expTimer = setTimeout(pollExport, 1000);
 }
 
 // ---------- party auto-make (automake.py; contract §2.2b): the studio-wide switch and its limits ----------

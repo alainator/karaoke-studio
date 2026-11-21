@@ -87,8 +87,8 @@ kit) syncs it over the API:
 - `GET /api/encore/catalog` → catalog.json (ETag / If-None-Match).
 - `GET /api/encore/files/<path>` → a file listed in the catalog (mp4, ass, words.json, pitch.json, vocals.m4a), with HTTP range
   support and ETag; only paths the catalog references are served.
-The kit downloads new or changed files into its own library when online (the kit phase builds the syncing; the
-Studio side serves these now).
+The kit downloads new or changed files into its own library when online (built 2026-11-21: Encore's library sync,
+its README "Library sync"): only paths the catalog names, each with If-None-Match / Range + If-Range on its ETag.
 
 Every write carries a client-made id (`rid`, `fid`, `pid`: a UUID made by Encore) so retries are safe: sending the
 same id twice changes nothing and returns the same answer. Encore keeps unsent items in an outbox and retries with
@@ -304,32 +304,82 @@ the Studio)" is on. The Studio keeps the audio in memory only while scoring (it 
 through pipes; no temp file), never stores it with the song, never logs it, and drops it as soon as the job is done,
 fails, is found busy or waits too long (10 minutes).
 
-### 2.7 Transports and sync bundles (planned: kit phase)
+### 2.7 Transports and sync bundles
 The Studio can be any PC (Linux, Windows, macOS with Docker; an NVIDIA GPU only for making songs) and doesn't have to
 be on all the time; the kit works disconnected. So syncing doesn't depend on how they connect:
 - **Network:** LAN, Tailscale or any VPN. On a LAN, the Studio announces itself over mDNS
-  (`_karaoke-studio._tcp`, TXT: name, contract, api URL) so Encore can offer it without typing an address.
+  (`_karaoke-studio._tcp`, TXT: name, contract, api URL) so Encore can offer it without typing an address. Songs come
+  down with §2.0b; requests, flags, plays and profiles go up with §2.2–2.6.
 - **Direct cable:** the kit's Ethernet port (or USB-C in network/gadget mode) runs DHCP; a PC plugged in gets an
   address and syncs as on a LAN. Joining the kit's hotspot works the same way.
-- **USB stick (no network at all):** sync bundles.
+- **USB stick (no network at all):** sync bundles, below (built 2026-11-21).
 
-One format for all of them: a **sync bundle** = everything new since the other side's last cursor.
+**Sync bundles.** One file each way, carried on a stick: the same data as the API, nothing more.
+- **Studio → player:** the Studio's web app, Players → *Export for <player>* (admin only, never on `/api/encore/`):
+  a download `<player>-<YYYYMMDD>[-part-<i>-of-<n>].karaoke-sync.tar`. Copied to the stick; the player imports it.
+- **Player → Studio:** the player writes `<player>-to-<studio>-<YYYYMMDD-HHMM>.karaoke-sync.tar` to the stick; the
+  Studio's web app imports it (Players → *Import a bundle*, an upload).
+- **Profiles (§2.6) and words scoring (§2.9) don't travel by stick:** profile events carry PIN hashes and recordings
+  are never stored. They wait for the network.
+
+**The file:** an uncompressed POSIX tar (ustar; member names under 100 bytes, no extended or GNU headers, so its size
+is known before it's written). Members, in this order:
+1. `manifest.json` (at most 4 MB);
+2. `manifest.sig`: 64 lower-case hex digits, HMAC-SHA256 over the exact bytes of `manifest.json` with the key
+   `K = HMAC-SHA256(key = bytes.fromhex(sha256(token)), msg = "karaoke-sync-bundle-v1")`. `token` is the player's
+   pairing token (§2.0): the player has it, the Studio keeps its sha256 (hex), so both can make K and nobody else can.
+   K, the token and its hash are never shown or logged;
+3. the other members the manifest names, each once (in any order).
+
+A reader refuses the whole file unless: the first two members are those, the signature is right for its link, the
+manifest's `bundle` is 1, its contract major matches, and `player` / `studio_id` are this link's. Then it reads the
+rest as a stream (never extracts the tar): only regular files with exactly the names the manifest lists, each exactly
+its `size` and `sha256`; a link, a device, an unlisted or a duplicate name, or a size over the cap refuses the file
+(what was applied before that point stays applied: every step is idempotent). Caps: manifest 4 MB, `catalog.json`
+16 MB, `answers.json` and `calls.json` 8 MB, a library file 4 GB. A file made for an older link (re-paired since) is
+refused as "made for an old link: export it again".
+
+**Studio → player** (`kind: "studio"`):
 ```
-bundle/
-  manifest.json   {"bundle": 1, "contract", "from": {"kind": "studio"|"encore", "id"}, "to": <player id or null>,
-                   "made": unix, "cursors": {...}, "files": [{"path", "size", "sha256"}], "sig": HMAC-SHA256 of the
-                   manifest without "sig", keyed with the pairing secret of that Studio⇄player link}
-  catalog.json    (Studio → Encore) the full catalog at that moment
-  files/...       (Studio → Encore) new or changed library files (mp4, ass, words, pitch)
-  events.jsonl    requests, flags, plays, profile events (§2.2–2.6), each with its idempotent id
+manifest.json  {"bundle": 1, "kind": "studio", "contract": "1", "studio_id": uuid, "studio_name": str, "player": uuid,
+                "made": unix, "part": [i, n],
+                "catalog": {"member": "catalog.json", "size", "sha256", "generated": the catalog's "generated"},
+                "answers": {"member": "answers.json", "size", "sha256"},
+                "files": [{"path": library path (§2.0b), "size", "sha256", "etag": the §2.0b ETag of that file,
+                           "member": "f/<sha256>" or null}]}
+catalog.json   the full catalog (§1), in every part
+answers.json   {"requests": [as GET /api/encore/requests: this player's requests updated in the last 90 days],
+                "unpublished": {as GET /api/encore/unpublished},
+                "applied": {"requests": [rid], "flags": [fid], "plays": [pid]}}   (ids from this player the Studio has
+                                                                                    stored, last 90 days)
+f/<sha256>     a library file's bytes (several paths with the same bytes: one member)
 ```
-- Studio: "Export for <player>" writes a bundle to a chosen folder (a USB stick); "Import from a player" reads an
-  Encore bundle and applies its events. Encore: on a stick with a bundle for it, imports (verifies sig + every file's
-  sha256, applies atomically, keeps the old file until the new one is verified) and writes its own outgoing bundle.
-- A bundle not signed by a linked Studio/player is refused. Bundles are idempotent and can be applied twice.
-- Over the network the same deltas move through the API (§2.0b files, §2.2–2.6 events); the bundle code and the API
-  share one implementation of "what changed since cursor X".
-- First sync of a big library: by cable/LAN (hundreds of GB); after that only changes move.
+- `files` lists every file of every song in the catalog (the §2.0b set). `member` is null for one this part doesn't
+  carry: the Studio leaves out what the player already has (its last `have`, below) unless the admin asks for
+  everything, and a part carries whole songs only (parts for FAT32 sticks: at most ~3.9 GB each; every part is a
+  complete, valid bundle with the same catalog and answers).
+- The player imports the songs whose files are all then on its drive (carried in this part, or already there with that
+  sha256 or that ETag), with §2.0b's rules: staged, moved in per song, `catalog.json` lists only complete songs, the
+  ETags recorded so the next network sync downloads nothing again. A catalog older (`generated`) than the newest it has
+  applied (from the network or a bundle) leaves its catalog and deletions alone; its files and answers still apply.
+- `answers` apply as if polled: request statuses as §2.2, made-not-published as §2.5, and every id in `applied` leaves
+  the player's outbox (sent).
+
+**Player → Studio** (`kind: "player"`):
+```
+manifest.json  {"bundle": 1, "kind": "player", "contract": "1", "studio_id": uuid, "player": uuid, "player_name": str,
+                "made": unix, "calls": {"member": "calls.json", "size", "sha256"}}
+calls.json     {"requests": [POST /api/encore/requests bodies], "flags": [POST /api/encore/flags bodies],
+                "plays": [the items of POST /api/encore/plays], "have": {library path: §2.0b ETag, ...}}
+```
+- Writing a bundle sends nothing: items stay in the player's outbox until the Studio's next bundle lists them in
+  `applied`, or the network delivers them (either way by their ids, so twice changes nothing). Plays held for a words
+  score (§2.9) wait until they're released.
+- The Studio applies them with the same handlers as the API, as that player, except that requests lose `auto` and
+  `queue` (§2.2b: a party is long over by the time a stick comes home: no song is made by itself). It keeps `have` for
+  that player's next export.
+- Schemas: `schemas/bundle.manifest.schema.json` (both kinds), `bundle.answers.schema.json`,
+  `bundle.calls.schema.json`. Fixtures: `fixtures/bundles/` (made by the Studio's own code with the fixture token).
 
 ### 2.8 Clarifications (settled 2026-11-20 after Encore's first build)
 1. Flag `line` = the words.json line's `i` value exactly as written there (1-based). `t` and `line` may both be null =

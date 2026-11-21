@@ -31,6 +31,10 @@ JOBS = env("KARAOKE_JOBS", os.path.join(HERE, "data", "jobs"))
 WORK = env("KARAOKE_WORK", os.path.join(HERE, "data", "work"))
 MODELS = env("KARAOKE_MODELS", os.path.join(HERE, "data", "models"))
 SEP_MODEL = env("KARAOKE_SEPARATION_MODEL", "model_bs_roformer_ep_317_sdr_12.9755.ckpt")
+# "Keep backing vocals" (a song's switch): a karaoke model splits the separated vocals into the lead and the backing
+# voices; the backing goes back into the music. Chosen by ear on A Cruel Angel's Thesis (2026-11-21): this one kept
+# the choir without the lead leaking in (bs_roformer_karaoke_frazer_becruily let some lead through).
+BACKING_MODEL = env("KARAOKE_BACKING_MODEL", "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt")
 WHISPER_MODEL = env("KARAOKE_WHISPER_MODEL", "large-v3")
 # the page's own address(es), for the Origin check on changes (comma-separated)
 ORIGINS = {o.strip().rstrip("/") for o in env("STUDIO_ORIGINS", "").split(",") if o.strip()}

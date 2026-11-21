@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:encore-studio:contract:bundle.answers.schema.json",
+  "title": "Sync bundle (§2.7), Studio -> player: answers.json",
+  "description": "requests: each item as in requests.get.response; unpublished: as unpublished.get.response (both checked against those schemas).",
+  "type": "object",
+  "required": [
+    "requests",
+    "unpublished",
+    "applied"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "requests": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "unpublished": {
+      "type": "object"
+    },
+    "applied": {
+      "type": "object",
+      "required": [
+        "requests",
+        "flags",
+        "plays"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "requests": {
+          "type": "array",
+          "maxItems": 100000,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          }
+        },
+        "flags": {
+          "type": "array",
+          "maxItems": 100000,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          }
+        },
+        "plays": {
+          "type": "array",
+          "maxItems": 100000,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          }
+        }
+      }
+    }
+  }
+}

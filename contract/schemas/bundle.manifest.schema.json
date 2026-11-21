@@ -1,0 +1,234 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:encore-studio:contract:bundle.manifest.schema.json",
+  "title": "Sync bundle (§2.7): manifest.json",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/studio"
+    },
+    {
+      "$ref": "#/$defs/player"
+    }
+  ],
+  "$defs": {
+    "studio": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bundle",
+        "kind",
+        "contract",
+        "studio_id",
+        "studio_name",
+        "player",
+        "made",
+        "part",
+        "catalog",
+        "answers",
+        "files"
+      ],
+      "properties": {
+        "bundle": {
+          "const": 1
+        },
+        "contract": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "studio_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "player": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "made": {
+          "type": "number"
+        },
+        "kind": {
+          "const": "studio"
+        },
+        "studio_name": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "part": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "integer",
+              "minimum": 1
+            }
+          ],
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "[i, n]: part i of n (1-based)"
+        },
+        "catalog": {
+          "type": "object",
+          "required": [
+            "member",
+            "size",
+            "sha256",
+            "generated"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "member": {
+              "const": "catalog.json"
+            },
+            "size": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "generated": {
+              "type": "number"
+            }
+          }
+        },
+        "answers": {
+          "type": "object",
+          "required": [
+            "member",
+            "size",
+            "sha256"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "member": {
+              "const": "answers.json"
+            },
+            "size": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        "files": {
+          "type": "array",
+          "maxItems": 200000,
+          "items": {
+            "type": "object",
+            "required": [
+              "path",
+              "size",
+              "sha256",
+              "etag",
+              "member"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 400,
+                "description": "A library path the catalog names (§2.0b), '/'-separated."
+              },
+              "size": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 4294967296
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "etag": {
+                "type": "string",
+                "maxLength": 80
+              },
+              "member": {
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^f/[0-9a-f]{64}$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "This part's member with the bytes, or null (not in this part)."
+              }
+            }
+          }
+        }
+      }
+    },
+    "player": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bundle",
+        "kind",
+        "contract",
+        "studio_id",
+        "player",
+        "player_name",
+        "made",
+        "calls"
+      ],
+      "properties": {
+        "bundle": {
+          "const": 1
+        },
+        "contract": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "studio_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "player": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "made": {
+          "type": "number"
+        },
+        "kind": {
+          "const": "player"
+        },
+        "player_name": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "calls": {
+          "type": "object",
+          "required": [
+            "member",
+            "size",
+            "sha256"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "member": {
+              "const": "calls.json"
+            },
+            "size": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        }
+      }
+    }
+  }
+}

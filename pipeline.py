@@ -401,6 +401,31 @@ if not (os.path.exists(vocals) and os.path.exists(inst)):
     os.replace(f"{WORK}/{tmp_}-inst.wav", inst)
     del sep
     os.remove(f"{w}.wav")
+# 3b. "Keep backing vocals" (the song's switch, job["keep_backing"]): a karaoke model splits the separated vocals into the
+# lead and the backing voices (cached per model). The music gets the backing back (choirs, "aah"s, harmonies stay); the
+# guide vocals are the lead only. The lyrics are still timed on the whole vocal track, as without it.
+inst_out, voc_out, backing_kept = inst, vocals, False
+if job.get("keep_backing"):
+    import hashlib  # noqa: E402
+    _tag = hashlib.sha1(C.BACKING_MODEL.encode()).hexdigest()[:8]
+    lead, backing, inst_bk = f"{WORK}/{yt}-lead.{_tag}.wav", f"{WORK}/{yt}-backing.{_tag}.wav", f"{WORK}/{yt}-inst-backing.{_tag}.wav"
+    if not (os.path.exists(lead) and os.path.exists(backing)):
+        say("info", "splitting the backing vocals from the lead")
+        from audio_separator.separator import Separator
+        sep = Separator(model_file_dir=MODELS, output_dir=WORK, output_format="WAV")
+        sep.load_model(C.BACKING_MODEL)
+        tmp_ = f"bk{os.getpid()}"
+        sep.separate(vocals, {"Vocals": f"{tmp_}-lead", "Instrumental": f"{tmp_}-backing"})
+        os.replace(f"{WORK}/{tmp_}-lead.wav", lead)
+        os.replace(f"{WORK}/{tmp_}-backing.wav", backing)
+        del sep
+    if not os.path.exists(inst_bk):
+        # float samples: the music and the backing together never clip before the AAC encode
+        run("ffmpeg", "-v", "error", "-y", "-i", inst, "-i", backing, "-filter_complex", "amix=inputs=2:duration=longest:normalize=0",
+            "-c:a", "pcm_f32le", f"{inst_bk}.tmp.wav")
+        os.replace(f"{inst_bk}.tmp.wav", inst_bk)
+    inst_out, voc_out, backing_kept = inst_bk, lead, True
+    say("info", "backing vocals kept in the music (only the lead singer is taken out)")
 import gc, torch  # noqa: E402
 import gpu  # noqa: E402
 DEV = gpu.device(cpu_ok=False)  # cuda on NVIDIA (and AMD ROCm builds of PyTorch); see gpu.py
@@ -1552,19 +1577,19 @@ if pre or post or mids:
     mix = (f"[0:a:0]aformat=sample_rates=44100:channel_layouts=stereo,volume='{g}':eval=frame[o];"
            f"[1:a:0]aformat=sample_rates=44100:channel_layouts=stereo,volume='1-{g}':eval=frame[i];"
            "[o][i]amix=inputs=2:duration=shortest:normalize=0[a]")
-    run("ffmpeg", "-v", "error", "-y", "-i", f"{w}.mp4", "-i", inst, "-filter_complex", mix, "-map", "0:v:0", "-map", "[a]",
+    run("ffmpeg", "-v", "error", "-y", "-i", f"{w}.mp4", "-i", inst_out, "-filter_complex", mix, "-map", "0:v:0", "-map", "[a]",
         *VENC, "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", f"{job_dir}/out.tmp.mp4")
 else:
-    run("ffmpeg", "-v", "error", "-y", "-i", f"{w}.mp4", "-i", inst, "-map", "0:v:0", "-map", "1:a:0", *VENC,
+    run("ffmpeg", "-v", "error", "-y", "-i", f"{w}.mp4", "-i", inst_out, "-map", "0:v:0", "-map", "1:a:0", *VENC,
         "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", f"{job_dir}/out.tmp.mp4")
 os.replace(f"{job_dir}/out.tmp.mp4", f"{job_dir}/out.mp4")
-run("ffmpeg", "-v", "error", "-y", "-i", vocals, "-c:a", "aac", "-b:a", "128k", f"{job_dir}/vocals.tmp.m4a")
+run("ffmpeg", "-v", "error", "-y", "-i", voc_out, "-c:a", "aac", "-b:a", "128k", f"{job_dir}/vocals.tmp.m4a")
 os.replace(f"{job_dir}/vocals.tmp.m4a", f"{job_dir}/vocals.m4a")
 json.dump({"offset": round(off, 2), "lines": len(out_lines), "skipped": skipped, "video": vinfo, "width": vw, "height": vh,
            "lang": lang, "script": SCRIPT, "rtl": is_rtl(SCRIPT), "romaji": ("hand" if len(hand_romaji) >= 0.8 * sum(1 for o in origs if o) else "automatic") if any(origs)
            else ("kara.moe" if source == "karamoe" else None),
            "duration": round(duration, 1), "seconds": round(time.time() - t0), "encoded": "x264",
-           "confidence": CONF, "pipeline": versions.VERSION}, open(f"{job_dir}/result.json", "w"))
+           "confidence": CONF, "pipeline": versions.VERSION, "backing": backing_kept}, open(f"{job_dir}/result.json", "w"))
 # a song the user trimmed (ads or an intro cut off): the new render is cut the same way, lines and all
 # (the GPU helper never gets the trim: the studio cuts a song made there the same way when it comes back, app.run_remote)
 _trim = job.get("trim") or {}

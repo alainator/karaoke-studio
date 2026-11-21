@@ -186,6 +186,17 @@ A player elsewhere (a party kit on Tailscale) should get a route that forwards o
 Settings: `STUDIO_PUBLIC_URL` (the web app's address, shown in Encore's host view), `STUDIO_NAME`, `KARAOKE_DATA`
 (where `encore.db` is kept: default the folder above the logs).
 
+**No network: a USB stick** (contract §2.7, `bundle.py`). A player that can't reach the studio syncs by stick.
+*Export…* on its row makes a `.karaoke-sync.tar` with the songs it doesn't have yet (by what its last bundle said it
+has; or everything) and its requests' answers; *one file* for an exFAT/NTFS stick, or *parts of 3.9 GB* for FAT32
+(each part a complete file with whole songs). The first export fingerprints every library file once (sha256, kept in
+`bundle-hashes.db`); later ones only read new files. The download has its exact length, so a cut-off copy fails in
+the browser. The player imports it, and writes its own file back (its requests, lyric flags and plays, and what it
+has): *Import a player's bundle…* applies them with the player API's own code, as that player, except that requests
+never start a party auto-make. Each file is signed with that player's key (from its pairing token: nobody else can
+make or read-and-change one), so a file from an old link is refused ("export it again"). These are admin pages: the
+players-only network (`ENCORE_ONLY_NETS`) never reaches them. Profiles sync over the network only.
+
 ## Finishing songs: by hand or with an agent
 
 Every song is checked by ear after it's made, and the lines that may be off are marked ⚠ with the reason. Finishing a
