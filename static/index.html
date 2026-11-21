@@ -1828,11 +1828,12 @@ function codeLeft() {
   return left ? `valid for ${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}, for one player` : "expired: make a new one";
 }
 function renderPlayers(d) {
-  PL.address = d.address;
+  PL.address = d.address; PL.addressLan = d.address_lan;
   if (PL.code && (!d.code || PL.expires <= Date.now() / 1000)) PL.code = null;  // used, replaced or expired
   const codeBox = PL.code ? `<div class="aibox" style="margin-top:12px">
       <div class="hint">In Encore: <b>station → System → Karaoke Studio</b> (or the host area on a phone). Type this address and code, and a name for that player.</div>
-      <div class="row" style="margin-top:8px;align-items:baseline;gap:18px"><div><div class="hint">Studio address</div><div style="font-weight:600;font-size:17px;user-select:all">${esc(PL.address)}</div></div>
+      <div class="row" style="margin-top:8px;align-items:baseline;gap:18px">${PL.addressLan ? `<div><div class="hint">Studio address: a tablet, laptop or kit (home Wi-Fi or Tailscale)</div><div style="font-weight:600;font-size:17px;user-select:all">${esc(PL.addressLan)}</div>
+        <div class="hint" style="margin-top:4px">Encore on this server: <span style="user-select:all">${esc(PL.address)}</span></div></div>` : `<div><div class="hint">Studio address</div><div style="font-weight:600;font-size:17px;user-select:all">${esc(PL.address)}</div></div>`}
       <div><div class="hint">Pairing code</div><div class="paircode" id="paircode">${esc(PL.code.slice(0, 4))}-${esc(PL.code.slice(4))}</div></div></div>
       <div class="row"><span class="hint" id="codeleft">${codeLeft()}</span><button class="ghost sm" id="nocode">Cancel the code</button></div></div>` : "";
   const ps = d.players;
@@ -1863,7 +1864,7 @@ function renderPlayers(d) {
     loadPlayers();
   });
   $("#newcode").onclick = async () => {
-    try { const r = await api("/api/players/code", {method: "POST"}); PL.code = r.code; PL.expires = r.expires; PL.address = r.address; loadPlayers(); }
+    try { const r = await api("/api/players/code", {method: "POST"}); PL.code = r.code; PL.expires = r.expires; PL.address = r.address; PL.addressLan = r.address_lan; loadPlayers(); }
     catch (e) { toast(e.message); }
   };
   if ($("#nocode")) $("#nocode").onclick = async () => { try { await api("/api/players/code", {method: "DELETE"}); } catch {} PL.code = null; loadPlayers(); };

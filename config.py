@@ -61,6 +61,9 @@ STUDIO_NAME = env("STUDIO_NAME", "Karaoke Studio").strip()[:80] or "Karaoke Stud
 # the address a player types in, shown by "Connect a player": for Encore in Docker on the same machine, the studio's
 # name on the network the two share (README: "Players")
 ENCORE_STUDIO_ADDRESS = env("ENCORE_STUDIO_ADDRESS", "http://karaoke-studio:5570").strip().rstrip("/")
+# the address for Encores on OTHER devices (a tablet, a laptop, a kit at home or on Tailscale): the web app's address,
+# when the player API is routed there without its login (~/edge-extras/studio-players-route.py); empty: not offered
+ENCORE_STUDIO_ADDRESS_LAN = env("ENCORE_STUDIO_ADDRESS_LAN", STUDIO_PUBLIC_URL).strip().rstrip("/")
 # optional preset player for Docker setups: this token is accepted as one more linked player ("preset")
 ENCORE_TOKEN = env("ENCORE_TOKEN", "").strip()
 # optional: networks (CIDR, comma-separated) that may only use the player API (/api/encore/): set it to the network the

@@ -3969,6 +3969,7 @@ def profiles_list():
 @app.get("/api/players")
 def players_list():
     return {"players": STORE.players(), "code": STORE.code_state(), "address": C.ENCORE_STUDIO_ADDRESS,
+            "address_lan": C.ENCORE_STUDIO_ADDRESS_LAN if C.ENCORE_STUDIO_ADDRESS_LAN != C.ENCORE_STUDIO_ADDRESS else None,
             "studio_name": C.STUDIO_NAME, "contract": encore.CONTRACT, "studio": encore.VERSION,
             "preset": bool(C.ENCORE_TOKEN)}
 
@@ -4116,7 +4117,8 @@ async def players_code(req: Request):
     check_origin(req)
     code, expires = STORE.new_code()
     log.info("players: a pairing code was made (valid 10 minutes)")
-    return {"code": code, "expires": expires, "address": C.ENCORE_STUDIO_ADDRESS}
+    return {"code": code, "expires": expires, "address": C.ENCORE_STUDIO_ADDRESS,
+            "address_lan": C.ENCORE_STUDIO_ADDRESS_LAN if C.ENCORE_STUDIO_ADDRESS_LAN != C.ENCORE_STUDIO_ADDRESS else None}
 
 
 @app.delete("/api/players/code")
