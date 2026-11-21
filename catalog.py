@@ -256,8 +256,9 @@ def entry_for(job_dir, job, lib_dir, mv_dir):
         pass
     title = job.get("title") or ""
     shown, orig = title, job.get("title_orig")   # (the song page's Original title)
-    if not orig and split_orig(title):           # "Odoriko (踊り子)": players show Odoriko, 踊り子 next to it
-        shown, orig = split_orig(title)
+    sp = split_orig(title)                       # "Odoriko (踊り子)": players show Odoriko, 踊り子 next to it
+    if sp and (not orig or orig == sp[1]):
+        shown, orig = sp
     return {"id": job.get("id") or os.path.basename(job_dir), "artist": job.get("artist") or "", "title": shown,
             "title_orig": orig or (title if has_own_script(title) else None),
             "lang": (job.get("result") or {}).get("lang") or job.get("lang"),

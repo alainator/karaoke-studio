@@ -62,6 +62,9 @@ class OriginalTitleTests(unittest.TestCase):
         e = entry(jid)
         self.assertEqual((e["title"], e["title_orig"]), ("Odoriko", "踊り子"))   # shown split, files as they were
         self.assertEqual(e["base"], A.load(jid)["published_as"])
+        st, _, b = jcall(A.app, "POST", f"/api/jobs/{jid}/rename", {"artist": "Vaundy", "title": "Odoriko (踊り子)", "title_orig": "踊り子"})
+        self.assertEqual(st, 200, b)
+        self.assertEqual((entry(jid)["title"], entry(jid)["title_orig"]), ("Odoriko", "踊り子"))   # the same original typed in
         nj = A.new_job({"yt": "aaaaaaaaaaa", "lrc_id": None, "artist": "Vaundy", "title": "Omokage (おもかげ)"}, {"name": "test", "kind": "human"})
         self.addCleanup(shutil.rmtree, os.path.join(A.JOBS, nj), True)
         self.assertEqual((A.load(nj)["title"], A.load(nj)["title_orig"]), ("Omokage", "おもかげ"))
