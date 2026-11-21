@@ -438,7 +438,10 @@ def new_job(fields, actor):
         os.makedirs(f"{JOBS}/{jid}")
         # a title in its own script ("踊り子"): kept as the original title, the title romanized ("Odoriko"), so it reads
         # and sorts in Latin letters everywhere and players show the original next to it
-        if not fields.get("title_orig") and catalog.has_own_script(fields.get("title")):
+        if not fields.get("title_orig") and catalog.split_orig(fields.get("title")):   # "Odoriko (踊り子)"
+            t, o = catalog.split_orig(fields["title"])
+            fields = dict(fields, title=t, title_orig=o)
+        elif not fields.get("title_orig") and catalog.has_own_script(fields.get("title")):
             rt = romanize.romanize_title(fields["title"])
             if rt:
                 fields = dict(fields, title_orig=fields["title"], title=rt)

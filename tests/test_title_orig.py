@@ -53,6 +53,19 @@ class OriginalTitleTests(unittest.TestCase):
         e = entry(jid)
         self.assertEqual((e["title"], e["title_orig"]), ("Odoriko", "踊り子"))
 
+    def test_romaji_with_the_original_in_brackets(self):
+        self.assertEqual(CAT.split_orig("Odoriko (踊り子)"), ("Odoriko", "踊り子"))
+        self.assertEqual(CAT.split_orig("Kaijuu no Hanauta（怪獣の花唄）"), ("Kaijuu no Hanauta", "怪獣の花唄"))
+        for t in ("The Kill (Bury Me)", "踊り子", "踊り子 (Odoriko)", "Gurenge"):
+            self.assertIsNone(CAT.split_orig(t), t)
+        jid = make_song("Vaundy", "Odoriko (踊り子)", vocals=None)
+        e = entry(jid)
+        self.assertEqual((e["title"], e["title_orig"]), ("Odoriko", "踊り子"))   # shown split, files as they were
+        self.assertEqual(e["base"], A.load(jid)["published_as"])
+        nj = A.new_job({"yt": "aaaaaaaaaaa", "lrc_id": None, "artist": "Vaundy", "title": "Omokage (おもかげ)"}, {"name": "test", "kind": "human"})
+        self.addCleanup(shutil.rmtree, os.path.join(A.JOBS, nj), True)
+        self.assertEqual((A.load(nj)["title"], A.load(nj)["title_orig"]), ("Omokage", "おもかげ"))
+
     def test_a_new_song_in_its_own_script_is_romanized(self):
         jid = A.new_job({"yt": "aaaaaaaaaaa", "lrc_id": None, "artist": "Vaundy", "title": "踊り子"}, {"name": "test", "kind": "human"})
         self.addCleanup(shutil.rmtree, os.path.join(A.JOBS, jid), True)

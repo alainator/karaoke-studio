@@ -68,6 +68,18 @@ def has_own_script(s):
     return any(c.isalpha() and not unicodedata.name(c, "").startswith("LATIN") for c in s or "")
 
 
+_ORIG_PAREN = re.compile(r"^(?P<t>.*?\S)\s*[\(（](?P<o>[^\(\)（）]+)[\)）]\s*$")
+
+
+def split_orig(title):
+    """"Odoriko (踊り子)" -> ("Odoriko", "踊り子"): a Latin title with its own-script original in brackets (how songs
+    were named before the Original title box). None when the title isn't like that."""
+    m = _ORIG_PAREN.match(title or "")
+    if not m or has_own_script(m["t"]) or not has_own_script(m["o"]):
+        return None
+    return m["t"].strip(), m["o"].strip()
+
+
 def norm_key(s):
     """Unicode-aware: lower case, accents dropped, punctuation to spaces; Japanese/Korean/… letters are kept."""
     s = unicodedata.normalize("NFKC", s or "").casefold()
@@ -243,8 +255,11 @@ def entry_for(job_dir, job, lib_dir, mv_dir):
     except Exception:
         pass
     title = job.get("title") or ""
-    return {"id": job.get("id") or os.path.basename(job_dir), "artist": job.get("artist") or "", "title": title,
-            "title_orig": job.get("title_orig") or (title if has_own_script(title) else None),   # (the song page's Original title)
+    shown, orig = title, job.get("title_orig")   # (the song page's Original title)
+    if not orig and split_orig(title):           # "Odoriko (踊り子)": players show Odoriko, 踊り子 next to it
+        shown, orig = split_orig(title)
+    return {"id": job.get("id") or os.path.basename(job_dir), "artist": job.get("artist") or "", "title": shown,
+            "title_orig": orig or (title if has_own_script(title) else None),
             "lang": (job.get("result") or {}).get("lang") or job.get("lang"),
             "duration": _duration(job), "published": job.get("published"),
             "folder": os.path.relpath(mv_dir, lib_dir).replace(os.sep, "/"), "base": base, "lyrics": lyr,
