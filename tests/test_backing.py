@@ -22,6 +22,7 @@ class BackingTests(unittest.TestCase):
         st, _, b = jcall(A.app, "POST", "/api/jobs/20261121-000000-a-t/backing", {"on": True})
         self.assertEqual((st, b), (200, {"keep_backing": True}))
         self.assertTrue(A.load("20261121-000000-a-t")["keep_backing"])
+        self.assertTrue(jcall(A.app, "GET", "/api/jobs/20261121-000000-a-t")[2]["keep_backing"])   # the page sees it
         st, _, b = jcall(A.app, "POST", "/api/jobs/20261121-000000-a-t/backing", {"on": False})
         self.assertFalse(A.load("20261121-000000-a-t")["keep_backing"])
         self.assertEqual(jcall(A.app, "POST", "/api/jobs/20261121-000000-a-t/backing", {"on": True}, {"Origin": "https://evil.example"})[0], 403)

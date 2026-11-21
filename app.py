@@ -512,6 +512,7 @@ def summary(job):
         and os.path.exists(job_path(job["id"], "words.before-remake.json"))
     out["remake_note"] = job.get("remake_note")
     out["encore_flags"] = flag_counts().get(job["id"], 0)
+    out["keep_backing"] = bool(job.get("keep_backing"))   # the song page's switch (the render's own: result.backing)
     return out
 
 
