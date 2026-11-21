@@ -6,7 +6,7 @@
 
 Turn an official music video into a karaoke video, with the vocals removed and the lyrics lighting up word by word.
 
-Karaoke Studio and [Encore](https://github.com/alainator/encore), the party app, connect to each other: guests' requests reach the studio, and the songs it publishes reach the party. Neither needs the other, and the songs are plain video and subtitle files (`.mp4` + `.ass`) that other karaoke apps can play too.
+Karaoke Studio makes the songs for [Encore](https://github.com/alainator/encore), the karaoke party app, and the two connect to each other: guests' requests at the party reach the studio, and the songs it publishes come back to the party, with what Encore's singing score, guide vocals and duets need. The videos themselves are plain files (an `.mp4` with `.ass` lyrics), so they also play in [PiKaraoke](https://github.com/vicwomg/pikaraoke) and possibly other karaoke apps.
 
 Type `Artist - Title`. The studio finds the music video on YouTube and the lyrics on [LRCLIB](https://lrclib.net), removes the vocals on your GPU, and times every word to the singing. You preview it in the browser, fix anything you want, and publish.
 
@@ -22,7 +22,7 @@ Type `Artist - Title`. The studio finds the music video on YouTube and the lyric
 - **Works with an agent, or without.** An AI agent (Claude Code, a local model, anything that can run a command) can do the first pass of checking and fixing through `ks`, with only the permissions you give it; every edit is signed and undoable. Or do it all by hand.
 - **Uses a second GPU.** A PC on your network can take songs when the main GPU is busy, or you can choose which GPU makes each song.
 - **Party auto-make.** With your OK (per linked player), a party's request for a missing song is found, made and published by the studio in a few minutes, picked the way the Make page picks; songs below a quality floor wait for a look, and quick makes are marked until someone checks them.
-- **Works with Encore.** Link the Encore party app (or any player that speaks [the contract](contract/ENCORE-STUDIO.md)): guests' song requests land in a Requests list, lyric flags from the party mark the lines to fix, and what was sung counts in the Library. Each published song also gets its sung melody (`.pitch.json`, with the instrumental's loudness) for singing scores and its separated vocals (`.vocals.m4a`) for guide vocals; the studio can also score whether a singer sang the words, and the Library shows each song's best grade.
+- **Made for Encore.** Link the Encore party app (or any player that speaks [the contract](contract/ENCORE-STUDIO.md)): guests' song requests land in a Requests list, lyric flags from the party mark the lines to fix, and what was sung counts in the Library. Each published song also gets its sung melody (`.pitch.json`, with the instrumental's loudness) for singing scores and its separated vocals (`.vocals.m4a`) for guide vocals; the studio can also score whether a singer sang the words, and the Library shows each song's best grade.
 
 ## Languages
 
@@ -78,7 +78,7 @@ verified; don't rely on this table for licensing).
 ## Requirements
 
 - Linux with an NVIDIA GPU (about 9 GB free per song), Python 3.12, ffmpeg and Node.js. Other GPUs aren't tested; see [CONTRIBUTING.md](CONTRIBUTING.md#hardware).
-- Somewhere to play the songs: Encore, or any karaoke app that plays `.mp4` videos with `.ass` subtitles (publishing writes them to a library folder; see *Players*). The studio works on its own for previews.
+- Somewhere to play the songs: Encore (see *Players*). Publishing writes them to a library folder, so PiKaraoke 1.23 or newer can play them too (set `PIKARAOKE_URL` and `PIKARAOKE_DB` so publishing rescans its library and its plays count; leave them empty without it), and possibly other karaoke apps that play `.mp4` videos with `.ass` subtitles. The studio works on its own for previews.
 - Optional: [Ollama](https://ollama.com) for the AI lyrics and romaji checks.
 
 ## Setup
@@ -136,7 +136,8 @@ key, kept only as a hash here; *Unlink* stops it at once. For a Docker setup wit
 Make tab with the search filled in, and the request then follows that song (being made, ready, published); *We have
 it* and *Decline* answer it. Lyric flags ("the words light up late here") put a ⚠ on that line with a note like
 "Encore: late (Sam, Friday at Ken's)" and show as *Flagged in Encore* on the song's page and in *Needs fixing*; they
-never change timing or words. Plays count in the Library's *Sung* column and in `catalog.json`.
+never change timing or words. Plays count in the Library's *Sung* column and in `catalog.json`, together with
+PiKaraoke's own history when it's used.
 
 **Party auto-make.** Off by default. On the **Players** tab: *Party auto-make* (with limits: songs per hour and per
 day, the longest song, only if a graphics card is free within N minutes, the quality floor) and, per linked player,
