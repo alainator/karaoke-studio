@@ -2851,8 +2851,14 @@ def library_songs():
     for s in songs:
         if s["folder"] == "Music Videos":
             j = by_pub.get(s["title"])
-            s["job"] = {"id": j["id"], "status": j["status"]} if j else None
             nm = mv_name(s["title"])
+            if not j and nm:   # the job that published it is gone (replaced by a remake not published yet): the newest
+                # song of that artist and title, so the file still has its page ("Welcome to the Black Parade", 2026-11-21)
+                key = (catalog.norm_key(nm[0]), catalog.norm_key(nm[1]))
+                same = [x for x in jobs if x["status"] in JOB_RANK
+                        and (catalog.norm_key(x.get("artist")), catalog.norm_key(x.get("title"))) == key]
+                j = max(same, key=lambda x: x.get("created") or 0) if same else None
+            s["job"] = {"id": j["id"], "status": j["status"]} if j else None
             if nm:
                 mvs.append((nm[0], nm[1], s["title"], s["job"]))
     for s in songs:

@@ -65,6 +65,19 @@ class Library(unittest.TestCase):
         self.assertEqual(s["Music Videos/Spice Girls - Wannabe (Music Video).mp4"]["job"]["id"], self.pub)
         self.assertEqual(s["Spice Girls - Wannabe (Karaoke Version)---BTDPZQGqjY8.mp4"]["mv_job"], self.pub)
 
+    def test_a_published_file_whose_job_is_gone_finds_its_remake(self):
+        open(os.path.join(MVD, "Remade Band - Remade Song (Music Video).mp4"), "wb").write(b"x")
+        self.addCleanup(os.remove, os.path.join(MVD, "Remade Band - Remade Song (Music Video).mp4"))
+        old = job("Remade Band", "Remade Song", "done", finished=1.0)                 # (not the one that published it)
+        new = job("Remade Band", "Remade Song", "done", finished=2.0)
+        job("Remade Band", "Another Song", "done")
+        got = self.songs()["Music Videos/Remade Band - Remade Song (Music Video).mp4"]["job"]
+        self.assertEqual(got["id"], new)                                              # the newest of that artist and title
+        self.assertNotEqual(got["id"], old)
+        open(os.path.join(MVD, "Nobody Made - This (Music Video).mp4"), "wb").write(b"x")
+        self.addCleanup(os.remove, os.path.join(MVD, "Nobody Made - This (Music Video).mp4"))
+        self.assertIsNone(self.songs()["Music Videos/Nobody Made - This (Music Video).mp4"]["job"])
+
     def test_queries(self):
         s = self.songs()
         self.assertEqual(s["Hold Me, Thrill Me, Kiss Me, Kill Me (Karaoke) - U2---goL5gbRAqD0.mp4"]["query"], "Hold Me, Thrill Me, Kiss Me, Kill Me - U2")

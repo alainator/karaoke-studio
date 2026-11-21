@@ -4,7 +4,9 @@
 
 <sub>The video and thumbnails are blurred in this demo for copyright; in the app they show normally.</sub>
 
-Turn an official music video into a karaoke video, with the vocals removed and the lyrics lighting up word by word, then publish it to [PiKaraoke](https://github.com/vicwomg/pikaraoke).
+Turn an official music video into a karaoke video, with the vocals removed and the lyrics lighting up word by word.
+
+Karaoke Studio and [Encore](https://github.com/alainator/encore), the party app, connect to each other: guests' requests reach the studio, and the songs it publishes reach the party. Neither needs the other, and the songs are plain video and subtitle files (`.mp4` + `.ass`) that other karaoke apps can play too.
 
 Type `Artist - Title`. The studio finds the music video on YouTube and the lyrics on [LRCLIB](https://lrclib.net), removes the vocals on your GPU, and times every word to the singing. You preview it in the browser, fix anything you want, and publish.
 
@@ -76,7 +78,7 @@ verified; don't rely on this table for licensing).
 ## Requirements
 
 - Linux with an NVIDIA GPU (about 9 GB free per song), Python 3.12, ffmpeg and Node.js. Other GPUs aren't tested; see [CONTRIBUTING.md](CONTRIBUTING.md#hardware).
-- A player to publish to: [PiKaraoke](https://github.com/vicwomg/pikaraoke) 1.23 or newer, and/or Encore (or anything that reads `catalog.json`). Without PiKaraoke, leave `PIKARAOKE_URL` and `PIKARAOKE_DB` empty: publishing then skips its rescan. The studio works on its own for previews.
+- Somewhere to play the songs: Encore, or any karaoke app that plays `.mp4` videos with `.ass` subtitles (publishing writes them to a library folder; see *Players*). The studio works on its own for previews.
 - Optional: [Ollama](https://ollama.com) for the AI lyrics and romaji checks.
 
 ## Setup
@@ -134,8 +136,7 @@ key, kept only as a hash here; *Unlink* stops it at once. For a Docker setup wit
 Make tab with the search filled in, and the request then follows that song (being made, ready, published); *We have
 it* and *Decline* answer it. Lyric flags ("the words light up late here") put a ⚠ on that line with a note like
 "Encore: late (Sam, Friday at Ken's)" and show as *Flagged in Encore* on the song's page and in *Needs fixing*; they
-never change timing or words. Plays count in the Library's *Sung* column and in `catalog.json`, together with
-PiKaraoke's own history.
+never change timing or words. Plays count in the Library's *Sung* column and in `catalog.json`.
 
 **Party auto-make.** Off by default. On the **Players** tab: *Party auto-make* (with limits: songs per hour and per
 day, the longest song, only if a graphics card is free within N minutes, the quality floor) and, per linked player,
@@ -231,7 +232,7 @@ shown), or set `STUDIO_URL` and `STUDIO_AGENT_KEY`.
 
 - You're responsible for what you download and how you use it. This is meant for karaoke at home.
 - LRCLIB is a free community service; please keep `STUDIO_USER_AGENT` meaningful.
-- Not affiliated with PiKaraoke. The lyric renderer is [JavascriptSubtitlesOctopus](https://github.com/libass/JavascriptSubtitlesOctopus).
+- The lyric renderer is [JavascriptSubtitlesOctopus](https://github.com/libass/JavascriptSubtitlesOctopus).
 - Lyrics come from [LRCLIB](https://lrclib.net) and [kara.moe](https://kara.moe) (Karaoke Mugen). Romanization uses [uroman](https://github.com/isi-nlp/uroman), [cutlet](https://github.com/polm/cutlet), [PyThaiNLP](https://github.com/PyThaiNLP/pythainlp) and [ToJyutping](https://github.com/CanCLID/ToJyutping). Scripts the TV can't draw use [Noto](https://notofonts.github.io) fonts (SIL Open Font License), embedded in the subtitle file. The web app uses [Atkinson Hyperlegible Next](https://www.brailleinstitute.org/freefont/) and [Bricolage Grotesque](https://github.com/ateliertriay/bricolage) (SIL Open Font License; licence files in `static/fonts/`), the same as Encore.
 
 ## License
