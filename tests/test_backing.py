@@ -20,7 +20,7 @@ class BackingTests(unittest.TestCase):
     def test_the_switch_is_saved_for_the_next_remake(self):
         make("20261121-000000-a-t")
         st, _, b = jcall(A.app, "POST", "/api/jobs/20261121-000000-a-t/backing", {"on": True})
-        self.assertEqual((st, b), (200, {"keep_backing": True}))
+        self.assertEqual((st, b), (200, {"keep_backing": True, "swaps": []}))
         self.assertTrue(A.load("20261121-000000-a-t")["keep_backing"])
         self.assertTrue(jcall(A.app, "GET", "/api/jobs/20261121-000000-a-t")[2]["keep_backing"])   # the page sees it
         st, _, b = jcall(A.app, "POST", "/api/jobs/20261121-000000-a-t/backing", {"on": False})
@@ -56,3 +56,32 @@ class FaintBackingRowTests(unittest.TestCase):
         self.assertTrue(self.back_events(True))
         self.assertTrue(all("\\alpha&H80&" in l for l in self.back_events(True)))
         self.assertFalse(any("\\alpha&H80&" in l for l in self.back_events(False)))
+
+
+class SwapTests(unittest.TestCase):
+    """Voice swaps: set in the song page's (trimmed) video time, kept in the original video's time."""
+
+    def setUp(self):
+        self.jid = "20261121-000002-a-t"
+        make(self.jid)
+        job = A.load(self.jid)
+        job.update(trim={"start": 10.0, "end": None}, result={"duration": 300.0, "backing": True, "voice_swaps": []})
+        A.save(self.jid, job)
+
+    def post(self, body):
+        return jcall(A.app, "POST", f"/api/jobs/{self.jid}/backing", body)
+
+    def test_page_time_in_original_time_kept(self):
+        st, _, b = self.post({"on": True, "swaps": [[261.0, 285.5]]})
+        self.assertEqual(st, 200, b)
+        self.assertEqual(A.load(self.jid)["voice_swaps"], [[271.0, 295.5]])        # +10 s of trim
+        view = jcall(A.app, "GET", f"/api/jobs/{self.jid}")[2]
+        self.assertEqual((view["voice_swaps"], view["voice_swaps_now"], view["keep_backing"]), ([[261.0, 285.5]], [], True))
+        self.assertEqual(self.post({"swaps": [[400, 500]]})[0], 400)                # wholly past the song's end
+        self.post({"swaps": []})
+        self.assertEqual(A.load(self.jid)["voice_swaps"], [])
+
+    def test_refusals(self):
+        for bad in ({"swaps": [[5, 5.1]]}, {"swaps": [[1, 20], [10, 30]]}, {"swaps": [["a", 2]]}, {"swaps": "x"},
+                    {"swaps": [[1, 2]] * 21}, {}):
+            self.assertEqual(self.post(bad)[0], 400, bad)

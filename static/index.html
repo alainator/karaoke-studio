@@ -825,6 +825,17 @@ async function openJob(id) {
     try { await api(`/api/jobs/${id}/backing`, {method: "POST", body: JSON.stringify({on: e.target.checked})}); openJob(id); }
     catch (err) { toast(err.message); e.target.checked = !e.target.checked; }
   };
+  const saveSwaps = async list => {
+    try { await api(`/api/jobs/${id}/backing`, {method: "POST", body: JSON.stringify({swaps: list})}); openJob(id); }
+    catch (err) { toast(err.message); }
+  };
+  document.querySelectorAll("[data-swnow]").forEach(b => b.onclick = () => { const v = $("#pv"); if (v) $("#" + b.dataset.swnow).value = mmss(v.currentTime); });
+  document.querySelectorAll("[data-swapdel]").forEach(b => b.onclick = () => saveSwaps((j.voice_swaps || []).filter((_, i) => i !== +b.dataset.swapdel)));
+  if ($("#swadd")) $("#swadd").onclick = () => {
+    const a = parseT($("#swa").value), e = parseT($("#swb").value);
+    if (a == null || e == null || e - a < 0.3) return toast("Give a start and an end (m:ss), the end after the start");
+    saveSwaps([...(j.voice_swaps || []), [a, e]]);
+  };
   if ($("#remakebk")) $("#remakebk").onclick = async () => {
     if (ed && ed.dirty && !confirm("You have unsaved edits; remaking replaces the timing. Remake anyway?")) return;
     try { await api(`/api/jobs/${id}/remake`, {method: "POST", body: JSON.stringify({gpu: null})}); if (ed) ed.dirty = false; closePlayer(); ed = null; openJob(id); loadJobs(); }
@@ -1789,14 +1800,21 @@ async function pickHave(r) {
 }
 
 // ---------- "Keep backing vocals" (pipeline 3b): the song's switch, applied by a remake ----------
+const mmss = t => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}${t % 1 >= 0.05 ? "." + Math.round((t % 1) * 10) : ""}`;
 function backingBox(j) {
   const on = !!j.keep_backing, now = !!(j.result && j.result.backing);
-  const stale = on !== now;
+  const sw = j.voice_swaps || [], swNow = j.voice_swaps_now || [];
+  const stale = on !== now || (on && JSON.stringify(sw) !== JSON.stringify(swNow));
   return `<div class="ctl" style="margin-bottom:12px"><div class="row" style="justify-content:space-between;gap:12px">
       <label class="switch" title="Only the lead singer is taken out of the music: backing vocals, choirs and harmonies stay"><input type="checkbox" id="keepbacking" ${on ? "checked" : ""}> <b>Keep backing vocals</b></label>
       ${stale ? `<button class="primary sm" id="remakebk">↻ Remake to ${on ? "keep" : "remove"} them</button>` : ""}</div>
     <div class="hint" style="margin-top:4px">${now ? "This video keeps the backing vocals in the music; the guide vocals are the lead singer only." : "This video takes every voice out (lead and backing)."}
-      ${stale ? (on ? " Turned on: remake to put the backing vocals back (the lyric timing stays as it is; your edits are kept)." : " Turned off: remake to take them out again.") : " Turn it on for songs whose choir or \"aah\"s belong in the music; listen afterwards: a doubled lead can be mistaken for backing."}</div></div>`;
+      ${stale ? (on ? " Changed: remake to apply it (the lyric timing stays as it is; your edits are kept)." : " Turned off: remake to take them out again.") : " Turn it on for songs whose choir or \"aah\"s belong in the music; listen afterwards: a doubled lead can be mistaken for backing."}</div>
+    ${on ? `<div style="margin-top:8px"><b>Wrong voice taken out somewhere?</b> <span class="hint">Where the singer layers his own voice, the model can keep the part he sings and take out the layered one. Swap them there:</span>
+      ${sw.map((x, i) => `<div class="row" style="margin-top:4px;gap:8px">Swapped ${mmss(x[0])} to ${mmss(x[1])} <button class="ghost sm" data-swapdel="${i}">Remove</button></div>`).join("")}
+      <div class="row" style="margin-top:6px;gap:6px;flex-wrap:wrap">From <input id="swa" size="7" placeholder="4:31"> <button class="ghost sm" data-swnow="swa" title="The player's time">now</button>
+        to <input id="swb" size="7" placeholder="5:11"> <button class="ghost sm" data-swnow="swb" title="The player's time">now</button>
+        <button class="sm" id="swadd">Add swap</button></div></div>` : ""}</div>`;
 }
 
 // ---------- players: connect (pair) and linked players ----------

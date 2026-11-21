@@ -404,7 +404,10 @@ if not (os.path.exists(vocals) and os.path.exists(inst)):
 # 3b. "Keep backing vocals" (the song's switch, job["keep_backing"]): a karaoke model splits the separated vocals into the
 # lead and the backing voices (cached per model). The music gets the backing back (choirs, "aah"s, harmonies stay); the
 # guide vocals are the lead only. The lyrics are still timed on the whole vocal track, as without it.
-inst_out, voc_out, backing_kept = inst, vocals, False
+# Swaps (job["voice_swaps"]: [[start, end], ...] in the original video's time): where the model took the wrong voice for
+# the lead (a singer layered over himself), the two trade places: the music keeps the "lead" track there and the guide
+# vocals (what the singer sings) get the "backing" one; 0.15 s fades at each edge.
+inst_out, voc_out, backing_kept, swaps_used = inst, vocals, False, []
 if job.get("keep_backing"):
     import hashlib  # noqa: E402
     _tag = hashlib.sha1(C.BACKING_MODEL.encode()).hexdigest()[:8]
@@ -419,7 +422,27 @@ if job.get("keep_backing"):
         os.replace(f"{WORK}/{tmp_}-lead.wav", lead)
         os.replace(f"{WORK}/{tmp_}-backing.wav", backing)
         del sep
-    if not os.path.exists(inst_bk):
+    swaps_used = sorted([round(float(a), 2), round(float(b), 2)] for a, b in (job.get("voice_swaps") or [])
+                        if isinstance(a, (int, float)) and isinstance(b, (int, float)) and b - a >= 0.3)
+    if swaps_used:
+        _sw = hashlib.sha1(json.dumps(swaps_used).encode()).hexdigest()[:8]
+        inst_bk, guide = f"{WORK}/{yt}-inst-backing.{_tag}.{_sw}.wav", f"{WORK}/{yt}-guide.{_tag}.{_sw}.wav"
+        F_ = 0.15
+        s_ = "+".join(f"min(clip((t-{a:.2f})/{F_},0,1),clip(({b:.2f}-t)/{F_},0,1))" for a, b in swaps_used)
+        s_ = f"min(1,{s_})"   # (ranges don't overlap after the app's checks; min keeps it 0..1 anyway)
+        if not os.path.exists(inst_bk):
+            run("ffmpeg", "-v", "error", "-y", "-i", inst, "-i", backing, "-i", lead, "-filter_complex",
+                f"[1:a]volume='1-({s_})':eval=frame[bk];[2:a]volume='{s_}':eval=frame[ld];"
+                "[0:a][bk][ld]amix=inputs=3:duration=longest:normalize=0", "-c:a", "pcm_f32le", f"{inst_bk}.tmp.wav")
+            os.replace(f"{inst_bk}.tmp.wav", inst_bk)
+        if not os.path.exists(guide):
+            run("ffmpeg", "-v", "error", "-y", "-i", lead, "-i", backing, "-filter_complex",
+                f"[0:a]volume='1-({s_})':eval=frame[ld];[1:a]volume='{s_}':eval=frame[bk];"
+                "[ld][bk]amix=inputs=2:duration=longest:normalize=0", "-c:a", "pcm_f32le", f"{guide}.tmp.wav")
+            os.replace(f"{guide}.tmp.wav", guide)
+        lead = guide
+        say("info", "voices swapped at " + ", ".join(f"{a:.0f}-{b:.0f}s" for a, b in swaps_used))
+    elif not os.path.exists(inst_bk):
         # float samples: the music and the backing together never clip before the AAC encode
         run("ffmpeg", "-v", "error", "-y", "-i", inst, "-i", backing, "-filter_complex", "amix=inputs=2:duration=longest:normalize=0",
             "-c:a", "pcm_f32le", f"{inst_bk}.tmp.wav")
@@ -1589,7 +1612,7 @@ json.dump({"offset": round(off, 2), "lines": len(out_lines), "skipped": skipped,
            "lang": lang, "script": SCRIPT, "rtl": is_rtl(SCRIPT), "romaji": ("hand" if len(hand_romaji) >= 0.8 * sum(1 for o in origs if o) else "automatic") if any(origs)
            else ("kara.moe" if source == "karamoe" else None),
            "duration": round(duration, 1), "seconds": round(time.time() - t0), "encoded": "x264",
-           "confidence": CONF, "pipeline": versions.VERSION, "backing": backing_kept}, open(f"{job_dir}/result.json", "w"))
+           "confidence": CONF, "pipeline": versions.VERSION, "backing": backing_kept, "voice_swaps": swaps_used}, open(f"{job_dir}/result.json", "w"))
 # a song the user trimmed (ads or an intro cut off): the new render is cut the same way, lines and all
 # (the GPU helper never gets the trim: the studio cuts a song made there the same way when it comes back, app.run_remote)
 _trim = job.get("trim") or {}

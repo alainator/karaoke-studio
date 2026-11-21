@@ -513,6 +513,8 @@ def summary(job):
     out["remake_note"] = job.get("remake_note")
     out["encore_flags"] = flag_counts().get(job["id"], 0)
     out["keep_backing"] = bool(job.get("keep_backing"))   # the song page's switch (the render's own: result.backing)
+    out["voice_swaps"] = page_swaps(job)                    # in the page's video time; the render's: voice_swaps_now
+    out["voice_swaps_now"] = page_swaps(job, used=True)
     return out
 
 
@@ -641,20 +643,55 @@ async def set_offset(jid: str, req: Request):
 
 @app.post("/api/jobs/{jid}/backing")
 async def set_backing(jid: str, req: Request):
-    """{on: bool}: "Keep backing vocals": the next make or remake takes only the lead singer out of the music (the
-    harmonies and choirs stay; the guide vocals are the lead only). Nothing changes until it's remade."""
+    """{on: bool, swaps?: [[start, end], ...] in the song page's video time}: "Keep backing vocals": the next make or
+    remake takes only the lead singer out of the music (the harmonies and choirs stay; the guide vocals are the lead
+    only). Swaps: where the model took the wrong voice for the lead, the two trade places. Nothing changes until it's
+    remade."""
     check_origin(req)
-    on = bool((await req.json()).get("on"))
+    b = await req.json()
     with lock:
         job = load(jid)
         if job.get("status") not in ("done", "failed"):
             raise HTTPException(409, "wait until it's finished")
-        job["keep_backing"] = on
-        job.setdefault("log", []).append("backing vocals: " + ("kept in the music (from the next remake)" if on else "taken out with the lead (from the next remake)"))
-        _edited(jid, job, agents.actor_of(req), "keep backing vocals " + ("on" if on else "off"))
+        what = []
+        if "on" in b:
+            job["keep_backing"] = bool(b.get("on"))
+            what.append("keep backing vocals " + ("on" if job["keep_backing"] else "off"))
+        if "swaps" in b:
+            sw = b.get("swaps")
+            if not isinstance(sw, list) or len(sw) > 20:
+                raise HTTPException(400, "swaps: a list of [start, end] (at most 20)")
+            t0 = float((job.get("trim") or {}).get("start") or 0)   # the page's video is the trimmed one
+            dur = float((job.get("result") or {}).get("duration") or 1e9)
+            out = []
+            for x in sw:
+                if not (isinstance(x, list) and len(x) == 2 and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in x)):
+                    raise HTTPException(400, "each swap is [start, end] in seconds")
+                a, e = sorted(float(v) for v in x)
+                a, e = max(0.0, a + t0), min(dur, e + t0)
+                if e - a < 0.3:
+                    raise HTTPException(400, "a swap is at least 0.3 s long")
+                out.append([round(a, 2), round(e, 2)])
+            out.sort()
+            for p, n in zip(out, out[1:]):
+                if n[0] < p[1]:
+                    raise HTTPException(400, "swaps can't overlap")
+            job["voice_swaps"] = out
+            what.append("voices swapped at " + (", ".join(f"{a - t0:.1f}-{e - t0:.1f} s" for a, e in out) or "nowhere"))
+        if not what:
+            raise HTTPException(400, "give on and/or swaps")
+        job.setdefault("log", []).append("backing vocals: " + "; ".join(what) + " (from the next remake)")
+        _edited(jid, job, agents.actor_of(req), "; ".join(what))
         save(jid, job)
-    log.info("job %s: keep backing vocals %s", jid, "on" if on else "off")
-    return {"keep_backing": on}
+    log.info("job %s: %s", jid, "; ".join(what))
+    return {"keep_backing": bool(job.get("keep_backing")), "swaps": page_swaps(job)}
+
+
+def page_swaps(job, used=False):
+    """The voice swaps in the song page's video time (the trimmed video): the job's, or (used) the current render's."""
+    t0 = float((job.get("trim") or {}).get("start") or 0)
+    src = (job.get("result") or {}).get("voice_swaps") if used else job.get("voice_swaps")
+    return [[round(a - t0, 2), round(b - t0, 2)] for a, b in (src or [])]
 
 
 @app.post("/api/jobs/{jid}/display")
