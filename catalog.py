@@ -13,6 +13,8 @@ Name.words.json next to each published song.
               "together": bool (lines sung by several parts), "group": normalised artist|title (two lyric-language
               versions of one song share it), "words": "<base>.words.json" or null, "lines": n, "first": seconds,
               "job_deleted": true (only on songs whose studio job was deleted while the files stayed),
+              "album", "year" (int), "genre": the song's album (albummeta.py; null when unknown), "cover":
+              "<base>.cover.jpg" (its cover art next to the video) or null,
               version 2 adds: "pitch": "<base>.pitch.json" or null (the sung melody, pitch.py), "plays": n and
               "last_played": unix time or null (plays of the song and its versions that count, from every player
               that reports them: Encore, and PiKaraoke's history), "vocals": "<base>.vocals.m4a" or null (the
@@ -30,7 +32,7 @@ Name.words.json next to each published song.
 Only songs whose files exist in the library are listed; their lyric modes are the .ass files actually there. Writing is
 atomic (a temporary file then rename) and never raises out of refresh(): a failure is logged, publishing goes on.
 """
-import json, os, re, threading, time, unicodedata
+import json, os, shutil, re, threading, time, unicodedata
 
 from assgen import MEMBER_RGB, MODES, SINGER_FILL, TOGETHER_FILL, load_cast, load_lines
 
@@ -215,6 +217,38 @@ def add_plays(songs, rows):
             e["last_played"] = last
 
 
+COVER_EXT = ".cover.jpg"
+ALBUM_SHOWN = ("found", "hand")   # album_meta statuses the catalog shows (not "none": nothing found; "cleared": removed)
+
+
+def _cover(job_dir, mv_dir, base, meta):
+    """The song's cover next to its video (copied from the job's cover.jpg when it changed; removed when the song has
+    none any more). Returns its file name or None."""
+    src, dst = os.path.join(job_dir, "cover.jpg"), os.path.join(mv_dir, base + COVER_EXT)
+    if (meta or {}).get("status") in ALBUM_SHOWN and os.path.isfile(src):
+        try:
+            if not os.path.isfile(dst) or os.path.getsize(dst) != os.path.getsize(src) or os.path.getmtime(dst) < os.path.getmtime(src):
+                tmp = os.path.join(mv_dir, "." + base + COVER_EXT + ".part")
+                shutil.copyfile(src, tmp)
+                os.replace(tmp, dst)
+            return base + COVER_EXT
+        except OSError:
+            return base + COVER_EXT if os.path.isfile(dst) else None
+    if os.path.isfile(dst):
+        try:
+            os.remove(dst)
+        except OSError:
+            pass
+    return None
+
+
+def album_fields(job_dir, job, mv_dir, base):
+    m = job.get("album_meta") or {}
+    shown = m.get("status") in ALBUM_SHOWN
+    return {"album": m.get("album") if shown else None, "year": m.get("year") if shown else None,
+            "genre": m.get("genre") if shown else None, "cover": _cover(job_dir, mv_dir, base, m)}
+
+
 def _lyrics(mv_dir, base):
     modes = {m: f"{base}.{m}.ass" for m in MODES if os.path.isfile(os.path.join(mv_dir, f"{base}.{m}.ass"))}
     return {"file": f"{base}.ass" if os.path.isfile(os.path.join(mv_dir, f"{base}.ass")) else None, "modes": modes}
@@ -268,7 +302,7 @@ def entry_for(job_dir, job, lib_dir, mv_dir):
             "group": group_key(job.get("artist"), title),
             "words": base + WORDS_EXT if os.path.isfile(os.path.join(mv_dir, base + WORDS_EXT)) else None,
             "lines": n, "first": first, "pitch": _pitch(mv_dir, base), "plays": 0, "last_played": None,
-            "vocals": _vocals(mv_dir, base)}
+            "vocals": _vocals(mv_dir, base), **album_fields(job_dir, job, mv_dir, base)}
 
 
 def build(jobs_dir, lib_dir, mv_dir, old=None, log=None, plays=None):

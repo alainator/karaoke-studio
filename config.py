@@ -26,6 +26,9 @@ MV_DIR = os.path.join(LIBRARY, env("KARAOKE_MV_FOLDER", "Music Videos"))
 PIKARAOKE_URL = env("PIKARAOKE_URL", "").rstrip("/")
 PIKARAOKE_PASSWORD = env("PIKARAOKE_ADMIN_PASSWORD", "")
 PIKARAOKE_DB = env("PIKARAOKE_DB", "")
+# album, year, genre and cover art for each song (albummeta.py: the iTunes catalogue, then MusicBrainz; only the artist
+# and title are sent). ALBUM_LOOKUP=0 turns it off.
+ALBUM_LOOKUP = env("ALBUM_LOOKUP", "1").strip() != "0"
 # working folders: jobs (previews), download/stem cache, separation model weights
 JOBS = env("KARAOKE_JOBS", os.path.join(HERE, "data", "jobs"))
 WORK = env("KARAOKE_WORK", os.path.join(HERE, "data", "work"))

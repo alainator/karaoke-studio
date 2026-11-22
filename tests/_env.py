@@ -21,7 +21,7 @@ for k, v in {
     "HELPER_TOKEN": "test-token-" + "x" * 30, "HELPER_ALLOW": "", "USE_LOCAL_GPU": "1", "MIN_GPU_FREE_MIB": "0",
     "STUDIO_ORIGINS": "", "NODE_BIN": "", "KARAOKE_DATA": f"{ROOT}/data", "STUDIO_PUBLIC_URL": "", "STUDIO_NAME": "Test Studio",
     "ENCORE_TOKEN": "preset-token-" + "p" * 30, "ENCORE_ONLY_NETS": "", "ENCORE_STUDIO_ADDRESS": "http://studio.test:5570",
-    "KARAOKE_LYRICS_FONT": "classic", "AGENT_KEYS_REQUIRED": "0", "STUDIO_PERSON_HEADER": "X-authentik-username",
+    "KARAOKE_LYRICS_FONT": "classic", "AGENT_KEYS_REQUIRED": "0", "STUDIO_PERSON_HEADER": "X-authentik-username", "ALBUM_LOOKUP": "0",
     "KARAOKE_DEVICE": "",
 }.items():
     os.environ[k] = v

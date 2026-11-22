@@ -26,6 +26,10 @@ additive only; Encore accepts 1 and 2 and ignores unknown fields):
   (VIDEO time, trims applied), mono or stereo, ~128 kb/s. Versions share the song's audio, so a version's file is a
   copy (or the same content) of the song's. A catalog written before this field existed has no `vocals` key: read
   it as null.
+- `"album"`, `"year"` (integer), `"genre"`, `"cover": "<base>.cover.jpg"`, each or null, on each song: its album
+  details and cover art (the Studio looks them up; the person can correct or remove them). The cover is an image
+  (JPEG, or PNG) next to the video, about 500-600 px square, for players to show instead of their own tile. A
+  catalog written before these existed has no such keys: read them as null.
 
 ### 1.1 `<base>.pitch.json`
 

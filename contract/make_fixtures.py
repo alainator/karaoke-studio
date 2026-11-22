@@ -44,7 +44,7 @@ for k, v in {"KARAOKE_JOBS": f"{ROOT}/jobs", "KARAOKE_WORK": f"{ROOT}/work", "KA
              "STUDIO_ORIGINS": "", "STUDIO_PUBLIC_URL": "https://studio.example.lan", "STUDIO_NAME": "Karaoke Studio",
              "ENCORE_TOKEN": "", "ENCORE_ONLY_NETS": "", "KARAOKE_LYRICS_FONT": "classic", "KARAOKE_LYRICS_DISPLAY": "both",
              "AGENT_KEYS_REQUIRED": "0", "STUDIO_PERSON_HEADER": "X-authentik-username", "KARAOKE_DEVICE": "",
-             "USE_LOCAL_GPU": "1", "MIN_GPU_FREE_MIB": "9000",
+             "USE_LOCAL_GPU": "1", "MIN_GPU_FREE_MIB": "9000", "ALBUM_LOOKUP": "0",
              "TZ": "UTC"}.items():
     os.environ[k] = v
 for d in ("jobs", "work", "models", "logs", "data", "fonts", "library/Music Videos"):

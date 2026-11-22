@@ -51,6 +51,7 @@ ROUTES = [
     (("POST",), J + r"/backing", "edit"),
     (("POST",), J + r"/chinese-reading", "edit"),
     (("POST",), J + r"/rename", "edit"),                    # (a published song: publish too, see app.rename)
+    (("POST",), J + r"/album", "edit"),                     # album, year, genre, cover: look up again, set, clear
     (("POST",), J + r"/detect-singers", "edit"),            # (suggestions only, nothing saved)
     (("POST",), J + r"/romaji-paste", "edit"),              # (suggestions only)
     (("POST",), J + r"/romaji-check", "edit"),              # (suggestions only)

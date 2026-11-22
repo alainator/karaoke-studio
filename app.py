@@ -23,6 +23,7 @@ import config as C  # noqa: E402
 from assgen import (MODES, display_modes, job_display, load_cast, load_lines, save_lines, variant_name,  # noqa: E402
                     who_of, write_lyrics)
 import versions  # noqa: E402
+import albummeta  # noqa: E402
 import catalog  # noqa: E402
 import romanize  # noqa: E402
 import trimtools  # noqa: E402
@@ -130,7 +131,7 @@ def rebuild_lyrics(jid, job, lines=None, cast=None, offset=None):
 # with original-script lines, base.<mode>.ass per display mode (PiKaraoke only reads base.ass and doesn't list .ass
 # files as songs, so these sit there unused until a player lets the singer pick), and for players like Encore:
 # base.words.json, base.pitch.json and base.vocals.m4a (the guide vocals; PiKaraoke doesn't list .m4a files)
-LIB_EXTS = (".mp4", ".ass") + tuple(f".{m}.ass" for m in MODES) + (catalog.WORDS_EXT, catalog.PITCH_EXT, catalog.VOCALS_EXT)
+LIB_EXTS = (".mp4", ".ass") + tuple(f".{m}.ass" for m in MODES) + (catalog.WORDS_EXT, catalog.PITCH_EXT, catalog.VOCALS_EXT, catalog.COVER_EXT)
 
 
 def publish_lyrics(jid, base):
@@ -156,6 +157,59 @@ def publish_lyrics(jid, base):
 def update_catalog():
     """Rewrite catalog.json in the library root (catalog.py) after a published song changed; never raises."""
     catalog.refresh(JOBS, LIB, MV_DIR, log)
+
+
+# ---- album, year, genre and cover (albummeta.py): looked up once per song, editable on the song page ----
+# job["album_meta"]: {"status": "found" | "none" (nothing matched) | "hand" (set on the song page) | "cleared",
+#                     "album", "year", "genre", "source", "ref", "at", "by"}; the picture is the job's cover.jpg.
+def _is_image(b):
+    return bool(b) and (b[:3] == b"\xff\xd8\xff" or b[:8] == b"\x89PNG\r\n\x1a\n")
+
+
+def album_lookup(jid, by="studio"):
+    """Look the song up now (blocking: a thread). Returns the new album_meta."""
+    job = load(jid)
+    m = albummeta.lookup(job.get("artist"), job.get("title"), job.get("title_orig"), (job.get("result") or {}).get("lang") or job.get("lang"))
+    meta = {"status": "found" if m else "none", "at": round(time.time()), "by": by}
+    cover = job_path(jid, "cover.jpg")
+    if m:
+        meta.update(album=m.get("album"), year=m.get("year"), genre=m.get("genre"), source=m.get("cover_source") or m.get("source"), ref=m.get("ref"))
+    with lock:
+        job = load(jid)
+        if (job.get("album_meta") or {}).get("status") == "hand" and by == "studio":
+            return job["album_meta"]          # (set by hand meanwhile: keep it)
+        if m and _is_image(m.get("cover")):
+            with open(cover + ".part", "wb") as f:
+                f.write(m["cover"])
+            os.replace(cover + ".part", cover)
+        elif os.path.exists(cover):
+            os.remove(cover)
+        job["album_meta"] = meta
+        save(jid, job)
+    return meta
+
+
+def album_fill():
+    """Every made song without album details yet, one at a time (the sources' own pace), then the catalog."""
+    time.sleep(45)
+    n = 0
+    for jid in sorted(os.listdir(JOBS)) if os.path.isdir(JOBS) else []:
+        try:
+            job = load(jid)
+        except Exception:
+            continue
+        if job.get("status") != "done" or job.get("album_meta"):
+            continue
+        try:
+            album_lookup(jid)
+            n += 1
+        except Exception:
+            log.exception("album: lookup failed for %s", jid)
+        if n and n % 25 == 0:
+            update_catalog()
+    if n:
+        update_catalog()
+        log.info("album: looked up %d songs", n)
 
 
 catalog.PLAYS = lambda: encore.play_rows(STORE)  # the catalog's play counts: this process's player store
@@ -526,6 +580,8 @@ def summary(job):
     out["voice_swaps"] = page_swaps(job)                    # in the page's video time; the render's: voice_swaps_now
     out["voice_swaps_now"] = page_swaps(job, used=True)
     out["title_orig"] = job.get("title_orig")              # the song page's Original title (its own script)
+    out["album_meta"] = job.get("album_meta")              # album, year, genre (albummeta.py); its cover: /cover
+    out["has_cover"] = os.path.exists(job_path(job["id"], "cover.jpg"))
     return out
 
 
@@ -2764,6 +2820,48 @@ def publish_info(jid: str):
     return {"name": base, "exists": os.path.exists(f"{MV_DIR}/{base}.mp4"), "old_versions": old_versions(job)}
 
 
+@app.get("/api/jobs/{jid}/cover")
+def job_cover(jid: str):
+    p = job_path(jid, "cover.jpg")
+    if not os.path.isfile(p):
+        raise HTTPException(404, "no cover")
+    return FileResponse(p, media_type="image/png" if open(p, "rb").read(4) == b"\x89PNG" else "image/jpeg", headers={"Cache-Control": "no-cache"})
+
+
+@app.post("/api/jobs/{jid}/album")
+async def job_album(jid: str, req: Request):
+    """{"action": "lookup"} looks it up again; {"action": "clear"} removes the album and cover (players show the
+    letter tile); {"action": "set", "album", "year", "genre"} sets them by hand (the cover stays)."""
+    check_origin(req)
+    b = await req.json()
+    actor = agents.actor_of(req)
+    load(jid)
+    a = b.get("action")
+    who = agents.stamp(actor)["by"]
+    if a == "lookup":
+        meta = await asyncio.to_thread(album_lookup, jid, who)
+    elif a in ("clear", "set"):
+        with lock:
+            job = load(jid)
+            if a == "clear":
+                meta = {"status": "cleared", "at": round(time.time()), "by": who}
+                if os.path.exists(job_path(jid, "cover.jpg")):
+                    os.remove(job_path(jid, "cover.jpg"))
+            else:
+                y = str(b.get("year") or "").strip()
+                if y and not (y.isdigit() and 1900 <= int(y) <= 2100):
+                    raise HTTPException(400, "the year is four digits, like 2003")
+                meta = dict(job.get("album_meta") or {}, status="hand", album=str(b.get("album") or "").strip()[:200] or None,
+                            year=int(y) if y else None, genre=str(b.get("genre") or "").strip()[:80] or None, at=round(time.time()), by=who)
+            job["album_meta"] = meta
+            save(jid, job)
+    else:
+        raise HTTPException(400, "action: lookup, clear or set")
+    if load(jid).get("published"):
+        await asyncio.to_thread(update_catalog)
+    return {"album_meta": meta, "has_cover": os.path.exists(job_path(jid, "cover.jpg"))}
+
+
 @app.post("/api/jobs/{jid}/publish")
 async def publish(jid: str, req: Request):
     check_origin(req)
@@ -2810,6 +2908,8 @@ def do_publish(jid, remove, actor):
         save(jid, job)
         update_catalog()
     pitch_later(jid)
+    if C.ALBUM_LOOKUP and not job.get("album_meta"):   # a newly published song: its album and cover, then the catalog
+        threading.Thread(target=lambda: (album_lookup(jid), update_catalog()), daemon=True).start()
     msg = pk_rescan() or "published"
     return {"name": base, "removed": removed, "message": msg}
 
@@ -4491,4 +4591,6 @@ if __name__ == "__main__":
     recover_jobs()
     recover_automake()
     threading.Thread(target=worker, daemon=True).start()
+    if C.ALBUM_LOOKUP:
+        threading.Thread(target=album_fill, daemon=True, name="album-fill").start()
     uvicorn.run(app, host=a.host, port=a.port, log_level="warning", proxy_headers=True, forwarded_allow_ips="*")

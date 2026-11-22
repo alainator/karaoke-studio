@@ -719,6 +719,30 @@ function closePlayer() {
   currentJob = null;
 }
 const backLink = () => `<a class="back" href="#jobs" onclick="return leaveOk()">← All songs</a>`;
+// The song's album, year, genre and cover (albummeta.py): players show the cover instead of the letter tile.
+function albumHtml(j, id) {
+  const m = j.album_meta || {}, shown = m.status === "found" || m.status === "hand";
+  const img = j.has_cover ? `<img src="/api/jobs/${esc(id)}/cover?v=${m.at || 0}" alt="" style="width:72px;height:72px;border-radius:8px;object-fit:cover;flex:none">`
+    : `<span style="width:72px;height:72px;border-radius:8px;display:inline-grid;place-items:center;background:#2a2433;flex:none;font-size:28px">♪</span>`;
+  const txt = shown ? `<b>${esc(m.album || "(no album name)")}</b>${m.year ? ` · ${m.year}` : ""}${m.genre ? ` · ${esc(m.genre)}` : ""} <span class="hint">— ${m.status === "hand" ? `set by ${esc(m.by || "you")}` : `found on ${m.source === "musicbrainz" ? "MusicBrainz" : "iTunes"}`}</span>`
+    : m.status === "none" ? `<span class="hint">No album found for this song: players show its letter tile.</span>`
+    : m.status === "cleared" ? `<span class="hint">Album removed: players show the letter tile.</span>` : `<span class="hint">The album hasn't been looked up yet.</span>`;
+  return `<div id="albumbox" style="display:flex;gap:12px;align-items:center;margin:0 0 12px">${img}<div style="min-width:0">
+    <div>${txt}</div>
+    <div class="row" style="gap:6px;margin-top:5px;flex-wrap:wrap"><button class="ghost" id="al-look" style="padding:3px 9px;font-size:12px" title="Search the iTunes catalogue and MusicBrainz again for this song's album and cover">↻ Look up again</button><button class="ghost" id="al-edit" style="padding:3px 9px;font-size:12px">Edit</button>${shown || j.has_cover ? `<button class="ghost" id="al-clear" style="padding:3px 9px;font-size:12px" title="Wrong album? Remove it: players show the letter tile">Remove</button>` : ""}</div>
+    <div id="al-form" class="row" style="gap:6px;margin-top:6px;flex-wrap:wrap" hidden><input id="al-album" class="rn" placeholder="Album" value="${esc(shown ? m.album || "" : "")}"><input id="al-year" class="rn" placeholder="Year" style="width:70px" value="${shown && m.year ? m.year : ""}"><input id="al-genre" class="rn" placeholder="Genre" style="width:120px" value="${esc(shown ? m.genre || "" : "")}"><button class="ghost" id="al-save" style="padding:5px 10px;font-size:13px">Save</button></div>
+  </div></div>`;
+}
+function wireAlbum(id) {
+  const go = async (body, msg) => {
+    try { const r = await api(`/api/jobs/${id}/album`, {method: "POST", body: JSON.stringify(body)}); toast(msg(r)); if (currentJob === id) openJob(id); }
+    catch (e) { toast(e.message); }
+  };
+  if ($("#al-look")) $("#al-look").onclick = () => { $("#al-look").disabled = true; $("#al-look").textContent = "Looking…"; go({action: "lookup"}, r => r.album_meta.status === "found" ? `Found: ${r.album_meta.album || "an album"}` : "Nothing found"); };
+  if ($("#al-clear")) $("#al-clear").onclick = () => go({action: "clear"}, () => "Album removed");
+  if ($("#al-edit")) $("#al-edit").onclick = () => { $("#al-form").hidden = !$("#al-form").hidden; };
+  if ($("#al-save")) $("#al-save").onclick = () => go({action: "set", album: $("#al-album").value, year: $("#al-year").value, genre: $("#al-genre").value}, () => "Album saved");
+}
 async function openJob(id) {
   if (currentJob !== id) { closePlayer(); ed = null; }
   currentJob = id;
@@ -749,6 +773,7 @@ async function openJob(id) {
       : j.quick ? `Made and published by party auto-make for ${esc(j.automake.player_name || "a player")}; checked by ${esc(j.quick.reviewed_by || "you")}.`
       : j.auto_held ? `<b>Party auto-make made it for ${esc(j.automake.player_name || "a player")}</b>${j.automake.by ? ` (asked by ${esc(j.automake.by)})` : ""} <b>but didn't publish it</b>: ${esc(j.auto_held)}. It needs a look; publish it when it's right.`
       : `Being made by party auto-make for ${esc(j.automake.player_name || "a player")}${j.automake.by ? ` (asked by ${esc(j.automake.by)})` : ""}.`}</div>` : ""}
+    ${j.status === "done" ? albumHtml(j, id) : ""}
     ${j.updates && j.updates.length ? `<div class="aibox" style="margin-bottom:12px"><div class="row" style="justify-content:space-between">
       <b>Made with an older version: remaking it now would add</b>
       <span class="row">${gpuMenu("gpupick2")}<button class="primary" id="remake">↻ Remake with the latest version</button></span></div>
@@ -852,6 +877,7 @@ async function openJob(id) {
     catch (e) { toast(e.message); }
   };
   if ($("#chpicks")) $("#chpicks").onclick = () => changePicks(j);
+  wireAlbum(id);
   $("#rnbtn").onclick = async () => {
     try {
       const r = await api(`/api/jobs/${id}/rename`, {method: "POST", body: JSON.stringify({artist: $("#rn-artist").value, title: $("#rn-title").value, title_orig: $("#rn-orig").value})});
