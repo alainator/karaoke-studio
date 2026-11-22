@@ -283,6 +283,16 @@ def cmd_list(a):
     if a.q:
         ql = a.q.lower()
         js = [j for j in js if ql in f"{j['artist']} - {j['title']}".lower()]
+    if a.json:   # for scripts: the same songs, as data
+        out = []
+        for j in js[:a.limit]:
+            c = (j.get("result") or {}).get("confidence") or {}
+            out.append({"id": j["id"], "artist": j["artist"], "title": j["title"], "status": j["status"], "to_check": j.get("to_check") or 0,
+                        "heard": c.get("sure"), "lines": c.get("lines"), "lang": (j.get("result") or {}).get("lang") or j.get("lang"),
+                        "published": bool(j.get("published")), "unpublished_changes": bool(j.get("unpublished_changes")),
+                        "reviewed": bool(j.get("reviewed")), "edited": bool(j.get("edited"))})
+        print(json.dumps(out, ensure_ascii=False, indent=1))
+        return
     for j in js[:a.limit]:
         r = j.get("result") or {}
         c = r.get("confidence") or {}
@@ -332,6 +342,14 @@ def cmd_check(a):
     off = d.get("offset") or 0.0
     lines = d["lines"]
     known = res["known"]
+    if getattr(a, "json", False):   # for scripts: each lead line's offset (s; null = not heard anywhere), its mark, the move
+        rows = []
+        for k, x in res["offsets"].items():
+            i = int(k); l = lines[i]
+            rows.append({"line": i + 1, "start": round(span(l)[0] + off, 2), "weak": bool(l.get("weak")), "ok": bool(l.get("ok")),
+                         "heard_offset": x, "off": x is not None and (x < -LATE or x > EARLY)})
+        print(json.dumps({"sure": res["sure"], "lead": res["lead"], "followed": bool(known), "has_heard": bool(res.get("heard_words")), "lines": rows}, indent=1))
+        return
     if not res.get("heard_words"):
         die("this song has no record of what was heard (heard.json): made before the by-ear check, or on a GPU helper "
             "on older code. On the Studio's machine, deploy/check-library.py --missing-heard makes one (GPU, about 20 s "
@@ -354,6 +372,74 @@ def cmd_check(a):
             print(f"{i + 1:3} ⚠ {fmt(a0 + off)}  heard in place now ({x:+.1f} s): if it looks right, ks ok SONG {i + 1}")
     if not bad:
         print("no line is heard somewhere else (beyond the studio's tolerance: 1 s late, 2.5 s early)")
+
+
+# ---------------- autofix: the clear fixes only ----------------
+AUTO_MAX = 15.0       # a single line moves at most this far (more is a different problem: a cut, or wrong lyrics)
+SECTION_MAX = 90.0    # a run of lines off by the same amount (a section the video plays elsewhere) may move this far
+
+
+def autofix_plan(res, lines):
+    """The clear fixes, from the by-ear check: ⚠ lines (never ones marked fine) heard late by 1-15 s or early by more
+    than the studio's 2.5 s tolerance (up to 15 s). Three or more neighbouring ⚠ lines off by about the same amount
+    are one section: they move together. Returns ("section", first, last, delta) or ("line", i, delta) or None."""
+    sug = []
+    for k, x in res["offsets"].items():
+        i = int(k); l = lines[i]
+        if x is None or not l.get("weak") or l.get("ok"):
+            continue
+        d = abs(x)
+        if (x < 0 and LATE <= d <= SECTION_MAX) or (x > 0 and EARLY < d <= SECTION_MAX):
+            sug.append((i, x))
+    sug.sort()
+    run, best = [], None
+    for i, x in sug + [(None, None)]:
+        if i is not None and run and i - run[-1][0] <= 2 and abs(x - run[0][1]) <= 0.4:
+            run.append((i, x)); continue
+        if len(run) >= 3 and abs(run[0][1]) >= LATE and (best is None or len(run) > len(best)):
+            best = run
+        run = [(i, x)] if i is not None else []
+    if best:
+        ds = sorted(x for _, x in best)
+        return ("section", best[0][0], best[-1][0], ds[len(ds) // 2])
+    single = [(i, x) for i, x in sug if abs(x) <= AUTO_MAX]
+    if not single:
+        return None
+    i, x = max(single, key=lambda s: -s[1] if s[1] < 0 else 0)   # the line that lights up latest first
+    return ("line", i, x)
+
+
+def cmd_autofix(a):
+    """Apply the clear fixes, one at a time, checking by ear again after each (line numbers stay right)."""
+    job = resolve(a.song)
+    done = 0
+    for _ in range(a.max):
+        d = get_lines(job)
+        res = by_ear(job)
+        if not res.get("heard_words"):
+            die("this song has no record of what was heard: nothing to go by (ks look, by the picture)")
+        if res["lead"] and res["sure"] < 0.5 * res["lead"]:
+            print(f"the studio couldn't follow this song by ear ({res['sure']} of {res['lead']} lines heard in place): "
+                  "autofix leaves it to the picture (ks look) and you"); return
+        plan = autofix_plan(res, d["lines"])
+        if not plan:
+            break
+        if plan[0] == "section":
+            _, i0, i1, x = plan
+            say = f"lines {i0 + 1}-{i1 + 1} (a section heard {abs(x):.1f} s {'earlier' if x < 0 else 'later'}) {x:+.2f} s"
+        else:
+            _, i0, x = plan; i1 = i0
+            say = f"line {i0 + 1} (heard {abs(x):.1f} s {'earlier' if x < 0 else 'later'}) {x:+.2f} s"
+        if a.dry:
+            print("would move", say); return
+        def ch(lines, off, i0=i0, i1=i1, x=x, say=say):
+            for l in lines[i0:i1 + 1]:
+                shift(l, x); l["weak"] = False
+            return "moved " + say
+        edit(job, ch, f"autofix: {say}")
+        done += 1
+    print(f"autofix: {done} fix{'es' if done != 1 else ''}" + (" (ks undo SONG takes them back one by one)" if done else ": nothing clear to fix") +
+          "; the rest stays marked ⚠ for a person (ks check SONG)")
 
 
 def window(job, d, a):
@@ -968,9 +1054,11 @@ def main():
     s = sub.add_parser("history"); s.add_argument("song"); s.set_defaults(f=cmd_history)
     s = sub.add_parser("status"); s.add_argument("--brief", action="store_true"); s.set_defaults(f=cmd_status)
     s = sub.add_parser("list"); s.add_argument("--fix", action="store_true"); s.add_argument("--failed", action="store_true")
-    s.add_argument("--q"); s.add_argument("--limit", type=int, default=60); s.set_defaults(f=cmd_list)
-    for name, f in (("show", cmd_show), ("check", cmd_check)):
-        s = sub.add_parser(name); s.add_argument("song"); s.set_defaults(f=f)
+    s.add_argument("--q"); s.add_argument("--limit", type=int, default=60); s.add_argument("--json", action="store_true"); s.set_defaults(f=cmd_list)
+    s = sub.add_parser("show"); s.add_argument("song"); s.set_defaults(f=cmd_show)
+    s = sub.add_parser("check"); s.add_argument("song"); s.add_argument("--json", action="store_true"); s.set_defaults(f=cmd_check)
+    s = sub.add_parser("autofix"); s.add_argument("song"); s.add_argument("--dry", action="store_true")
+    s.add_argument("--max", type=int, default=12, help="at most this many fixes (default 12)"); s.set_defaults(f=cmd_autofix)
     for name, f in (("heard", cmd_heard), ("look", cmd_look), ("frame", cmd_frame)):
         s = sub.add_parser(name); s.add_argument("song"); s.add_argument("--line", type=int); s.add_argument("--at")
         s.add_argument("--span", type=float); s.set_defaults(f=f)

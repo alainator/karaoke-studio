@@ -1142,6 +1142,58 @@ function markCurrent() {
     tr.classList.toggle("cur", on);
   });
 }
+// The by-ear check in the editor (the same as ks check / ks autofix): where each ⚠ line is really heard, and the
+// clear fixes (⚠ lines heard 1-15 s late, or early beyond the 2.5 s tolerance; 3+ neighbouring lines off by the same
+// amount move together as one section). They're ordinary edits: nothing is saved until Save, and Undo takes them back.
+function earPlan(res) {
+  const sug = [];
+  for (const [k, x] of Object.entries(res.offsets || {})) {
+    const i = +k, l = ed.lines[i];
+    if (x == null || !l || !l.weak || l.ok) continue;
+    const d = Math.abs(x);
+    if ((x < 0 && d >= 1 && d <= 90) || (x > 0 && d > 2.5 && d <= 90)) sug.push({i, x});
+  }
+  sug.sort((a, b) => a.i - b.i);
+  const sections = []; let run = [];
+  for (const s of [...sug, null]) {
+    if (s && run.length && s.i - run[run.length - 1].i <= 2 && Math.abs(s.x - run[0].x) <= 0.4) { run.push(s); continue; }
+    if (run.length >= 3) { const ds = run.map(r => r.x).sort((a, b) => a - b); sections.push({a: run[0].i, b: run[run.length - 1].i, x: ds[ds.length >> 1]}); }
+    run = s ? [s] : [];
+  }
+  const inSec = i => sections.some(r => i >= r.a && i <= r.b);
+  return {sections, singles: sug.filter(s => !inSec(s.i) && Math.abs(s.x) <= 15)};
+}
+function earHtml() {
+  const e = ed.ear;
+  if (!e) return "";
+  if (e.busy) return `<div class="hint" style="margin-top:6px">Listening to the song again…</div>`;
+  if (e.err) return `<div class="hint" style="margin-top:6px">${esc(e.err)}</div>`;
+  const p = e.plan, n = p.sections.length + p.singles.length;
+  if (!n) return `<div class="hint" style="margin-top:6px">🎧 Nothing clear to fix by ear: the marked lines are heard where they sit or can't be found. Play them and decide.</div>`;
+  const side = x => `heard ${Math.abs(x).toFixed(1)} s ${x < 0 ? "earlier (lights up late)" : "later (shows too early)"}`;
+  return `<div style="margin-top:6px;display:flex;flex-direction:column;gap:3px">` +
+    p.sections.map((r, k) => `<div>🎧 <b>Lines ${r.a + 1}–${r.b + 1}</b> · a whole section ${side(r.x)} <button class="ghost" data-earsec="${k}" style="padding:2px 8px;font-size:12px" ${r.done ? "disabled" : ""}>${r.done ? "Moved" : `Move them ${r.x > 0 ? "+" : ""}${r.x.toFixed(1)} s`}</button></div>`).join("") +
+    p.singles.map((s, k) => `<div>🎧 <b>Line ${s.i + 1}</b> · ${side(s.x)} <button class="ghost" data-earone="${k}" style="padding:2px 8px;font-size:12px" ${s.done ? "disabled" : ""}>${s.done ? "Moved" : `Move ${s.x > 0 ? "+" : ""}${s.x.toFixed(1)} s`}</button></div>`).join("") +
+    (n > 1 ? `<div><button class="ghost" id="earall" style="padding:3px 10px;font-size:12px;margin-top:3px">Apply all ${n} clear fixes</button> <span class="hint">then play them through and Save</span></div>` : "") + `</div>`;
+}
+async function earCheck() {
+  if (ed.dirty) { ed.ear = {err: "Save your edits first: the check listens to the saved version."}; return renderEditor(); }
+  const id = ed.id;
+  ed.ear = {busy: true}; renderEditor();
+  try {
+    const res = await api(`/api/jobs/${id}/agent/check`);
+    if (!ed || ed.id !== id) return;
+    if (!res.heard_words) ed.ear = {err: "This song has no record of what was heard, so it can't be checked by ear."};
+    else if (res.lead && res.sure < 0.5 * res.lead) ed.ear = {err: `The studio couldn't follow this song by ear (${res.sure} of ${res.lead} lines heard in place): play it through and judge.`};
+    else ed.ear = {plan: earPlan(res)};
+  } catch (e) { if (ed) ed.ear = {err: e.message}; }
+  renderEditor();
+}
+function earApply(sec, one) {
+  const shiftRange = (a, b, x) => { for (let i = a; i <= b; i++) { shiftLine(ed.lines[i], x); ed.lines[i].weak = false; } };
+  if (sec && !sec.done) { shiftRange(sec.a, sec.b, sec.x); sec.done = true; }
+  if (one && !one.done) { shiftRange(one.i, one.i, one.x); one.done = true; }
+}
 // What needs fixing in this song, in plain words: each marked line with its time and the reason; click one to jump
 // to it. Nothing marked: say how much of the song was heard right where it sits.
 function fixBox() {
@@ -1158,6 +1210,7 @@ function fixBox() {
   }
   return `<div class="aibox" style="margin-bottom:10px;border-color:#ffb020"><b>⚠ ${marked.length} line${marked.length === 1 ? "" : "s"} to fix or confirm</b>
     <span class="hint"> — click one to jump there; move the line if it's off, or click its ⚠ in the list below if it's fine.</span>
+    <button class="ghost" id="earcheck" style="padding:3px 8px;font-size:12px;margin-left:6px" title="Listen to the song again and say where each marked line is really sung, with one-click moves for the clear ones">🎧 Check by ear</button>${earHtml()}
     <div style="margin-top:6px;display:flex;flex-direction:column;gap:3px;max-height:150px;overflow:auto">${marked.map(([l, i]) =>
       `<button class="ghost" data-fix="${i}" style="text-align:left;padding:4px 8px;font-size:13px"><b>${fmtT(l.words[0][0] + curOff())}</b> · line ${i + 1} · ${esc(l.words.map(w => w[2]).join(" ").slice(0, 46))} <span class="hint">— ${esc(l.why || "the studio is unsure about its timing")}${l.note ? ` · <b>${esc(l.note.by)}</b>: ${esc(l.note.text)}` : ""}</span></button>`).join("")}</div></div>`;
 }
@@ -1239,6 +1292,19 @@ function renderEditor() {
     ed.sel = i; renderEditor(); keepVisible(i);
     const v = $("#pv"); v.currentTime = Math.max(0, ed.lines[i].words[0][0] + curOff() - 1.5); v.play();
   });
+  if ($("#earcheck")) $("#earcheck").onclick = earCheck;
+  document.querySelectorAll("[data-earsec],[data-earone]").forEach(b => b.onclick = () => {
+    const p = ed.ear && ed.ear.plan; if (!p) return;
+    if (b.dataset.earsec != null) earApply(p.sections[+b.dataset.earsec], null); else earApply(null, p.singles[+b.dataset.earone]);
+    ed.dirty = true; renderEditor(); markCurrent();
+    toast("Moved: play it, then Save (or Undo)");
+  });
+  if ($("#earall")) $("#earall").onclick = () => {
+    const p = ed.ear && ed.ear.plan; if (!p) return;
+    p.sections.forEach(r => earApply(r, null)); p.singles.forEach(s => earApply(null, s));
+    ed.ear = null; ed.dirty = true; renderEditor(); markCurrent();
+    toast("Applied the clear fixes: play them through, then Save");
+  };
   if ($("#nextweak")) $("#nextweak").onclick = () => {
     const from = ed.sel != null ? ed.sel : -1;
     let i = ed.lines.findIndex((l, k) => k > from && l.weak); if (i < 0) i = ed.lines.findIndex(l => l.weak); if (i < 0) return;

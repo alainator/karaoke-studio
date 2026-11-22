@@ -82,6 +82,15 @@ undoable like edits.
 - Word-by-word perfection isn't the goal: up a little early and long enough to sing along. The person does the final
   touches.
 
+## The quick first pass
+
+`ks autofix SONG` applies only the fixes the by-ear check is clear about: ⚠ lines heard 1-15 s late or early beyond
+the 2.5 s tolerance, and a run of three or more neighbouring lines off by the same amount moved together as one
+section. It checks again after every fix, skips songs the studio couldn't follow by ear, never touches lines marked
+fine and never clears a mark. `--dry` shows what it would do. People have the same in the web editor: **🎧 Check by
+ear** in a song's ⚠ box, with a Move button per line and "Apply all clear fixes" (nothing is saved until Save).
+`ks list --json` and `ks check SONG --json` give the same information as data, for scripts.
+
 ## Verifying by ear and by picture
 
 You can't listen, but the Studio can, and it can draw what it hears:

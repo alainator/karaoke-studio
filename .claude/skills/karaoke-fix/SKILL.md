@@ -25,6 +25,9 @@ or a unique piece of "Artist - Title". `ks whoami` says what your key allows.
    the exact move to try (`→ ks move SONG N -3.07`). Many lines off by the same large amount usually means the
    video cuts or repeats a section differently from the lyrics: fix the first one with `--ripple`, then check
    again.
+   `ks autofix SONG` applies only the clear ones (⚠ lines heard 1-15 s late or beyond the early tolerance, a run of
+   3+ lines off by the same amount as one section) and checks again after each; `--dry` shows the first one it would
+   make. Start with it, then work on what's left by hand. `ks check SONG --json` gives the same check as data.
 3. For each line in doubt, look before you move:
    - `ks heard SONG --line N`: the words Whisper heard around it, with times.
    - `ks look SONG --line N` (or `--at 1:23 --span 14`), then open the PNG it prints. Top: the vocal spectrogram;

@@ -19,6 +19,7 @@ Type `Artist - Title`. The studio finds the music video on YouTube and the lyric
 - **Tells you what to fix.** Every song is checked by ear after it's made: lines heard somewhere other than where they sit are marked ⚠ with the reason, the song page lists them, and the song list shows how many each song has left.
 - **Colours singers.** Duets, groups of up to 8 named singers, and lines shared mid-way (paint the words of each singer). Pasting a Genius page with headers like `[Chorus: Name]` colours the lines for you.
 - **Remakes safely.** Older songs show what a remake would improve. A remake keeps your edits, changes nothing if it finds nothing better, and can be undone.
+- **One-click fixes by ear.** 🎧 Check by ear in the editor lists where each ⚠ line is really sung and moves the clear ones for you (`ks autofix` for agents).
 - **Works with an agent, or without.** An AI agent (Claude Code, a local model, anything that can run a command) can do the first pass of checking and fixing through `ks`, with only the permissions you give it; every edit is signed and undoable. Or do it all by hand.
 - **Uses a second GPU.** A PC on your network can take songs when the main GPU is busy, or you can choose which GPU makes each song.
 - **Party auto-make.** With your OK (per linked player), a party's request for a missing song is found, made and published by the studio in a few minutes, picked the way the Make page picks; songs below a quality floor wait for a look, and quick makes are marked until someone checks them.

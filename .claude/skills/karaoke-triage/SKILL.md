@@ -10,7 +10,9 @@ description: Find which Karaoke Studio songs need work and in what order - songs
   flags (P published, * changes not published yet, ✓ checked by the person, e edited), name, id.
 - `ks list --failed`, then `ks log SONG` for why. A YouTube "403 Forbidden" is usually temporary: a retry
   fixes it (`ks retry SONG`, when the person agrees and your key allows remakes).
-- `ks list --q "text"` finds songs by name.
+- `ks list --q "text"` finds songs by name. `--json` on `ks list` and `ks check` gives data for scripts.
+- Going through many songs: `ks autofix SONG` on each takes the clear fixes (it leaves songs the studio couldn't
+  follow by ear alone, never clears a mark, never touches lines marked fine); what's left is the person's list.
 
 ## Sorting what you find
 1. A few ⚠ lines (1-5) on a song that is otherwise heard in place: quick checks; often each one just needs a look
