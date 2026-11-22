@@ -3630,6 +3630,8 @@ def auto_finish(jid):
                 j.setdefault("log", []).append(f"auto-make: not published ({why}); it needs a look")
                 save(jid, j)
             log.info("auto-make: %s not published: %s", jid, why)
+            # the person hears about it on their devices (Studio app), so nothing waits unseen until after the party
+            notify(f"⏸ {job.get('artist') or ''} – {job.get('title') or ''}".replace("⏸  – ", "⏸ "), f"Made for the party but held for a look: {why}", f"/#jobs/{jid}")
             return
         who = AM.actor(am.get("player_name"))
         do_publish(jid, [], who)

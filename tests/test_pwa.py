@@ -65,5 +65,13 @@ class PwaTests(unittest.TestCase):
         self.assertEqual(_asgi.jcall(A.app, "POST", "/api/push/unsubscribe", {"endpoint": sub["endpoint"]})[2]["devices"], 0)
 
 
+class HeldNoticeTests(unittest.TestCase):
+    def test_a_held_auto_make_notifies(self):
+        import inspect
+        src = inspect.getsource(A.auto_finish)
+        self.assertIn("notify(", src)               # (the held branch tells the person's devices)
+        self.assertIn("held for a look", src)
+
+
 if __name__ == "__main__":
     unittest.main()
