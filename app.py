@@ -3813,7 +3813,8 @@ def _push_save(d):
 
 
 def _webpush(*args, data=None):
-    node = C.NODE_BIN if getattr(C, "NODE_BIN", "") else "node"
+    # NODE_BIN is the folder node is in (config.py puts it on PATH for the tools); else PATH's node
+    node = os.path.join(C.NODE_BIN, "node") if C.NODE_BIN and os.path.isdir(C.NODE_BIN) else (shutil.which("node") or "node")
     r = subprocess.run([node, os.path.join(HERE, "webpush.mjs"), *args], input=data, capture_output=True, text=True, timeout=30)
     return json.loads(r.stdout or "{}")
 

@@ -22,6 +22,17 @@ class PwaTests(unittest.TestCase):
         if os.path.exists(A.PUSH_FILE):
             os.remove(A.PUSH_FILE)
 
+    def test_node_bin_as_a_folder(self):
+        """NODE_BIN names node's folder (config.py puts it on PATH), as on the live Studio: the keys still come."""
+        import config as C, shutil
+        old = C.NODE_BIN
+        C.NODE_BIN = os.path.dirname(shutil.which("node"))
+        try:
+            k = self.real("keys")
+        finally:
+            C.NODE_BIN = old
+        self.assertEqual(len(k["public"]), 87)
+
     def test_manifest_and_worker(self):
         st, h, b = _asgi.call(A.app, "GET", "/manifest.webmanifest")
         m = json.loads(b)
