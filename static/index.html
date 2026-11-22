@@ -6,6 +6,12 @@
 <title>Karaoke Studio</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='12' r='8' fill='%23ffd23f'/%3E%3Crect x='14' y='18' width='4' height='12' rx='2' fill='%23ffd23f'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="/static/theme.css">
+<link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials">
+<meta name="theme-color" content="#15111c">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Studio">
+<link rel="apple-touch-icon" href="/static/pwa/apple-180.png">
 <style>
 /* The Studio's layout. Colours, fonts, buttons, chips, tags, cards and tables come from theme.css (Encore's look). */
 header { display: flex; align-items: center; gap: 18px; padding: 10px 20px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--header-bg); backdrop-filter: blur(10px); z-index: 5; flex-wrap: wrap; }
@@ -192,6 +198,7 @@ nav button.on .nbadge { background: var(--on-accent); color: var(--accent); }
   /* scrolled down: only the search box (and the count) stay up top */
   .finder.compact select, .finder.compact .chips, .finder.compact .azbar { display: none; }
 }
+.appbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 10px}.appbar:empty{display:none}
 </style>
 </head>
 <body>
@@ -250,6 +257,7 @@ nav button.on .nbadge { background: var(--on-accent); color: var(--accent); }
   </section>
 
   <section id="v-requests" class="view">
+    <div id="appbar" class="appbar"></div>
     <div class="chips" id="rchips" style="margin:0 0 10px"></div>
     <p class="hint">Songs guests asked for in Encore. <b>Find and make</b> searches for it on the Make tab, and the request follows the song you make (being made, ready, published); <b>We have it</b> points it at a song already made; <b>Decline</b> tells the guest no, with a reason.</p>
     <div class="reqs" id="reqs"></div>
@@ -276,6 +284,54 @@ async function api(path, opts = {}) {
   let body; try { body = await r.json(); } catch { body = {}; }
   if (!r.ok) throw new Error(body.detail || `HTTP ${r.status}`);
   return body;
+}
+// ---- the Studio app (PWA): install it, and a notification on this device for each guest's request ----
+let installEvt = null;
+window.addEventListener("beforeinstallprompt", e => { e.preventDefault(); installEvt = e; appBar(); });
+window.addEventListener("appinstalled", () => { installEvt = null; toast("Installed: open Karaoke Studio from your apps"); appBar(); });
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js", {scope: "/"}).then(() => appBar()).catch(() => {});
+const standalone = () => matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+const isIOS = () => /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+function b64uBytes(s) { const b = atob(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4)); return Uint8Array.from(b, c => c.charCodeAt(0)); }
+function deviceLabel() {
+  const u = navigator.userAgent;
+  const kind = /iPad/.test(u) || (isIOS() && !/iPhone/.test(u)) ? "iPad" : /iPhone/.test(u) ? "iPhone" : /Android/.test(u) ? (/Mobile/.test(u) ? "Android phone" : "Android tablet")
+    : /Windows/.test(u) ? "Windows" : /Mac/.test(u) ? "Mac" : /Linux/.test(u) ? "Linux" : "a device";
+  return kind + (standalone() ? " (app)" : "");
+}
+async function pushSub() {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) return null;
+  const reg = await navigator.serviceWorker.ready;
+  return {reg, sub: await reg.pushManager.getSubscription()};
+}
+async function appBar() {
+  const el = $("#appbar"); if (!el) return;
+  let h = "";
+  if (installEvt && !standalone()) h += `<button class="ghost" id="appinstall" style="padding:5px 10px;font-size:13px">📲 Install the Studio app</button>`;
+  else if (isIOS() && !standalone()) h += `<span class="hint">📲 To install: Share → Add to Home Screen (notifications need the installed app on iPhone and iPad).</span>`;
+  const p = await pushSub().catch(() => null);
+  if (!p) h += isIOS() && !standalone() ? "" : `<span class="hint">This browser can't show notifications.</span>`;
+  else if (p.sub) h += `<span class="hint">🔔 Requests notify this device.</span> <button class="ghost" id="pushtest" style="padding:3px 8px;font-size:12px">Test</button> <button class="ghost" id="pushoff" style="padding:3px 8px;font-size:12px">Turn off</button>`;
+  else if (Notification.permission === "denied") h += `<span class="hint">🔕 Notifications are blocked for this site in the browser's settings.</span>`;
+  else h += `<button class="ghost" id="pushon" style="padding:5px 10px;font-size:13px" title="A notification on this device when a guest asks for a song">🔔 Notify me on this device</button>`;
+  el.innerHTML = h;
+  if ($("#appinstall")) $("#appinstall").onclick = async () => { const e = installEvt; installEvt = null; e.prompt(); await e.userChoice.catch(() => {}); appBar(); };
+  if ($("#pushon")) $("#pushon").onclick = async () => {
+    try {
+      if (await Notification.requestPermission() !== "granted") return toast("Notifications weren't allowed");
+      const {key} = await api("/api/push");
+      const {reg} = await pushSub();
+      const sub = await reg.pushManager.subscribe({userVisibleOnly: true, applicationServerKey: b64uBytes(key)});
+      await api("/api/push/subscribe", {method: "POST", body: JSON.stringify({sub: sub.toJSON(), label: deviceLabel()})});
+      toast("This device gets a notification for each request"); appBar();
+    } catch (e) { toast("Couldn't turn on notifications: " + e.message); }
+  };
+  if ($("#pushtest")) $("#pushtest").onclick = () => api("/api/push/test", {method: "POST"}).then(() => toast("Sent: it should pop up in a few seconds")).catch(e => toast(e.message));
+  if ($("#pushoff")) $("#pushoff").onclick = async () => {
+    const p = await pushSub();
+    if (p && p.sub) { const ep = p.sub.endpoint; await p.sub.unsubscribe().catch(() => {}); await api("/api/push/unsubscribe", {method: "POST", body: JSON.stringify({endpoint: ep})}).catch(() => {}); }
+    toast("Notifications off on this device"); appBar();
+  };
 }
 function toast(msg, ms = 4500) { const t = $("#toast"); t.textContent = msg; t.style.display = "block"; clearTimeout(t._h); t._h = setTimeout(() => t.style.display = "none", ms); }
 
@@ -1841,6 +1897,7 @@ function reqCard(r) {
 }
 const AM_STAGE = {finding: "finding the video and lyrics", downloading: "downloading", making: "making", publishing: "publishing"};
 function renderRequests() {
+  appBar();
   const all = REQS.requests, counts = REQ_FILTERS.map(f => all.filter(f[2]).length);
   const cur = REQ_FILTERS.find(f => f[0] === RQ.f) || REQ_FILTERS[0], list = all.filter(cur[2]);
   $("#rchips").innerHTML = chipsHtml(REQ_FILTERS, counts, cur[0]);

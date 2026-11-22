@@ -42,6 +42,7 @@ ROUTES = [
     (("POST",), r"/api/requests/[^/]+/[^/]+", ADMIN),
     (("GET", "POST", "DELETE"), r"/api/profiles(/.*)?", ADMIN),
     (("GET", "POST"), r"/api/automake", ADMIN),              # party auto-make: a Studio feature, never an agent's
+    (("GET", "POST"), r"/api/push(/.*)?", ADMIN),             # the Studio app's notifications: people's devices
     (("POST",), r"/api/jobs", "make"),                      # (with "replace" = Change video or lyrics: remake)
     (("POST",), J + r"/cancel", "make"),
     (("POST",), J + r"/lines", "edit"),                     # (clearing marks or ok needs clear_marks; see app.put_lines)

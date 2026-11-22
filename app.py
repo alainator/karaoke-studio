@@ -3790,6 +3790,109 @@ async def encore_request(req: Request):
     return apply_request(req.state.player, b)
 
 
+# ---- the Studio app (PWA): installable, and a notification on each device that asked for one ----
+# The VAPID key pair and the devices' push subscriptions live in DATA/push.json (only the Studio reads it); webpush.mjs
+# (Node's own crypto) encrypts and sends. People only (agents.ROUTES: ADMIN).
+PUSH_FILE = os.path.join(C.DATA, "push.json")
+push_lock = threading.Lock()
+
+
+def _push_load():
+    try:
+        return json.load(open(PUSH_FILE))
+    except (OSError, ValueError):
+        return {"vapid": None, "subs": []}
+
+
+def _push_save(d):
+    os.makedirs(os.path.dirname(PUSH_FILE), exist_ok=True)
+    with open(PUSH_FILE + ".tmp", "w") as f:
+        json.dump(d, f)
+    os.chmod(PUSH_FILE + ".tmp", 0o600)
+    os.replace(PUSH_FILE + ".tmp", PUSH_FILE)
+
+
+def _webpush(*args, data=None):
+    node = C.NODE_BIN if getattr(C, "NODE_BIN", "") else "node"
+    r = subprocess.run([node, os.path.join(HERE, "webpush.mjs"), *args], input=data, capture_output=True, text=True, timeout=30)
+    return json.loads(r.stdout or "{}")
+
+
+def push_keys():
+    with push_lock:
+        d = _push_load()
+        if not d.get("vapid"):
+            d["vapid"] = _webpush("keys")
+            _push_save(d)
+        return d
+
+
+def notify(title, body, url="/"):
+    """A notification on every subscribed device (in a thread: never slows a request down). Gone ones are dropped."""
+    def go():
+        d = push_keys()
+        gone = []
+        for s in list(d.get("subs") or []):
+            try:
+                r = _webpush("send", data=json.dumps({"sub": s["sub"], "payload": {"title": title, "body": body, "url": url},
+                                                       "vapid": d["vapid"], "subject": "https://github.com/alainator/karaoke-studio"}))
+            except Exception as e:
+                log.warning("push: %s", e); continue
+            if r.get("status") in (404, 410):
+                gone.append(s["sub"]["endpoint"])
+            elif not (200 <= (r.get("status") or 0) < 300):
+                log.warning("push to %s: %s %s", s.get("label") or "a device", r.get("status"), r.get("error") or "")
+        if gone:
+            with push_lock:
+                d = _push_load()
+                d["subs"] = [s for s in d.get("subs") or [] if s["sub"]["endpoint"] not in gone]
+                _push_save(d)
+    threading.Thread(target=go, daemon=True, name="push").start()
+
+
+@app.get("/api/push")
+def push_info():
+    d = push_keys()
+    return {"key": d["vapid"]["public"], "devices": [{"label": s.get("label"), "at": s.get("at")} for s in d.get("subs") or []]}
+
+
+@app.post("/api/push/subscribe")
+async def push_subscribe(req: Request):
+    """{"sub": the browser's PushSubscription (endpoint, keys), "label": "Galaxy Tab"}: this device gets notifications."""
+    check_origin(req)
+    b = await req.json()
+    sub = b.get("sub") or {}
+    ep, keys = str(sub.get("endpoint") or ""), sub.get("keys") or {}
+    if not ep.startswith("https://") or not keys.get("p256dh") or not keys.get("auth"):
+        raise HTTPException(400, "not a push subscription")
+    push_keys()
+    with push_lock:
+        d = _push_load()
+        d["subs"] = [s for s in d.get("subs") or [] if s["sub"]["endpoint"] != ep][-19:] + [
+            {"sub": {"endpoint": ep, "keys": {"p256dh": str(keys["p256dh"]), "auth": str(keys["auth"])}},
+             "label": str(b.get("label") or "a device")[:60], "at": round(time.time())}]
+        _push_save(d)
+    return {"devices": len(d["subs"])}
+
+
+@app.post("/api/push/unsubscribe")
+async def push_unsubscribe(req: Request):
+    check_origin(req)
+    ep = str((await req.json()).get("endpoint") or "")
+    with push_lock:
+        d = _push_load()
+        d["subs"] = [s for s in d.get("subs") or [] if s["sub"]["endpoint"] != ep]
+        _push_save(d)
+    return {"devices": len(d["subs"])}
+
+
+@app.post("/api/push/test")
+async def push_test(req: Request):
+    check_origin(req)
+    notify("Karaoke Studio", "Notifications work on this device.", "/#requests")
+    return {"ok": True}
+
+
 def apply_request(player, b):
     """A song request (§2.2), from the API or a sync bundle (§2.7: those come without auto). Idempotent by rid."""
     old = STORE.get_request(b["rid"])
@@ -3803,6 +3906,9 @@ def apply_request(player, b):
         elif b.get("auto") and st == "open":  # party auto-make (§2.2b): taken only if the admin allows it for this player
             ans = automake_take(player, b, ans)
         log.info("players: request %s… %r - %r from %s: %s", b["rid"][:8], b.get("artist"), b["title"], b["by"], st)
+        song = f"{b.get('artist')} – {b['title']}" if b.get("artist") else b["title"]
+        how = {"ready": "already in the library", "making": "being made"}.get(st) or ("making it now (party auto-make)" if (ans or {}).get("status") == "making" else "waiting for you")
+        notify(f"🎤 {song}", f"Asked by {b.get('by') or 'a guest'} · {how}", "/#requests")
     return ans
 
 
@@ -4570,6 +4676,27 @@ async def agent_romaji(req: Request):
 @app.get("/")
 def index():
     return FileResponse(f"{HERE}/static/index.html", headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/manifest.webmanifest")
+def manifest():
+    """The Studio app (installable). Its icons are inlined: a login in front of the Studio (Authentik) may not let the
+    browser fetch them on their own while it installs the app."""
+    import base64
+
+    def icon(name, size, purpose):
+        b = open(f"{HERE}/static/pwa/{name}", "rb").read()
+        return {"src": "data:image/png;base64," + base64.b64encode(b).decode(), "sizes": f"{size}x{size}", "type": "image/png", "purpose": purpose}
+    m = {"name": C.STUDIO_NAME if getattr(C, "STUDIO_NAME", "") else "Karaoke Studio", "short_name": "Studio", "start_url": "/",
+         "scope": "/", "display": "standalone", "background_color": "#15111c", "theme_color": "#15111c",
+         "description": "Make karaoke songs, answer the party's requests, fix lyrics.",
+         "icons": [icon("icon-192.png", 192, "any"), icon("icon-512.png", 512, "any"), icon("icon-maskable-512.png", 512, "maskable")]}
+    return JSONResponse(m, media_type="application/manifest+json", headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/sw.js")
+def service_worker():
+    return FileResponse(f"{HERE}/static/sw.js", media_type="text/javascript", headers={"Cache-Control": "no-cache", "Service-Worker-Allowed": "/"})
 
 
 app.mount("/static", StaticFiles(directory=f"{HERE}/static"), name="static")
