@@ -4166,7 +4166,8 @@ def encore_catalog(req: Request):
     return Response(raw, media_type="application/json", headers=h)
 
 
-TYPES = {".mp4": "video/mp4", ".m4a": "audio/mp4", ".ass": "text/plain; charset=utf-8", ".json": "application/json"}
+TYPES = {".mp4": "video/mp4", ".m4a": "audio/mp4", ".ass": "text/plain; charset=utf-8", ".json": "application/json",
+         ".jpg": "image/jpeg", ".png": "image/png"}   # (album covers)
 
 
 def file_etag(path, st):

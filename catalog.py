@@ -384,7 +384,7 @@ def files_of(song):
     pre = folder + "/" if folder else ""
     lyr = song.get("lyrics") or {}
     out = {pre + song["base"] + ".mp4"}
-    for f in [lyr.get("file"), *(lyr.get("modes") or {}).values(), song.get("words"), song.get("pitch"), song.get("vocals")]:
+    for f in [lyr.get("file"), *(lyr.get("modes") or {}).values(), song.get("words"), song.get("pitch"), song.get("vocals"), song.get("cover")]:
         if f:
             out.add(pre + f)
     modes = list((lyr.get("modes") or {}).keys())
