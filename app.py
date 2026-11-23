@@ -3615,6 +3615,8 @@ def video_check(job, lines=None):
     if lines is None:
         lines = load_lines(job_path(job["id"], "words.json"))
     ok, why, stats = AM.check(r, lines, AM.load(STORE)["floor"])
+    if ok:   # (the floor gives a reason only when it stops a song)
+        why = f"{stats['sure']} of {stats['lines']} lines heard where they sit"
     v = VC.verdict(r, ok, why)
     v["stats"] = stats
     if job.get("auto_retry"):
@@ -3623,20 +3625,72 @@ def video_check(job, lines=None):
 
 
 def try_auto_fix(jid, job, v):
-    """A song that didn't pass, for a cause the check can name (the language): remade once with the fix. Never twice,
-    and never for a low score alone (hard-to-hear songs score like wrong ones). True if a remake was started."""
-    fix = v.get("fix")
-    if not fix or job.get("auto_retry") or job.get("published"):
+    """A song that didn't pass, for a cause the check can name (the language), or with another copy of the lyrics that
+    fits what was heard clearly better: remade once with that. Never twice, and never for a low score alone
+    (hard-to-hear songs score like wrong ones). True if a remake was started."""
+    if job.get("auto_retry") or job.get("published"):
+        return False
+    fix, why = v.get("fix"), "; ".join(c["note"] for c in v["checks"] if not c["ok"])
+    if not fix:   # another copy of the lyrics that fits what was heard clearly better (evidence, not just a low score)
+        try:
+            alt = better_lyrics(jid, job)
+        except Exception:
+            log.exception("video check: scoring other lyrics for %s", jid)
+            alt = None
+        if alt:
+            fix = {"lrc_id": alt["lrc_id"], "lyrics_source": "lrclib"}
+            why += f"; another copy of the lyrics fits what's heard better ({alt['fit']:.0%} of lines vs {alt['was']:.0%})"
+    if not fix:
         return False
     with lock:
         j = load(jid)
-        j["auto_retry"] = {"at": time.time(), "fix": fix, "why": "; ".join(c["note"] for c in v["checks"] if not c["ok"])}
+        j["auto_retry"] = {"at": time.time(), "fix": fix, "why": why.strip("; ")}
         if fix.get("lang"):
             j["lang"] = fix["lang"]
+        if fix.get("lrc_id"):
+            j["auto_retry"]["lyrics_before"] = {"lrc_id": j.get("lrc_id"), "lyrics_source": j.get("lyrics_source")}
+            j["lrc_id"], j["lyrics_source"] = fix["lrc_id"], fix["lyrics_source"]
         save(jid, j)
     _remake(jid, {"kind": "auto", "name": "video check"}, note=f"video check: made again ({j['auto_retry']['why']})")
     log.info("video check: %s made again with %s", jid, fix)
     return True
+
+
+LYRICS_BETTER = 0.15   # another copy of the lyrics must fit what's heard by this much more (share of lines) to be used
+
+
+def better_lyrics(jid, job):
+    """Another LRCLIB copy of the song that fits what was heard in this video clearly better than its lyrics now
+    (the same scoring as ks alt-lyrics: no GPU). {"lrc_id", "fit", "was"} or None."""
+    if not os.path.exists(job_path(jid, "heard.json")):
+        return None
+    seen, cands = set(), []
+    for q in ({"track_name": job.get("title") or "", "artist_name": job.get("artist") or ""},
+              {"q": f"{job.get('artist') or ''} {job.get('title') or ''}"}):
+        try:
+            hits = http_json("https://lrclib.net/api/search?" + urllib.parse.urlencode(q)) or []
+        except Exception:
+            hits = []
+        for x in hits:
+            if x.get("id") not in seen and x.get("syncedLyrics") and not x.get("instrumental"):
+                seen.add(x["id"]); cands.append({"id": x["id"], "synced": x["syncedLyrics"]})
+    cur = job.get("lrc_id") if job.get("lyrics_source") == "lrclib" else None
+    if cur is not None and cur not in seen:
+        try:
+            x = http_json(f"https://lrclib.net/api/get/{int(cur)}")
+            if x and x.get("syncedLyrics"):
+                cands.append({"id": x["id"], "synced": x["syncedLyrics"]})
+        except Exception:
+            pass
+    if len(cands) < 2 and cur is not None:
+        return None
+    scores = _ks().altlyrics(job_path(jid), float(job.get("offset") or 0.0), cands[:30])
+    by = {r["id"]: r for r in scores}
+    was = by[cur]["fit"] if cur in by else 0.0
+    best = max((r for r in scores if r["id"] != cur), key=lambda r: (r["fit"], -r["squeezed"]), default=None)
+    if best and best["fit"] >= was + LYRICS_BETTER and best["fit"] >= 0.4:
+        return {"lrc_id": best["id"], "fit": round(best["fit"], 2), "was": round(was, 2)}
+    return None
 
 
 def held_reason(v):

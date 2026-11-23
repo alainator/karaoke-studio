@@ -485,6 +485,7 @@ class Batches(Base):
         self.assertTrue(job.get("published"), job.get("auto_held"))   # the remake listened in English and passed
         v = A.video_check(job)
         self.assertTrue(v["ok"] and v["retried"])
+        self.assertEqual(v["checks"][-1]["note"], "9 of 10 lines heard where they sit")
 
     def test_a_wrong_language_that_stays_wrong_is_held_not_remade_twice(self):
         job = self.settle(self.batch("Stays Wrong", fake_lines=10, fake_sure=9, fake_written="ja", fake_listen="en"))
@@ -497,3 +498,45 @@ class Batches(Base):
                                                      "title": "B", "auto_publish": True}, {"X-Studio-Agent-Key": key})
         self.assertEqual(st, 403, b)
         self.assertIn("publish", str(b))
+
+
+class BetterLyrics(Base):
+    """Another LRCLIB copy that fits what was heard clearly better: used for the one automatic remake."""
+
+    def setUp(self):
+        super().setUp()
+        self._http, self._ks = A.http_json, A._ks
+        A.http_json = lambda url, *a, **k: [{"id": 11, "syncedLyrics": "[00:05.00]x"}, {"id": 12, "syncedLyrics": "[00:05.00]y"}] \
+            if "search" in url else {"id": 7, "syncedLyrics": "[00:05.00]z"}
+        self.fits = {7: 0.2, 11: 0.75, 12: 0.3}
+        A._ks = lambda: type("K", (), {"altlyrics": staticmethod(lambda d, off, c: [{"id": x["id"], "fit": self.fits[x["id"]], "squeezed": 0} for x in c])})
+
+    def tearDown(self):
+        A.http_json, A._ks = self._http, self._ks
+
+    def held_song(self):
+        jid = _orig_new_job({"yt": "ddddddddddd", "lrc_id": 7, "lyrics_source": "lrclib", "artist": "Copy Band", "title": "Copies",
+                             "fake": "conf", "fake_lines": 10, "fake_sure": 3}, {"kind": "agent", "name": "t"})
+        A.schedule_once()
+        self.assertTrue(wait_for(lambda: A.load(jid)["status"] == "done", 20))
+        open(A.job_path(jid, "heard.json"), "w").write('{"lang": "en", "words": []}')
+        return jid
+
+    def test_a_clearly_better_copy_is_used_once(self):
+        jid = self.held_song()
+        self.assertEqual(A.better_lyrics(jid, A.load(jid)), {"lrc_id": 11, "fit": 0.75, "was": 0.2})
+        job = A.load(jid)
+        self.assertTrue(A.try_auto_fix(jid, job, A.video_check(job)))
+        job = A.load(jid)
+        self.assertEqual((job["lrc_id"], job["lyrics_source"], job["status"]), (11, "lrclib", "queued"))
+        self.assertEqual(job["auto_retry"]["lyrics_before"], {"lrc_id": 7, "lyrics_source": "lrclib"})
+        self.assertIn("another copy of the lyrics", job["auto_retry"]["why"])
+        self.assertFalse(A.try_auto_fix(jid, job, A.video_check(job) or {"checks": []}))   # never twice
+
+    def test_no_clearly_better_copy_no_remake(self):
+        self.fits[11] = 0.3                                  # hard to hear: every copy scores low
+        jid = self.held_song()
+        self.assertIsNone(A.better_lyrics(jid, A.load(jid)))
+        job = A.load(jid)
+        self.assertFalse(A.try_auto_fix(jid, job, A.video_check(job)))
+        self.assertEqual(A.load(jid)["status"], "done")
