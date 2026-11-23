@@ -425,6 +425,8 @@ class Store:
                     continue
                 self.db.execute("insert into profile_events (eid, uid, stream, at, player, body, stored) values (?, ?, ?, ?, ?, ?, ?)",
                                 (e["eid"], uid, e["stream"], e["at"], player, json.dumps(e, ensure_ascii=False), now))
+                if e["stream"] == "photo":
+                    self._photos_superseded(uid)
             self.db.commit()
             rows = self.db.execute("select seq, body from profile_events where seq > ? and player != ? order by seq limit ?",
                                    (start, player, PROFILE_PAGE + 1)).fetchall()
@@ -484,6 +486,25 @@ class Store:
                     os.remove(os.path.join(self._photo_dir(), sha + ".jpg"))
                 except OSError:
                     pass
+
+    PHOTO_GRACE = 600   # a picture uploaded but not (yet) pointed to by an event is kept this long
+
+    def _photos_superseded(self, uid):
+        """(under the lock) A profile's picture changed or was removed: the pictures it had before go (only the one
+        its latest photo event names stays; an upload whose event hasn't come yet gets PHOTO_GRACE)."""
+        evs = [json.loads(r[0]) for r in self.db.execute("select body from profile_events where uid=? and stream='photo'", (uid,))]
+        if not evs:
+            return
+        win = max(evs, key=lambda e: (e["at"], e["eid"]))
+        named = {e.get("photo") for e in evs}
+        for sha, stored in self.db.execute("select sha, stored from profile_photos where uid=?", (uid,)).fetchall():
+            if sha != win.get("photo") and (sha in named or (stored or 0) < self.now() - self.PHOTO_GRACE):
+                self.db.execute("delete from profile_photos where sha=? and uid=?", (sha, uid))
+                if not self.db.execute("select 1 from profile_photos where sha=?", (sha,)).fetchone():
+                    try:
+                        os.remove(os.path.join(self._photo_dir(), sha + ".jpg"))
+                    except OSError:
+                        pass
 
     def _erase_uid(self, uid):
         """Delete-everywhere for one profile (call under the lock): its events and pictures go, and the requests,

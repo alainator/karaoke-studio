@@ -262,6 +262,19 @@ class ProfilePhotos(unittest.TestCase):
         self.assertEqual(self.put(mia, big), 200)
         self.assertEqual(self.get(mia, big)[2], big)
 
+    def test_a_replaced_or_removed_picture_is_gone_from_the_studio(self):
+        mia = U()
+        one, two = JPEG + b"one", JPEG + b"two"
+        self.assertEqual(self.put(mia, one), 200)
+        self.sync("home", [prof(mia), photo(mia, one)])
+        self.assertEqual(self.put(mia, two), 200)                           # a new one: up first ...
+        self.assertEqual(self.get(mia, one)[0], 200)                        # (the old one still counts until its event)
+        self.sync("home", [photo(mia, two)])                                # ... then its event
+        self.assertEqual(self.get(mia, one)[0], 404)
+        self.assertEqual(self.get(mia, two)[0], 200)
+        self.sync("home", [photo(mia, None)])                               # removed
+        self.assertEqual(self.get(mia, two)[0], 404)
+
     def test_refused_pictures(self):
         mia = U()
         self.assertEqual(self.put(mia, b"not a jpeg"), 400)
