@@ -1,6 +1,6 @@
 """The player API (contract/ENCORE-STUDIO.md): pairing and tokens, every /api/encore/ answer against the contract's
 schemas, idempotency, request statuses following songs, lyric flags on lines (a version too), plays, the files a
-player may fetch, catalog v2 and pitch files, PiKaraoke left out, and the contract fixtures being what the studio's own
+player may fetch, catalog v2 and pitch files, and the contract fixtures being what the studio's own
 code makes. Calls go through the whole ASGI app (tests/_asgi.py): middleware, auth, error shapes, Range, ETag.
 No GPU or network (the pitch tracker gets a made-up melody, except one CPU test on a short sine tone)."""
 import json, os, shutil, sqlite3, subprocess, sys, tempfile, time, unittest, uuid
@@ -18,7 +18,6 @@ from tests._asgi import call, jcall  # noqa: E402
 PITCHED = []
 A.pitch_later = lambda jid: PITCHED.append(jid)   # pitch files are written by the tests themselves (A.write_pitch)
 A.catalog_soon = lambda delay=0: A.update_catalog()
-A.PK_URL = ""                                      # no PiKaraoke here (a test turns it on)
 PRESET = os.environ["ENCORE_TOKEN"]
 SYLL = ["la", "da", "na", "doo", "ba", "oh"]
 _n = [0]
@@ -609,25 +608,6 @@ class PlaysCatalogFiles(Base):
         self.assertEqual(lib[f"Music Videos/{self.base}.mp4"]["plays"], n0 + 2)
         self.assertEqual(api("POST", "/api/encore/plays", {"plays": [self.play("finished", 1)] * 201}, token=self.tok)[0], 422)
 
-    def test_pikaraoke_history_counts_too(self):
-        db = os.path.join(_env.ROOT, "pk.db")
-        c = sqlite3.connect(db)
-        c.execute("create table plays (id integer primary key, song_title text, performer text, played_at text)")
-        c.executemany("insert into plays (song_title, performer, played_at) values (?, ?, ?)",
-                      [(self.base, "Ann", "2033-05-18 03:33:20"), (self.base, "Bo", "2033-05-18 03:33:10"),
-                       (self.base, "claude-test", "2033-05-18 03:40:00")])
-        c.commit()
-        c.close()
-        n0 = self.entry()["plays"]
-        A.C.PIKARAOKE_DB = db
-        try:
-            e = self.entry()
-            self.assertEqual(e["plays"], n0 + 2)
-            self.assertEqual(e["last_played"], 2000000000)  # 2033-05-18 03:33:20 UTC
-            self.assertEqual(E.pk_time("2033-05-18 03:33:20"), 2000000000)
-        finally:
-            A.C.PIKARAOKE_DB = ""
-
     def test_catalog_v2_validates_and_pitch_files(self):
         cat = CAT.read_catalog(A.LIB)
         self.assertEqual(cat["version"], 2)
@@ -735,7 +715,7 @@ class PlaysCatalogFiles(Base):
             A.C.STUDIO_PUBLIC_URL = ""
 
 
-# ---------------- PiKaraoke is optional ----------------
+# ---------------- publishing and renaming ----------------
 class NoDuplicates(Base):
     """A song is listed once (2026-11-22: Light Years Away, Dance Dance and Tot Musica were each listed twice)."""
 
@@ -769,83 +749,15 @@ class NoDuplicates(Base):
         self.assertEqual([e["id"] for e in self.entries("North Light")], [b])
 
 
-class PiKaraokeOptional(Base):
-    def test_publish_without_pikaraoke(self):
-        self.assertEqual(A.PK_URL, "")
-        jid = make_song("Solo Player", "No PiKaraoke", publish=False)
+class PublishAndRename(Base):
+    def test_publish_and_rename_say_what_happened(self):
+        jid = make_song("Solo Player", "Plain Library", publish=False)
         st, _, b = jcall(A.app, "POST", f"/api/jobs/{jid}/publish", {"remove": []})
         self.assertEqual((st, b["message"]), (200, "published"))
         self.assertTrue(os.path.exists(os.path.join(A.MV_DIR, b["name"] + ".mp4")))
-        self.assertIsNone(A.pk_rescan())
-        st, _, r = jcall(A.app, "POST", f"/api/jobs/{jid}/rename", {"artist": "Solo Player", "title": "No PiKaraoke Renamed"})
+        st, _, r = jcall(A.app, "POST", f"/api/jobs/{jid}/rename", {"artist": "Solo Player", "title": "Plain Library Renamed"})
         self.assertEqual((st, r["message"]), (200, "renamed in the library"))
-        A.C.PIKARAOKE_DB = ""
         self.assertTrue(isinstance(A.library_songs(), list))
-
-    def test_rescan_unreachable(self):
-        A.PK_URL = "http://127.0.0.1:9"  # nothing listens there
-        try:
-            self.assertIn("didn't answer", A.pk_rescan())
-        finally:
-            A.PK_URL = ""
-
-    def test_rescan_login_flow_against_a_fake_pikaraoke(self):
-        """PiKaraoke 1.23: POST /auth (form) sets a session cookie when the password is right and redirects either way;
-        POST /sync_library needs the cookie (403 without)."""
-        import http.server, threading, urllib.parse
-        state = {"password": "right", "refuse_once": False, "syncs": 0, "auths": 0}
-
-        class PK(http.server.BaseHTTPRequestHandler):
-            def log_message(self, *a):
-                pass
-
-            def do_GET(self):
-                ok = "Incorrect admin password!" if "bad=1" in self.path else "home"
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html")
-                self.end_headers()
-                self.wfile.write(ok.encode())
-
-            def do_POST(self):
-                body = self.rfile.read(int(self.headers.get("content-length") or 0)).decode()
-                if self.path == "/auth":
-                    state["auths"] += 1
-                    good = urllib.parse.parse_qs(body).get("admin_password") == [state["password"]]
-                    self.send_response(302)
-                    if good:
-                        self.send_header("Set-Cookie", "session=admin; Path=/; HttpOnly")
-                    self.send_header("Location", "/" if good else "/?bad=1")
-                    self.end_headers()
-                elif self.path == "/sync_library":
-                    if "session=admin" not in (self.headers.get("cookie") or "") or state["refuse_once"]:
-                        state["refuse_once"] = False
-                        self.send_response(403)
-                        self.end_headers()
-                        return
-                    state["syncs"] += 1
-                    self.send_response(200)
-                    self.send_header("Content-Type", "application/json")
-                    self.end_headers()
-                    self.wfile.write(b'{"status": "started"}')
-        srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), PK)
-        threading.Thread(target=srv.serve_forever, daemon=True).start()
-        A.PK_URL = f"http://127.0.0.1:{srv.server_address[1]}"
-        old_pw = A.C.PIKARAOKE_PASSWORD
-        try:
-            A.C.PIKARAOKE_PASSWORD = "right"
-            self.assertIn("rescanning", A.pk_rescan())
-            self.assertEqual(state["syncs"], 1)
-            state["refuse_once"] = True       # e.g. PiKaraoke restarted between the login and the sync: one more try
-            self.assertIn("rescanning", A.pk_rescan())
-            self.assertEqual((state["syncs"], state["auths"]), (2, 3))
-            A.C.PIKARAOKE_PASSWORD = "wrong"
-            self.assertIn("refused the admin password", A.pk_rescan())
-            self.assertEqual(state["syncs"], 2)
-            A.C.PIKARAOKE_PASSWORD = ""       # no password configured, but PiKaraoke has one
-            self.assertIn("set PIKARAOKE_ADMIN_PASSWORD", A.pk_rescan())
-        finally:
-            A.PK_URL, A.C.PIKARAOKE_PASSWORD = "", old_pw
-            srv.shutdown()
 
 
 # ---------------- the contract's fixtures are the studio's own output ----------------
@@ -853,7 +765,7 @@ class Fixtures(Base):
     def test_regenerated_fixtures_match_the_committed_ones(self):
         here = os.path.join(_env.REPO, "contract", "fixtures")
         out = tempfile.mkdtemp(dir=_env.ROOT)
-        env = {k: v for k, v in os.environ.items() if not k.startswith(("KARAOKE_", "PIKARAOKE_", "ENCORE_", "STUDIO_"))}
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("KARAOKE_", "ENCORE_", "STUDIO_"))}
         r = subprocess.run([sys.executable, "-I", "-B", os.path.join(_env.REPO, "contract", "make_fixtures.py"), out],
                            capture_output=True, text=True, env=env, timeout=300)
         self.assertEqual(r.returncode, 0, r.stderr[-2000:])

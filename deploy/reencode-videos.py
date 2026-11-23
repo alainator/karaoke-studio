@@ -6,7 +6,7 @@
 Older versions copied YouTube's video stream as downloaded. Chrome-based browsers (Chrome, Brave, Edge) hit a decode
 error after jumping backwards in it, and the picture freezes while the sound goes on, which makes the lyrics editor
 unusable. This re-encodes each finished song's video (x264, the same settings new songs get), leaving the sound,
-lyrics and edits alone. Songs already published in PiKaraoke get the fixed video the next time you publish them.
+lyrics and edits alone. Songs already published to the library get the fixed video the next time you publish them.
 Takes ~15-40 s a song; songs that are queued or being made are skipped.
 """
 import glob, json, os, subprocess, sys, time

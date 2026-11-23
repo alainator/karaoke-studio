@@ -1,5 +1,5 @@
 """Library tab: which old songs already have a music video, which were made in the studio but not published, and the
-"Remove old version" guard. Names are real-world shapes of PiKaraoke file names."""
+"Remove old version" guard. Names are real-world shapes of karaoke library file names."""
 import asyncio, json, os, time, unittest
 
 from tests import _env  # noqa: F401

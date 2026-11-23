@@ -8,7 +8,7 @@ KARAOKE_LYRICS_* settings): lyrics.ass in each song's display mode, plus lyrics.
                                                    # (run it while nobody is editing songs in the studio)
     python -I deploy/rebuild-lyrics.py --jobs DIR  # another jobs folder (tests)
 
-Words, timing and PiKaraoke's files are not touched: published songs keep their old lyrics until they're published
+Words, timing and the library's files are not touched: published songs keep their old lyrics until they're published
 again; the ones that changed are listed at the end.
 """
 import json, os, sys, time
@@ -61,7 +61,7 @@ for jid in sorted(os.listdir(JOBS)):
 print(f"{'would rebuild' if DRY else 'rebuilt'} {rebuilt} songs, {same} already up to date, {failed} failed "
       f"({time.time() - t0:.0f} s)")
 if republish:
-    print(f"\n{len(republish)} published songs {'would need' if DRY else 'need'} publishing again to show the new lyrics in PiKaraoke"
+    print(f"\n{len(republish)} published songs {'would need' if DRY else 'need'} publishing again to show the new lyrics in the library"
           + (" (marked in the studio)" if MARK and not DRY else "") + ":")
     for jid, names in republish:
         print(f"  {jid}: " + " | ".join(names))

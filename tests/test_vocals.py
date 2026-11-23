@@ -97,14 +97,13 @@ def same(a, b):
 class GuideVocals(unittest.TestCase):
     @classmethod
     def setUpClass(cls):  # (patched here, not at import: other test modules patch these their own way)
-        cls._saved = (A.pitch_later, A.catalog_soon, A.PK_URL)
+        cls._saved = (A.pitch_later, A.catalog_soon)
         A.pitch_later = lambda jid: None
         A.catalog_soon = lambda delay=0: A.update_catalog()
-        A.PK_URL = ""
 
     @classmethod
     def tearDownClass(cls):
-        A.pitch_later, A.catalog_soon, A.PK_URL = cls._saved
+        A.pitch_later, A.catalog_soon = cls._saved
 
     def valid(self, schema, data):
         self.assertEqual(S.errors(schema, data), [], json.dumps(data)[:400])
@@ -125,7 +124,7 @@ class GuideVocals(unittest.TestCase):
         os.remove(lib(vbase + ".vocals.m4a"))
         pub(jid)
         self.assertTrue(os.path.isfile(lib(vbase + ".vocals.m4a")))
-        # PiKaraoke's song list and the Library tab don't list it as a song
+        # the Library tab doesn't list it as a song
         self.assertNotIn(f"Music Videos/{base}.vocals.m4a", {s["file"] for s in A.library_songs()})
 
     def test_only_a_big_or_non_aac_file_is_made_again(self):

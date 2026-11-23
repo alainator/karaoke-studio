@@ -1,4 +1,4 @@
-"""The published-song catalog for players other than PiKaraoke (Encore): catalog.json in the library root, and a
+"""The published-song catalog for players (Encore): catalog.json in the library root, and a
 Name.words.json next to each published song.
 
     catalog.json  {"version": 2, "generated": unix time, "songs": [entry, ...]}
@@ -17,7 +17,7 @@ Name.words.json next to each published song.
               "<base>.cover.jpg" (its cover art next to the video) or null,
               version 2 adds: "pitch": "<base>.pitch.json" or null (the sung melody, pitch.py), "plays": n and
               "last_played": unix time or null (plays of the song and its versions that count, from every player
-              that reports them: Encore, and PiKaraoke's history), "vocals": "<base>.vocals.m4a" or null (the
+              that reports them: Encore), "vocals": "<base>.vocals.m4a" or null (the
               separated lead vocal on the video's timeline, trims applied, for guide vocals: guidevocals.py)}
       The contract with players (contract/ENCORE-STUDIO.md, contract/schemas/catalog.schema.json) says which changes
       are allowed: additive only; players ignore fields they don't know.
@@ -307,8 +307,8 @@ def entry_for(job_dir, job, lib_dir, mv_dir):
 
 def build(jobs_dir, lib_dir, mv_dir, old=None, log=None, plays=None):
     """Every published song's entry. Songs from an older catalog whose job is gone but whose files are still in the
-    library (a deleted job leaves its published song in PiKaraoke) are kept, marked job_deleted. A job that can't be
-    read is left out (and logged). plays: play rows for add_plays (None: Encore's and PiKaraoke's, encore.play_rows)."""
+    library (a deleted job leaves its published song in the library) are kept, marked job_deleted. A job that can't be
+    read is left out (and logged). plays: play rows for add_plays (None: Encore's, encore.play_rows)."""
     songs, ids, bases = [], set(), set()
     for jid in sorted(os.listdir(jobs_dir)) if os.path.isdir(jobs_dir) else []:
         d = os.path.join(jobs_dir, jid)

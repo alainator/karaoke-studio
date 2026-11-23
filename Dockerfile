@@ -29,7 +29,7 @@ COPY . .
 RUN python -I get_renderer.py \
  && useradd -u 1000 -m studio && mkdir -p /data /library && chown studio /data /library
 USER studio
-# everything the studio keeps goes under /data; published songs go to /library (PiKaraoke's song folder)
+# everything the studio keeps goes under /data; published songs go to /library (the song library Encore plays)
 ENV NODE_BIN=/usr/local/bin \
     NVIDIA_DRIVER_CAPABILITIES=compute,utility \
     KARAOKE_JOBS=/data/jobs KARAOKE_WORK=/data/work KARAOKE_MODELS=/data/models KARAOKE_LOGS=/data/logs \

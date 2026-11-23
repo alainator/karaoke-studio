@@ -244,14 +244,14 @@ nav button.on .nbadge { background: var(--on-accent); color: var(--accent); }
   <section id="v-lib" class="view">
     <div class="finder" id="libfinder">
       <div class="frow">
-        <input type="search" id="lq" placeholder="Find in PiKaraoke: artist, title…   ( / )" autocomplete="off" aria-label="Find in the library">
+        <input type="search" id="lq" placeholder="Find in the library: artist, title…   ( / )" autocomplete="off" aria-label="Find in the library">
         <select id="lsort" aria-label="Sort the library"><option value="plays">Most sung</option><option value="az">A–Z</option><option value="added">Recently added</option><option value="sung">Recently sung</option></select>
       </div>
       <div class="chips" id="lchips"></div>
       <div class="fcount" id="lcount"></div>
       <div class="azbar" id="laz"></div>
     </div>
-    <p class="hint">Everything in PiKaraoke. "Make MV version" starts a search for songs that only have an old YouTube karaoke video or an anime TV version; songs already made in the studio link to their page instead.</p>
+    <p class="hint">Everything in the library. "Make MV version" starts a search for songs that only have an old YouTube karaoke video or an anime TV version; songs already made in the studio link to their page instead.</p>
     <div id="lib"></div>
     <button class="ghost more" id="lmore" style="display:none"></button>
   </section>
@@ -821,7 +821,7 @@ async function openJob(id) {
   const r = j.result || {};
   $("#jobdetail").innerHTML = `${backLink()}
     <div class="row" style="justify-content:space-between;margin:6px 0 10px"><h2 style="margin:0">${esc(j.artist)} – ${esc(j.title)}</h2>
-      <span class="row"><input id="rn-artist" class="rn" value="${esc(j.artist)}" placeholder="Artist" title="Artist (sets the song's name in PiKaraoke)">
+      <span class="row"><input id="rn-artist" class="rn" value="${esc(j.artist)}" placeholder="Artist" title="Artist (sets the song's name in the library)">
       <input id="rn-title" class="rn" value="${esc(j.title)}" placeholder="Title"><input id="rn-orig" class="rn" dir="auto" value="${esc(j.title_orig || "")}" placeholder="Original title (紅蓮華)" title="The title in its own script, when the title above is romanized or translated. Players show it next to the title and find the song by it too. Doesn't rename any files."><button class="ghost" id="rnbtn" style="padding:6px 10px;font-size:13px">Rename</button><a class="tag" href="/api/jobs/${esc(id)}/log" target="_blank" rel="noopener" title="Everything the studio printed while making this song">log ↗</a>${j.status !== "running" ? `<button class="ghost" id="chpicks" style="padding:6px 10px;font-size:13px" title="Wrong video or wrong lyrics? Go back to the search for this song, pick again, and make it again in place of this one">← Change video or lyrics</button>` : ""}${r.script === "zh" || r.lang === "zh" || r.lang === "yue" ? `<button class="ghost" id="zhread" style="padding:6px 10px;font-size:13px" title="Whisper can't tell Mandarin from Cantonese singing. Switch the romanization here; the timing stays.">${r.lang === "yue" ? "Jyutping → Pinyin (Mandarin)" : "Pinyin → Jyutping (Cantonese)"}</button>` : ""}</span></div>
     <div class="hint lastedit" id="lastedit"></div>
     ${j.automake ? `<div class="aibox" style="margin-bottom:12px;border-color:#ffb020">${j.quick && !j.quick.reviewed
@@ -834,7 +834,7 @@ async function openJob(id) {
       <b>Made with an older version: remaking it now would add</b>
       <span class="row">${gpuMenu("gpupick2")}<button class="primary" id="remake">↻ Remake with the latest version</button></span></div>
       <ul style="margin:6px 0 0 18px;padding:0">${j.updates.map(u => `<li>${esc(u)}</li>`).join("")}</ul>
-      <div class="hint" style="margin-top:6px">Takes 1–2 minutes. ${j.edited ? "Your edits are kept: lines you moved by hand keep your timing, other lines get the new timing with your singers, colours and word fixes, and if the remake finds nothing to change, your version stays exactly as it is. <i>Undo remake</i> brings back this version if you prefer it" : "The new timing replaces this one"}${j.published ? "; publish it afterwards to update PiKaraoke" : ""}.</div></div>` : ""}
+      <div class="hint" style="margin-top:6px">Takes 1–2 minutes. ${j.edited ? "Your edits are kept: lines you moved by hand keep your timing, other lines get the new timing with your singers, colours and word fixes, and if the remake finds nothing to change, your version stays exactly as it is. <i>Undo remake</i> brings back this version if you prefer it" : "The new timing replaces this one"}${j.published ? "; publish it afterwards to update the library" : ""}.</div></div>` : ""}
     ${j.status === "done" ? backingBox(j) : ""}
     ${j.can_undo_remake ? `<div class="aibox" style="margin-bottom:12px"><div class="row" style="justify-content:space-between">
       <span><b>Remade with the latest version</b>${j.remake_note ? `: ${esc(j.remake_note)}` : ""}.</span>
@@ -849,8 +849,8 @@ async function openJob(id) {
         <input type="range" id="offr" min="-2" max="2" step="0.05" value="${j.offset || 0}">
         <div class="hint">Drag right if the words light up too early.</div></div>
       ${(j.display_modes || []).length ? `<div class="ctl"><label><span>Lyrics on screen</span></label>
-        <select id="dispsel" class="dispsel" title="How PiKaraoke shows this song's lyrics">${j.display_modes.map(m => `<option value="${esc(m)}"${m === j.lyrics_display ? " selected" : ""}>${esc(DISPLAY_NAMES[m] || m)}</option>`).join("")}</select>
-        <div class="hint">What PiKaraoke shows${j.published ? " (publish again after changing it)" : ""}. Every way is kept with the song, for players that let the singer pick.</div></div>` : ""}
+        <select id="dispsel" class="dispsel" title="Which lyrics players show for this song">${j.display_modes.map(m => `<option value="${esc(m)}"${m === j.lyrics_display ? " selected" : ""}>${esc(DISPLAY_NAMES[m] || m)}</option>`).join("")}</select>
+        <div class="hint">What players show first${j.published ? " (publish again after changing it)" : ""}. Every way is kept with the song, for players that let the singer pick.</div></div>` : ""}
       <div class="ctl"><div class="hint">${r.romaji === "automatic" && r.lang && r.lang !== "ja" ? `<span class="tag warn">automatic ${r.lang === "ko" ? "romanization" : "pinyin"}</span> check it against the singing<br>` : r.romaji === "automatic" ? '<span class="tag warn">automatic romaji</span> check readings in the editor below<br>' : r.romaji === "kara.moe" ? '<span class="tag good">hand-timed romaji (kara.moe)</span><br>' : ""}${r.lines ?? "?"} lines · video ${esc(r.video || "")} · made in ${r.seconds ?? "?"} s${r.gpu ? " on " + esc(r.gpu) : ""}${r.skipped && r.skipped.length ? `<br>Not sung in this video: ${r.skipped.map(s => "“" + esc(s) + "”").join(", ")}` : ""}</div></div>
     </div>
     ${j.ai_romaji && j.ai_romaji.length ? `<details class="ctl aidone"><summary><b>AI fixed ${j.ai_romaji.length} ${j.ai_romaji.some(g => g.japanese) ? "romaji reading" : "lyric line"}${j.ai_romaji.length === 1 ? "" : "s"}</b> <span class="hint">(${j.ai_romaji.some(g => g.japanese) ? "it read the Japanese, and checked special readings against the singing" : "where the lyrics differ from what's sung, checked against the vocals"}; <i>Undo all edits</i> in the editor restores the original)</span></summary>
@@ -938,7 +938,7 @@ async function openJob(id) {
     try {
       const r = await api(`/api/jobs/${id}/rename`, {method: "POST", body: JSON.stringify({artist: $("#rn-artist").value, title: $("#rn-title").value, title_orig: $("#rn-orig").value})});
       if (r.message === "original title") { toast(r.title_orig ? `Original title: ${r.title_orig}` : "Original title cleared"); return; }
-      toast(r.message === "renamed" ? `Renamed to “${r.name}”` : r.message === "renamed in the library" ? `Renamed to “${r.name}”, its published files too` : `Renamed to “${r.name}” in PiKaraoke too`); location.reload();
+      toast(r.message === "renamed" ? `Renamed to “${r.name}”` : r.message === "renamed in the library" ? `Renamed to “${r.name}”, its published files too` : `Renamed to “${r.name}” in the library too`); location.reload();
     } catch (e) { toast(e.message); }
   };
 }
@@ -1623,7 +1623,7 @@ async function renderPublish(id, j) {
   const olds = info.old_versions.map(n => `<label class="chk"><input type="checkbox" class="old" value="${esc(n)}" checked> Remove the old YouTube version: <span class="hint">${esc(n)}</span></label>`).join("");
   $("#pub").innerHTML = `
     <div class="row" style="justify-content:space-between">
-      <div><b>${j.published ? "Published" : "Publish to PiKaraoke"}</b>${j.published && j.unpublished_changes ? ' <span class="tag warn">changes not published yet</span>' : ""} as <span class="hint">Music Videos/${esc(info.name)}</span>${info.exists && !j.published ? ' <span class="tag warn">replaces the existing one</span>' : ""}</div>
+      <div><b>${j.published ? "Published" : "Publish to the library"}</b>${j.published && j.unpublished_changes ? ' <span class="tag warn">changes not published yet</span>' : ""} as <span class="hint">Music Videos/${esc(info.name)}</span>${info.exists && !j.published ? ' <span class="tag warn">replaces the existing one</span>' : ""}</div>
       <div class="row"><button class="primary" id="pubbtn">${j.published ? "Publish again" : "Publish"}</button><button class="ghost danger" id="del">Delete</button></div>
     </div>${olds}`;
   $("#pubbtn").onclick = async () => {
@@ -1636,7 +1636,7 @@ async function renderPublish(id, j) {
   $("#del").onclick = () => delJob(id, j.published);
 }
 async function delJob(id, published) {
-  if (!confirm(published ? "Delete the studio copy? The published song stays in PiKaraoke." : "Delete this song from the studio?")) return;
+  if (!confirm(published ? "Delete the studio copy? The published song stays in the library." : "Delete this song from the studio?")) return;
   try { await api("/api/jobs/" + id, {method: "DELETE"}); location.hash = "jobs"; loadJobs(); } catch (e) { toast(e.message); }
 }
 
@@ -1713,7 +1713,7 @@ async function renderVideos(id, j) {
     ${rep ? `<div class="vrow"><div class="vt"><b>Your video, in place of the official one</b>${flags(rep)}<div class="hint">${vidSource(rep)} · ${vidHow(rep)}</div></div>
       <div class="row">${watch("main", mainUrl)}</div>${adjust(rep)}</div>` : ""}
     ${vers.map(x => `<div class="vrow"><div class="vt"><b>${esc(x.name)}</b>${flags(x)}${x.published ? ` <span class="tag good">published</span>${x.unpublished_changes || x.lyrics_unpublished ? ' <span class="tag warn">changes not published yet</span>' : ""}` : ""}
-        <div class="hint">${vidSource(x)} · ${vidHow(x)}</div><div class="hint">In PiKaraoke as <i>${esc(x.publish_name)}</i></div></div>
+        <div class="hint">${vidSource(x)} · ${vidHow(x)}</div><div class="hint">In the library as <i>${esc(x.publish_name)}</i></div></div>
       <div class="row">${watch(x.key, `/api/jobs/${id}/videos/${x.key}/file?v=${x.v}`)}<button class="ghost sm" data-vpub="${esc(x.key)}" ${busy || x.stale ? "disabled" : ""}>${x.published ? "Publish again" : "Publish"}</button><button class="ghost sm danger" data-vdel="${esc(x.key)}" ${busy ? "disabled" : ""}>Remove</button></div>${adjust(x)}</div>`).join("")}
     ${vid.adding ? `<div class="aibox"><b>Add a video</b><div class="hint">Someone's own video for this song. It plays with this song's sound and lyrics, lined up by its sound, so pick one with the song playing in it.</div>
       <div class="row" style="margin-top:8px"><label class="chk"><input type="radio" name="vsrc" value="link" checked> A link</label><label class="chk"><input type="radio" name="vsrc" value="file"> A file</label></div>
@@ -1736,7 +1736,7 @@ async function renderVideos(id, j) {
   document.querySelectorAll("[data-realign]").forEach(b => b.onclick = () => go(`/api/jobs/${id}/videos/${b.dataset.realign}/render`, {method: "POST", body: JSON.stringify({realign: true})}, "Lining it up again…"));
   document.querySelectorAll("[data-vdel]").forEach(b => b.onclick = () => {
     const x = vers.find(y => y.key === b.dataset.vdel);
-    if (!confirm(x.published ? `Remove “${x.name}” from the studio? Its published copy stays in PiKaraoke.` : `Remove “${x.name}”?`)) return;
+    if (!confirm(x.published ? `Remove “${x.name}” from the studio? Its published copy stays in the library.` : `Remove “${x.name}”?`)) return;
     if (vid.watching === x.key) watchVideo(id, mainUrl, "main");
     go(`/api/jobs/${id}/videos/${x.key}`, {method: "DELETE"}, "Removed");
   });
@@ -1805,7 +1805,7 @@ const LIB_SORTS = {
 function libAction(x) {
   if (x.folder === "Music Videos") return x.job ? `<a class="lnk" href="#jobs/${esc(x.job.id)}">song page →</a>` : "";
   if (x.has_mv) return `<span class="hint">replaced by the ${x.mv_job ? `<a class="lnk" href="#jobs/${esc(x.mv_job)}" title="${esc(x.mv_title)}">MV version</a>` : `<span title="${esc(x.mv_title)}">MV version</span>`}</span>`
-    + (x.removable ? ` <button class="ghost danger sm" data-rm="${esc(x.file)}" data-mv="${esc(x.mv_title)}" title="Delete this old file from PiKaraoke so the song is listed once">Remove old version</button>` : "");
+    + (x.removable ? ` <button class="ghost danger sm" data-rm="${esc(x.file)}" data-mv="${esc(x.mv_title)}" title="Delete this old file from the library so the song is listed once">Remove old version</button>` : "");
   if (x.job) {
     const st = {done: "Made, not published", running: x.job.stopping ? "Stopping" : "Being made", queued: "Queued", failed: "Failed"}[x.job.status] || x.job.status;
     const when = x.job.when ? new Date(x.job.when * 1000).toLocaleDateString(undefined, {day: "numeric", month: "short"}) : "";
@@ -1852,7 +1852,7 @@ $("#lq").onkeydown = e => { if (e.key === "Escape") { e.target.value = ""; LF.q 
 $("#lsort").onchange = e => { LF.sort = e.target.value; libChanged(); };
 $("#lmore").onclick = () => { LF_N += PAGE; renderLib(); };
 async function removeOld(file, mv) {
-  if (!confirm(`Remove this old YouTube karaoke file from PiKaraoke?\n\n${file}\n\nThe music video version stays:\n${mv}`)) return;
+  if (!confirm(`Remove this old YouTube karaoke file from the library?\n\n${file}\n\nThe music video version stays:\n${mv}`)) return;
   try { const r = await api("/api/library/remove-old", {method: "POST", body: JSON.stringify({file})}); toast("Removed. " + r.message, 7000); }
   catch (e) { toast(e.message); }
   loadLib();

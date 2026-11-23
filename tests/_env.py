@@ -1,5 +1,5 @@
 """Test setup: point the studio at throwaway folders BEFORE app/config are imported. config.py reads a .env next to it
-with setdefault, so every setting that could reach real things (the helper PC, PiKaraoke, Ollama, the real library
+with setdefault, so every setting that could reach real things (the helper PC, Ollama, the real library
 and jobs) is set here explicitly."""
 import os, socket, sys, tempfile
 
@@ -16,8 +16,7 @@ HELPER_PORT = free_port()
 for k, v in {
     "KARAOKE_JOBS": f"{ROOT}/jobs", "KARAOKE_WORK": f"{ROOT}/work", "KARAOKE_MODELS": f"{ROOT}/models",
     "KARAOKE_LOGS": f"{ROOT}/logs", "KARAOKE_FONTS": f"{ROOT}/fonts", "KARAOKE_LIBRARY": f"{ROOT}/library",
-    "KARAOKE_MV_FOLDER": "Music Videos", "PIKARAOKE_URL": "http://127.0.0.1:9", "PIKARAOKE_ADMIN_PASSWORD": "",
-    "PIKARAOKE_DB": "", "OLLAMA_URL": "", "GPU_HELPER_URL": "", "GPU_HELPER_NAME": "test helper",
+    "KARAOKE_MV_FOLDER": "Music Videos", "OLLAMA_URL": "", "GPU_HELPER_URL": "", "GPU_HELPER_NAME": "test helper",
     "HELPER_TOKEN": "test-token-" + "x" * 30, "HELPER_ALLOW": "", "USE_LOCAL_GPU": "1", "MIN_GPU_FREE_MIB": "0",
     "STUDIO_ORIGINS": "", "NODE_BIN": "", "KARAOKE_DATA": f"{ROOT}/data", "STUDIO_PUBLIC_URL": "", "STUDIO_NAME": "Test Studio",
     "ENCORE_TOKEN": "preset-token-" + "p" * 30, "ENCORE_ONLY_NETS": "", "ENCORE_STUDIO_ADDRESS": "http://studio.test:5570",

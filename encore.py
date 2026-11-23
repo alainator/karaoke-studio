@@ -559,42 +559,12 @@ class Store:
         return [tuple(r) for r in self.q("select song_id, base, max(at), count(*) from plays where counted=1 group by song_id, base")]
 
 
-# ---------------- PiKaraoke's play history ----------------
-def pk_plays(db_path):
-    """(None, song title, last time, count) per song title from PiKaraoke's database (read-only); [] without one.
-    Studio songs are listed there by their file name ("Artist - Title (Music Video)" = the catalog's base)."""
-    if not db_path or not os.path.exists(db_path):
-        return []
-    c = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5)
-    try:
-        rows = c.execute("select song_title, max(played_at), count(*) from plays where performer != 'claude-test' "
-                         "group by song_title").fetchall()
-    finally:
-        c.close()
-    return [(None, t, pk_time(last), n) for t, last, n in rows]
-
-
-def pk_time(s):
-    """PiKaraoke's played_at ("YYYY-MM-DD HH:MM:SS", UTC) -> unix time."""
-    import calendar
-    try:
-        return calendar.timegm(time.strptime(str(s)[:19], "%Y-%m-%d %H:%M:%S"))
-    except (TypeError, ValueError):
-        return None
-
-
 def play_rows(store=None):
-    """Every counted play, from Encore and PiKaraoke: [(song id or None, base/title, last time, count)]."""
-    rows = []
+    """Every counted play (Encore's): [(song id or None, base/title, last time, count)]."""
     try:
-        rows += (store or Store()).counted_plays()
+        return (store or Store()).counted_plays()
     except Exception:
-        pass
-    try:
-        rows += pk_plays(C.PIKARAOKE_DB)
-    except Exception:
-        pass
-    return rows
+        return []
 
 
 # ---------------- flags: which line, and the ⚠ note ----------------

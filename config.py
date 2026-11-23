@@ -17,15 +17,9 @@ def _load_dotenv(path):
 _load_dotenv(os.path.join(HERE, ".env"))
 env = os.environ.get
 
-# PiKaraoke song folder; published songs go to "<library>/Music Videos/"
+# the song library players read (Encore); published songs go to "<library>/Music Videos/"
 LIBRARY = env("KARAOKE_LIBRARY", os.path.join(HERE, "data", "library"))
 MV_DIR = os.path.join(LIBRARY, env("KARAOKE_MV_FOLDER", "Music Videos"))
-# PiKaraoke (optional): URL for the library rescan, admin password (if one is set), and its database for play counts.
-# Leave PIKARAOKE_URL and PIKARAOKE_DB empty when there's no PiKaraoke (only Encore plays the songs): publishing then
-# skips the rescan, and play counts come from Encore alone.
-PIKARAOKE_URL = env("PIKARAOKE_URL", "").rstrip("/")
-PIKARAOKE_PASSWORD = env("PIKARAOKE_ADMIN_PASSWORD", "")
-PIKARAOKE_DB = env("PIKARAOKE_DB", "")
 # album, year, genre and cover art for each song (albummeta.py: the iTunes catalogue, then MusicBrainz; only the artist
 # and title are sent). ALBUM_LOOKUP=0 turns it off.
 ALBUM_LOOKUP = env("ALBUM_LOOKUP", "1").strip() != "0"

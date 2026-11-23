@@ -3,7 +3,7 @@
 
     python -I get_renderer.py [pikaraoke version]      (default 1.23.0)
 
-The preview uses the same renderer and fonts as PiKaraoke's TV page, so it looks the same there.
+The preview uses SubtitlesOctopus (libass in the browser) and its fonts.
 They aren't stored in this repo: this script takes them from PiKaraoke's published wheel on PyPI
 (pikaraoke/static/js/subtitles-octopus*, default.woff2, and pikaraoke/static/fonts/*).
 """

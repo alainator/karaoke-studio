@@ -7,7 +7,7 @@ version), and given the song's own audio track from out.mp4. Two ways to use one
 
   replace:  it becomes the song's video (out.mp4); the official render is kept in videos/official.mp4 so it can be
             restored. One at a time: its source and settings are in videos/replace/.
-  version:  a second version with a name ("Mia's version"), in versions/<slug>/out.mp4, published to PiKaraoke as its
+  version:  a second version with a name ("Mia's version"), in versions/<slug>/out.mp4, published to the library as its
             own entry with the same lyrics.
 
 Each custom video keeps its source file and meta.json: {"name", "mode", "slug", "source": {...}, "start": seconds,

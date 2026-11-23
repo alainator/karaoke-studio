@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Karaoke Studio (2026-11-17): make karaoke songs from official music videos, preview, publish to PiKaraoke.
+"""Karaoke Studio (2026-11-17): make karaoke songs from official music videos, preview, publish to the library.
 
     python -I app.py [--host 127.0.0.1] [--port 5570]      (settings: .env, see .env.example)
 
 Search (YouTube + LRCLIB) -> job (pipeline.py subprocess, one at a time on the GPU) -> preview in the browser
-(SubtitlesOctopus, same renderer as PiKaraoke's TV page) with a timing slider -> publish into the PiKaraoke
-library (optionally deleting the older YouTube lyric version) and ask PiKaraoke to rescan.
+(SubtitlesOctopus, the libass renderer in the browser) with a timing slider -> publish into the library Encore
+plays (optionally deleting the older YouTube lyric version), listed in its catalog.json.
 There is no login of its own: put it behind an authenticating reverse proxy, or keep it on 127.0.0.1.
 """
 import argparse, asyncio, hashlib, http.cookiejar, ipaddress, json, math, os, queue, re, shutil, sqlite3, subprocess, sys
@@ -49,7 +49,6 @@ if not log.handlers:
     log.addHandler(_h)
 
 JOBS, LIB, MV_DIR = C.JOBS, C.LIBRARY, C.MV_DIR
-PK_DB, PK_URL = C.PIKARAOKE_DB, C.PIKARAOKE_URL
 UA = {"User-Agent": C.USER_AGENT}
 NEED_GPU_MIB = C.MIN_GPU_FREE_MIB
 BIN = os.path.dirname(sys.executable)  # yt-dlp lives in the same virtualenv
@@ -127,15 +126,15 @@ def rebuild_lyrics(jid, job, lines=None, cast=None, offset=None):
     return write_lyrics(job_path(jid), job, lines=lines, cast=cast, offset=offset)
 
 
-# a published song in PiKaraoke's folder: base.mp4, base.ass (its lyrics in the song's display mode) and, for songs
-# with original-script lines, base.<mode>.ass per display mode (PiKaraoke only reads base.ass and doesn't list .ass
+# a published song in the library: base.mp4, base.ass (its lyrics in the song's display mode) and, for songs
+# with original-script lines, base.<mode>.ass per display mode (folder-based players read only base.ass and don't list .ass
 # files as songs, so these sit there unused until a player lets the singer pick), and for players like Encore:
-# base.words.json, base.pitch.json and base.vocals.m4a (the guide vocals; PiKaraoke doesn't list .m4a files)
+# base.words.json, base.pitch.json and base.vocals.m4a (the guide vocals; folder-based players don't list .m4a files)
 LIB_EXTS = (".mp4", ".ass") + tuple(f".{m}.ass" for m in MODES) + (catalog.WORDS_EXT, catalog.PITCH_EXT, catalog.VOCALS_EXT, catalog.COVER_EXT)
 
 
 def publish_lyrics(jid, base):
-    """Copy the song's lyrics.ass and its display-mode variants next to base.mp4 in PiKaraoke's folder."""
+    """Copy the song's lyrics.ass and its display-mode variants next to base.mp4 in the library."""
     have = set()
     for src, ext in [(job_path(jid, "lyrics.ass"), ".ass")] + [(job_path(jid, variant_name(m)), f".{m}.ass") for m in MODES]:
         if not os.path.exists(src):
@@ -529,7 +528,7 @@ async def create_job(req: Request):
     log.info("queued %s | video %s | lyrics %s:%s | gpu %s%s", jid, yt, source, lrc_id if source != "pasted" else f"{len(pasted)} chars",
              b.get("gpu") or "auto", f" | replaces {b.get('replace')}" if b.get("replace") else "")
     # "Change video or lyrics" on an existing song: the new one takes its place once it has been made (if it fails,
-    # the old song is still there). Only the studio's copy is removed; a published file stays in PiKaraoke until the
+    # the old song is still there). Only the studio's copy is removed; a published file stays in the library until the
     # new song is published over it.
     old = str(b.get("replace") or "")
     rids = []
@@ -1055,7 +1054,7 @@ async def trim_song(jid: str, req: Request):
 # ---------------- custom videos (videoswap.py) ----------------
 # People's own videos for a song: the song keeps its sound and lyrics and plays over another picture, either in place
 # of the official video (out.mp4; the official is kept for "Restore official") or as a named second version published
-# as its own PiKaraoke entry. Downloading, lining up and rendering run in a background thread, one at a time per song;
+# as its own library entry. Downloading, lining up and rendering run in a background thread, one at a time per song;
 # job["video_task"] shows what it's doing (the song's status stays "done", so its page stays usable).
 VIDEO_BUSY = "it's still making a video for this song; wait for it to finish"
 
@@ -1084,7 +1083,7 @@ def run_video(jid, what, fn):
             with lock:
                 job = load(jid)
                 job["video_task"] = {"running": False, "what": what, "done": time.time(), "error": None, "text": msg}
-                if changed:  # out.mp4 is new: the page must fetch it again, and PiKaraoke has the old one
+                if changed:  # out.mp4 is new: the page must fetch it again, and the library has the old one
                     job["video_v"] = time.time()
                     if job.get("published"):
                         job["unpublished_changes"] = True
@@ -1133,7 +1132,7 @@ def rerender_later(jid, keys, what):
 
 
 def version_base(job, meta):
-    """A version's name in PiKaraoke: "Artist - Title (Mia's version)"."""
+    """A version's name in the library: "Artist - Title (Mia's version)"."""
     return f"{safe_name(job['artist'])} - {safe_name(job['title'])} ({safe_name(meta.get('name') or meta['slug'])})"
 
 
@@ -1335,7 +1334,7 @@ async def rerender_video(jid: str, key: str, req: Request):
 
 @app.delete("/api/jobs/{jid}/videos/{key}")
 def remove_video(jid: str, key: str, req: Request):
-    """Remove a version (its studio copy; a published copy stays in PiKaraoke, like deleting a song). For the
+    """Remove a version (its studio copy; a published copy stays in the library, like deleting a song). For the
     replacement, use .../videos/restore."""
     check_origin(req)
     if key == "replace":
@@ -1393,7 +1392,7 @@ def video_file(jid: str, key: str):
 
 @app.post("/api/jobs/{jid}/videos/{key}/publish")
 async def publish_version(jid: str, key: str, req: Request):
-    """Publish a version to PiKaraoke as its own song, "Artist - Title (name)", with the song's lyrics."""
+    """Publish a version to the library as its own song, "Artist - Title (name)", with the song's lyrics."""
     check_origin(req)
     with lock:
         job = load(jid)
@@ -1410,7 +1409,7 @@ async def publish_version(jid: str, key: str, req: Request):
         if base == job.get("published_as") or base == final_base(job):
             raise HTTPException(400, "give the version a name that's different from the song's")
         if os.path.exists(f"{MV_DIR}/{base}.mp4") and base != meta.get("published_as"):
-            raise HTTPException(400, "a song with that name is already in PiKaraoke")
+            raise HTTPException(400, "a song with that name is already in the library")
         os.makedirs(MV_DIR, exist_ok=True)
         tmp = f"{MV_DIR}/.{base}.mp4.part"
         shutil.copyfile(videoswap.entry_video(job_path(jid), key), tmp)
@@ -1425,7 +1424,7 @@ async def publish_version(jid: str, key: str, req: Request):
         save(jid, job)
         update_catalog()
     pitch_later(jid)
-    msg = pk_rescan() or "published"
+    msg = "published"
     return {"name": base, "message": msg}
 
 
@@ -1888,7 +1887,7 @@ async def set_reviewed(jid: str, req: Request):
 
 @app.post("/api/jobs/{jid}/rename")
 async def rename(jid: str, req: Request):
-    """Change a song's artist/title. If it's published, its files in PiKaraoke are renamed too."""
+    """Change a song's artist/title. If it's published, its files in the library are renamed too."""
     check_origin(req)
     b = await req.json()
     artist, title = str(b.get("artist", "")).strip()[:120], str(b.get("title", "")).strip()[:160]
@@ -1917,7 +1916,7 @@ async def rename(jid: str, req: Request):
         moved = False
         if old and old != new and os.path.exists(f"{MV_DIR}/{old}.mp4"):
             if os.path.exists(f"{MV_DIR}/{new}.mp4"):
-                raise HTTPException(400, "a song with that name is already in PiKaraoke")
+                raise HTTPException(400, "a song with that name is already in the library")
             for ext in LIB_EXTS:
                 if os.path.exists(f"{MV_DIR}/{old}{ext}"):
                     os.replace(f"{MV_DIR}/{old}{ext}", f"{MV_DIR}/{new}{ext}")
@@ -1944,13 +1943,13 @@ async def rename(jid: str, req: Request):
             update_catalog()
     if moved:
         pitch_later(jid)  # the pitch files say their song's name: written again (from the cache, quick)
-    msg = (pk_rescan() or "renamed in the library") if moved else "renamed"
+    msg = "renamed in the library" if moved else "renamed"
     return {"artist": artist, "title": title, "title_orig": job.get("title_orig"), "name": new, "message": msg}
 
 
 @app.post("/api/jobs/{jid}/remake")
 async def remake(jid: str, req: Request):
-    """Make a finished song again with the current version, in place (same page; publishing replaces PiKaraoke's copy).
+    """Make a finished song again with the current version, in place (same page; publishing replaces the library's copy).
     The current lyrics (with any edits) are kept as words.before-remake.json."""
     check_origin(req)
     try:
@@ -2089,7 +2088,7 @@ def delete_job(jid: str, req: Request):
                                 else "it's being made; cancel it first (or wait for it to finish)")
         if video_busy(job):
             raise HTTPException(400, VIDEO_BUSY)
-        shutil.rmtree(job_path(jid))  # only the studio's copy; a published song stays in PiKaraoke
+        shutil.rmtree(job_path(jid))  # only the studio's copy; a published song stays in the library
         if job.get("published"):  # and stays in the catalog, from its last listing (marked job_deleted)
             update_catalog()
     log.info("deleted %s (%s - %s)", jid, job.get("artist"), job.get("title"))
@@ -2368,7 +2367,7 @@ def _finish(jid, rc, err, oom, where):
             job.update(status="done", step="done")
             job["result"] = json.load(open(job_path(jid, "result.json")))
             job["result"]["gpu"] = job.get("gpu")
-            if job.get("published"):  # a remade song: PiKaraoke still has the old one until it's published again
+            if job.get("published"):  # a remade song: the library still has the old one until it's published again
                 job["unpublished_changes"] = True
             old = job.pop("replaces", None)  # made to replace another song: that one goes now
             adopted = 0
@@ -2685,7 +2684,7 @@ def run_remote(jid):
         wake.set()
 
 
-# ---------------- PiKaraoke ----------------
+# ---------------- the library: names and old versions ----------------
 FILLER = {"karaoke", "version", "versions", "lyrics", "lyric", "with", "instrumental", "official", "video", "hd", "hq",
           "original", "key", "songs", "song", "sing", "king", "karafun", "along", "backing", "track", "no", "vocals",
           "vocal", "minus", "one", "the", "by", "in", "style", "of", "zoom", "lower", "higher", "4k", "1080p", "720p"}
@@ -2765,44 +2764,8 @@ def old_versions(job):
     return out
 
 
-def pk_rescan():
-    """Ask PiKaraoke to rescan its library (optional: skipped when PIKARAOKE_URL isn't set). PiKaraoke 1.23: POST /auth
-    (form: admin_password, next) sets a signed session cookie when the password is right (it answers with a redirect
-    either way, and says "Incorrect admin password!" on the page it redirects to); POST /sync_library then needs that
-    cookie (403 without it). No CSRF token. A 403 gets one more try with a fresh login (PiKaraoke restarted between the
-    two, or another client set a new password, which logs every session out)."""
-    if not PK_URL:
-        return None
-    pw = C.PIKARAOKE_PASSWORD
-    for attempt in (1, 2):
-        jar = http.cookiejar.CookieJar()
-        op = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
-        try:
-            if pw:
-                page = op.open(urllib.request.Request(f"{PK_URL}/auth", data=urllib.parse.urlencode(
-                    {"admin_password": pw, "next": "/"}).encode()), timeout=15).read().decode("utf-8", "replace")
-                if "Incorrect admin password" in page:
-                    log.warning("PiKaraoke rescan: PiKaraoke refused the admin password (PIKARAOKE_ADMIN_PASSWORD)")
-                    return "saved, but PiKaraoke refused the admin password (PIKARAOKE_ADMIN_PASSWORD); it appears after PiKaraoke's next restart"
-                if not any(c.name == "session" for c in jar):
-                    log.warning("PiKaraoke rescan: no session cookie after logging in")
-            op.open(urllib.request.Request(f"{PK_URL}/sync_library", data=b""), timeout=15).read()
-            return "PiKaraoke is rescanning; the song shows up in a few seconds"
-        except urllib.error.HTTPError as e:
-            if e.code in (401, 403) and attempt == 1:
-                continue
-            log.warning("PiKaraoke rescan: HTTP %s%s", e.code, " (not logged in as admin)" if e.code in (401, 403) else "")
-            if e.code in (401, 403):
-                return ("saved, but PiKaraoke refused the rescan (" + ("its admin login didn't hold" if pw else
-                        "it has an admin password: set PIKARAOKE_ADMIN_PASSWORD") + "); it appears after PiKaraoke's next restart")
-            return f"saved, but the rescan failed (HTTP {e.code}); it appears after PiKaraoke's next restart"
-        except Exception as e:
-            log.warning("PiKaraoke rescan: %s", str(e)[:120])
-            return f"saved, but PiKaraoke didn't answer ({str(e)[:80]}); it appears after its next restart"
-
-
 def remove_lib_file(name):
-    """Delete an old song (and its lyrics files) from the top of PiKaraoke's library; only plain file names there."""
+    """Delete an old song (and its lyrics files) from the top of the library; only plain file names there."""
     p = os.path.realpath(os.path.join(LIB, name))
     if os.path.dirname(p) != os.path.realpath(LIB) or not os.path.isfile(p):
         return False
@@ -2912,7 +2875,7 @@ def do_publish(jid, remove, actor):
     pitch_later(jid)
     if C.ALBUM_LOOKUP and not job.get("album_meta"):   # a newly published song: its album and cover, then the catalog
         threading.Thread(target=lambda: (album_lookup(jid), update_catalog()), daemon=True).start()
-    msg = pk_rescan() or "published"
+    msg = "published"
     twins = published_twins(job, base)
     if twins:
         msg += (f"; this song is also published by {', '.join(t['id'] for t in twins)} (the same video): "
@@ -2954,7 +2917,7 @@ JOB_RANK = {"done": 0, "running": 1, "queued": 2, "failed": 3}  # which of sever
 
 
 def library_songs():
-    """Every song file in the library. plays/last_played (unix time): PiKaraoke's history plus Encore's plays that
+    """Every song file in the library. plays/last_played (unix time): Encore's plays that
     count (finished, or stopped after more than half), by file name; grade: the best singing score grade Encore
     reported for it (or None)."""
     plays = {}
@@ -3029,7 +2992,7 @@ def library():
 
 @app.post("/api/library/remove-old")
 async def remove_old(req: Request):
-    """Remove an old YouTube karaoke download from PiKaraoke's library, when the studio's music video of the same song
+    """Remove an old YouTube karaoke download from the library, when the studio's music video of the same song
     is there (so the song is listed once). Only that file and its lyrics files go."""
     check_origin(req)
     name = str((await req.json()).get("file") or "")
@@ -3040,7 +3003,7 @@ async def remove_old(req: Request):
         if not remove_lib_file(name):
             raise HTTPException(404, "it's gone already")
     log.info("library: removed old version %s (the music video %s stays)", name, s.get("mv_title"))
-    return {"ok": True, "message": pk_rescan() or "The library is up to date"}
+    return {"ok": True, "message": "The library is up to date"}
 
 
 @app.get("/api/status")
@@ -3049,7 +3012,7 @@ def status():
         helper_health()  # the Make page shows each card's state
     hh = helper_seen["health"] or {}
     return {"helper_free_gb": round(hh.get("free_mib", 0) / 1024, 1) if hh else None, "helper_gpu": (hh.get("gpu") or "").replace("NVIDIA GeForce ", "") or None,"gpu_free_gb": round(gpu_free_mib() / 1024, 1), "need_gb": NEED_GPU_MIB // 1024,
-            "pikaraoke_password": bool(C.PIKARAOKE_PASSWORD), "romaji_ai": bool(C.OLLAMA_URL),
+            "romaji_ai": bool(C.OLLAMA_URL),
             "requests_open": STORE.q("select count(*) from requests where status='open'")[0][0],
             "gpus": {"local": LOCAL_GPU, "local_busy": slots["local"] is not None,
                      "helper": C.GPU_HELPER_NAME if C.GPU_HELPER_URL else None,

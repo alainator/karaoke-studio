@@ -374,7 +374,7 @@ if backs:
     synced, align_text, origs = _ks, _ka, _ko
     say("info", f"{len(backs)} backing-vocal phrase{'s' if len(backs) != 1 else ''} in brackets: timed separately from the lead")
 
-# 2. video (H.264 so PiKaraoke can pass it through untouched)
+# 2. video (H.264 so players and browsers play it as it is)
 say("step", "download")
 if not os.path.exists(f"{w}.mp4"):
     run(f"{BIN}/yt-dlp", "--js-runtimes", "node", "-q", "--no-playlist", "--no-progress",

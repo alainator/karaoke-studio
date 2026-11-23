@@ -19,7 +19,7 @@ additive only; Encore accepts 1 and 2 and ignores unknown fields):
 
 - `"pitch": "<base>.pitch.json"` or null on each song and each version: the sung melody, for singing scores (§1.1).
 - `"plays": n`, `"last_played": unix time or null`: plays counted by the Studio from every player that reports
-  them (Encore via §2.4, PiKaraoke's own history), so a kit that syncs the catalog sees home numbers too.
+  them (Encore via §2.4), so a kit that syncs the catalog sees home numbers too.
 
 - `"vocals": "<base>.vocals.m4a"` or null on each song and each version: the separated lead vocal (the track the
   Studio removed from the video), for guide vocals in players. AAC in .m4a, same timeline as the song's video
@@ -204,7 +204,7 @@ Optional `"score"` (added 2026-11-20): the singing score when the play was score
 (`{"v": 1, "difficulty", "points", "pitch", "timing", "words"?, "acc", "grade", "max_combo", "partial"?}`); the
 Studio stores it with the play (it may show it, e.g. best grade per song) and never needs it.
 → `{"stored": n}` (up to 200 per call). The Studio's Library "Sung" column and the catalog's `plays` count Encore
-plays (finished, or stopped after more than half) plus PiKaraoke's history.
+plays (finished, or stopped after more than half).
 
 ### 2.5 Made, not published
 `GET /api/encore/unpublished` → `{"songs": [{"job", "artist", "title", "made"}], "studio_url": "<web app URL>"}`
@@ -420,6 +420,3 @@ calls.json     {"requests": [POST /api/encore/requests bodies], "flags": [POST /
 - Encore: loads the fixture library and plays through the API fixtures against a fake Studio; outbox retry and
   idempotency tests.
 
-## 4. PiKaraoke
-Publishing keeps working without PiKaraoke: the PiKaraoke rescan and play history are optional (skipped cleanly when
-not configured), so the Studio can serve Encore alone once PiKaraoke is retired.

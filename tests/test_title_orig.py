@@ -23,14 +23,13 @@ class RomanizeTitleTests(unittest.TestCase):
 class OriginalTitleTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls._saved = (A.pitch_later, A.catalog_soon, A.PK_URL)
+        cls._saved = (A.pitch_later, A.catalog_soon)
         A.pitch_later = lambda jid: None
         A.catalog_soon = lambda delay=0: A.update_catalog()
-        A.PK_URL = ""
 
     @classmethod
     def tearDownClass(cls):
-        A.pitch_later, A.catalog_soon, A.PK_URL = cls._saved
+        A.pitch_later, A.catalog_soon = cls._saved
 
     def test_set_on_the_song_page_no_files_move(self):
         jid = make_song("LiSA", "Gurenge", vocals=None)

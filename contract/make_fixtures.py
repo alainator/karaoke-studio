@@ -6,7 +6,7 @@ middleware). The output is the same on every run (a fixed clock, ids, code and t
 can be compared byte for byte.
 
     python -I contract/make_fixtures.py [OUT]       (default: contract/fixtures; run with the studio's Python, e.g.
-                                                      in its image: no GPU, network or PiKaraoke needed; ffmpeg is,
+                                                      in its image: no GPU or network needed; ffmpeg is,
                                                       for the §2.9 recording)
 
 fixtures/library/: catalog.json and "Music Videos/" (.mp4 placeholders of a few bytes, .ass, .words.json, .pitch.json,
@@ -39,8 +39,8 @@ OUT = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(HERE, 
 ROOT = tempfile.mkdtemp(prefix="studio-fixtures-")
 for k, v in {"KARAOKE_JOBS": f"{ROOT}/jobs", "KARAOKE_WORK": f"{ROOT}/work", "KARAOKE_MODELS": f"{ROOT}/models",
              "KARAOKE_LOGS": f"{ROOT}/logs", "KARAOKE_DATA": f"{ROOT}/data", "KARAOKE_FONTS": f"{ROOT}/fonts",
-             "KARAOKE_LIBRARY": f"{ROOT}/library", "KARAOKE_MV_FOLDER": "Music Videos", "PIKARAOKE_URL": "",
-             "PIKARAOKE_ADMIN_PASSWORD": "", "PIKARAOKE_DB": "", "OLLAMA_URL": "", "GPU_HELPER_URL": "", "HELPER_TOKEN": "",
+             "KARAOKE_LIBRARY": f"{ROOT}/library", "KARAOKE_MV_FOLDER": "Music Videos",
+             "OLLAMA_URL": "", "GPU_HELPER_URL": "", "HELPER_TOKEN": "",
              "STUDIO_ORIGINS": "", "STUDIO_PUBLIC_URL": "https://studio.example.lan", "STUDIO_NAME": "Karaoke Studio",
              "ENCORE_TOKEN": "", "ENCORE_ONLY_NETS": "", "KARAOKE_LYRICS_FONT": "classic", "KARAOKE_LYRICS_DISPLAY": "both",
              "AGENT_KEYS_REQUIRED": "0", "STUDIO_PERSON_HEADER": "X-authentik-username", "KARAOKE_DEVICE": "",

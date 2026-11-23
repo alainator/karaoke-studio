@@ -14,8 +14,7 @@ services:
     volumes:
       - ./data:/data                          # songs made, downloads, models (about 4 GB), logs
       - /etc/localtime:/etc/localtime:ro       # your time zone, for song folder names and log times
-      - /path/to/pikaraoke/songs:/library      # PiKaraoke's song folder: published songs go to "Music Videos" in it
-    # if PiKaraoke runs in Docker too, put both on one network and set PIKARAOKE_URL=http://pikaraoke:5555
+      - /path/to/karaoke/songs:/library        # the song library: published songs go to "Music Videos" in it
     deploy:
       resources:
         reservations:

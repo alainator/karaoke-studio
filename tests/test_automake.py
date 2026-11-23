@@ -15,7 +15,6 @@ from assgen import save_lines  # noqa: E402
 A.PIPELINE = _env.FAKE
 A.gpu_free_mib = lambda: 99999
 A.pitch_later = lambda jid: None
-A.PK_URL = ""
 PRESET = os.environ["ENCORE_TOKEN"]
 
 SEARCHES = {}      # query -> answer (or an Exception to raise)

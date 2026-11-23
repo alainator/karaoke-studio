@@ -1,6 +1,6 @@
 """Fonts for the lyrics: the heavy lyric font, and fonts for scripts the TV's lyric renderer can't draw on its own.
 
-PiKaraoke's TV page (and the studio's preview) render lyrics with two fonts: Arial (Latin, Cyrillic, Greek, Hebrew,
+The studio's preview (and players using the same renderer) render lyrics with two fonts: Arial (Latin, Cyrillic, Greek, Hebrew,
 Arabic) and Droid Sans Fallback (Chinese, Japanese, Korean). For other scripts (Hindi, Thai, Tamil, Bengali,
 Georgian…) the subtitle file carries its own font: just the characters the song uses, cut from the free Noto font
 for that script (SIL Open Font License), in the subtitle's [Fonts] section. The same renderer reads embedded fonts.
