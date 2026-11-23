@@ -91,6 +91,19 @@ fine and never clears a mark. `--dry` shows what it would do. People have the sa
 ear** in a song's ⚠ box, with a Move button per line and "Apply all clear fixes" (nothing is saved until Save).
 `ks list --json` and `ks check SONG --json` give the same information as data, for scripts.
 
+## The video check (and publishing by itself)
+
+Every song made gets a **video check** (`ks show` prints it; the song page shows it above Publish): the language the
+singing was listened to in vs the lyrics' language, whether the album recording was found and used (and why not),
+lyrics timestamps that run past the video (a copy for a longer version), lyrics left out, and the quality floor (60% of
+lines heard in place, the same rule as party auto-make). A song that's hard to hear (shouted, mumbled, a "na na na"
+outro) scores like a wrong one, so a low score only holds a song for a look; it's never remade by itself.
+
+`ks make ... --auto` (needs the "publish" scope; only when the person asked for songs to go out unreviewed): when
+the song is made, it's published if its check passes (the old YouTube copy of the song is removed, as Publish
+offers); a song listened to in the wrong language is made again once in the lyrics' language; anything else waits,
+with the reason on its page and in `ks show` ("held: ..."). Its ⚠ lines stay for the person either way.
+
 ## Verifying by ear and by picture
 
 You can't listen, but the Studio can, and it can draw what it hears:

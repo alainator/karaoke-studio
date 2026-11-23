@@ -35,7 +35,8 @@ import guidevocals  # noqa: E402
 import schemalite  # noqa: E402
 import gpu as gpumod  # noqa: E402
 import agents  # noqa: E402
-import automake as AM  # noqa: E402
+import automake as AM
+import videocheck as VC  # noqa: E402
 import autopick  # noqa: E402
 import wordscore  # noqa: E402
 
@@ -521,10 +522,14 @@ async def create_job(req: Request):
                 (source == "pasted" and sum(1 for l in pasted.splitlines() if l.strip()) >= 4)
     if not re.fullmatch(r"[A-Za-z0-9_-]{11}", yt) or not ok_lyrics or not artist or not title:
         raise HTTPException(400, "pick a video and lyrics (or paste at least 4 lines), and give artist and title")
+    auto_pub = bool(b.get("auto_publish"))
+    if auto_pub:   # published without review when its video check passes (ks make --auto): a publish, so its scope
+        _agent_refuse(agents.actor_of(req), "publish", "publishing automatically")
     jid = new_job({"yt": yt, "lrc_id": lrc_id, "lyrics_source": source, "artist": artist, "title": title,
                    "video_title": str(b.get("video_title", ""))[:200],
                    "gpu_pref": b.get("gpu") if b.get("gpu") in ("local", "remote") else "auto",
-                   **({"lyrics_text": pasted} if source == "pasted" else {})}, agents.actor_of(req))
+                   **({"lyrics_text": pasted} if source == "pasted" else {}),
+                   **({"auto_publish": {"by": agents.actor_of(req), "at": time.time()}} if auto_pub else {})}, agents.actor_of(req))
     log.info("queued %s | video %s | lyrics %s:%s | gpu %s%s", jid, yt, source, lrc_id if source != "pasted" else f"{len(pasted)} chars",
              b.get("gpu") or "auto", f" | replaces {b.get('replace')}" if b.get("replace") else "")
     # "Change video or lyrics" on an existing song: the new one takes its place once it has been made (if it fails,
@@ -587,7 +592,7 @@ def summary(job):
 def _summary(job):
     keys = ("id", "artist", "title", "yt", "status", "step", "created", "finished", "error", "offset",
             "published", "published_as", "video_title", "result", "waiting", "edited", "unpublished_changes", "lang", "gpu", "ai_romaji", "video_v", "gpu_pref", "reviewed", "lrc_id", "lyrics_source", "trim", "video_task",
-            "lyrics_display", "cancel_requested", "last_edit", "published_by", "made_by", "quick", "auto_held")
+            "lyrics_display", "cancel_requested", "last_edit", "published_by", "made_by", "quick", "auto_held", "auto_retry", "auto_publish")
     out = {k: job.get(k) for k in keys}
     am = job.get("automake")
     out["automake"] = {k: am.get(k) for k in ("player_name", "by", "party", "at")} if am else None
@@ -660,6 +665,7 @@ def get_job(jid: str):
             lines = load_lines(job_path(jid, "words.json"))
             s["display_modes"] = display_modes(lines)
             s["lyrics_display"] = job_display(job, lines, s["display_modes"])
+            s["video_check"] = video_check(job, lines)
         except Exception:
             s["display_modes"], s["lyrics_display"] = [], None
     return s
@@ -1956,6 +1962,12 @@ async def remake(jid: str, req: Request):
         gpu = (await req.json()).get("gpu")
     except Exception:
         gpu = None
+    _remake(jid, agents.actor_of(req), gpu)
+    return {"ok": True}
+
+
+def _remake(jid, actor, gpu=None, note=None):
+    """Make a finished song again in place (the remake endpoint, and the video check's one automatic retry)."""
     with lock:
         job = load(jid)
         if job["status"] != "done":
@@ -1980,11 +1992,12 @@ async def remake(jid: str, req: Request):
                    pre_remake={**{k: job.get(k) for k in ("edited", "result", "offset", "reviewed", "ai_romaji", "remade", "remake_note")},
                                "log": job.get("log", [])[-30:], "unstarted": True})
         agents.retire(job_path(jid))  # (the remake retimes the lines; Undo remake is the way back)
-        _edited(jid, job, agents.actor_of(req), "remake")
+        _edited(jid, job, actor, "remake")
+        if note:
+            job["log"].append(note)
         save(jid, job)
     log.info("remake %s | gpu %s | keeps edits: %s", jid, job.get("gpu_pref", "auto"), merge)
     wake.set()
-    return {"ok": True}
 
 
 @app.post("/api/jobs/{jid}/undo-remake")
@@ -2350,6 +2363,8 @@ def finish(jid, rc, err, oom, where):
             threading.Thread(target=auto_finish, args=(jid,), daemon=True, name="automake-finish").start()
         else:
             refresh_requests()
+    elif job.get("auto_publish") and job.get("status") == "done":   # ks make --auto (a batch)
+        threading.Thread(target=batch_finish, args=(jid,), daemon=True, name="batch-finish").start()
 
 
 def _finish(jid, rc, err, oom, where):
@@ -3591,6 +3606,43 @@ def automake_run(rid):
     wake.set()
 
 
+def video_check(job, lines=None):
+    """The song's video check (videocheck.py): the facts the pipeline found, read with the auto-make quality floor
+    (one rule for "good enough"). None before the song is made."""
+    r = job.get("result")
+    if not r:
+        return None
+    if lines is None:
+        lines = load_lines(job_path(job["id"], "words.json"))
+    ok, why, stats = AM.check(r, lines, AM.load(STORE)["floor"])
+    v = VC.verdict(r, ok, why)
+    v["stats"] = stats
+    if job.get("auto_retry"):
+        v["retried"] = job["auto_retry"]
+    return v
+
+
+def try_auto_fix(jid, job, v):
+    """A song that didn't pass, for a cause the check can name (the language): remade once with the fix. Never twice,
+    and never for a low score alone (hard-to-hear songs score like wrong ones). True if a remake was started."""
+    fix = v.get("fix")
+    if not fix or job.get("auto_retry") or job.get("published"):
+        return False
+    with lock:
+        j = load(jid)
+        j["auto_retry"] = {"at": time.time(), "fix": fix, "why": "; ".join(c["note"] for c in v["checks"] if not c["ok"])}
+        if fix.get("lang"):
+            j["lang"] = fix["lang"]
+        save(jid, j)
+    _remake(jid, {"kind": "auto", "name": "video check"}, note=f"video check: made again ({j['auto_retry']['why']})")
+    log.info("video check: %s made again with %s", jid, fix)
+    return True
+
+
+def held_reason(v):
+    return "; ".join(c["note"] for c in v["checks"] if not c["ok"]) or "it needs a look"
+
+
 def auto_finish(jid):
     """An auto-made song is done: publish it if it clears the quality floor (and nothing of that name is in the
     library), else it waits for a look. The request follows."""
@@ -3614,7 +3666,12 @@ def auto_finish(jid):
             return
         if rid:
             STORE.set_request(rid, status="making", stage="publishing", eta=AM.round_eta(time.time() + AM.PUBLISH_S))
-        ok, why, stats = AM.check(job.get("result"), load_lines(job_path(jid, "words.json")), AM.load(STORE)["floor"])
+        v = video_check(job)
+        if not v["ok"] and try_auto_fix(jid, job, v):
+            if rid:
+                STORE.set_request(rid, status="making", stage="making", eta=None)
+            return
+        ok, why, stats = v["ok"], held_reason(v), v["stats"]
         base = final_base(job)
         if ok and os.path.exists(f"{MV_DIR}/{base}.mp4"):  # a song of that name was published meanwhile: never replaced
             ok, why = False, "a song with this name is already in the library"
@@ -3649,6 +3706,41 @@ def auto_finish(jid):
         refresh_requests()
 
 
+def batch_finish(jid):
+    """ks make --auto: published without review when its video check passes (with the old YouTube copy of the song
+    removed, as Publish offers), otherwise remade once for a cause the check can name, otherwise it waits for a look
+    with the reason on its page. Never over a song of that name that another make published."""
+    try:
+        job = load(jid)
+        if job.get("status") != "done" or job.get("published") or job.get("auto_held"):
+            return
+        v = video_check(job)
+        if not v["ok"] and try_auto_fix(jid, job, v):
+            return
+        ok, why = v["ok"], held_reason(v)
+        base = final_base(job)
+        other = (catalog_view()["by_base"].get(base) or [None])[0]
+        if ok and os.path.exists(f"{MV_DIR}/{base}.mp4") and other and other.get("id") != jid:
+            ok, why = False, "a song with this name is already in the library"
+        if not ok:
+            with lock:
+                j = load(jid)
+                j["auto_held"] = why
+                j.setdefault("log", []).append(f"not published automatically ({why}); it needs a look")
+                save(jid, j)
+            log.info("batch: %s held: %s", jid, why)
+            return
+        do_publish(jid, old_versions(job), job["auto_publish"].get("by") or {"kind": "auto", "name": "batch"})
+        set_job(jid, quick={"at": time.time(), "for": "batch", **v["stats"]})
+        log.info("batch: published %s (%s of %s heard in place)", jid, v["stats"]["sure"], v["stats"]["lines"])
+    except Exception as e:
+        log.exception("batch: finishing %s", jid)
+        try:
+            set_job(jid, auto_held=f"publishing automatically hit an error ({str(e)[:80]})")
+        except Exception:
+            pass
+
+
 def recover_automake():
     """At startup: requests still being looked for go back to the worker; auto-made songs that finished while the
     Studio was down get their check."""
@@ -3659,6 +3751,10 @@ def recover_automake():
         if j.get("automake") and j["status"] == "done" and not j.get("published") and not j.get("auto_held"):
             if not load(j["id"]).get("quick"):
                 threading.Thread(target=auto_finish, args=(j["id"],), daemon=True).start()
+        elif j["status"] == "done" and not j.get("published") and not j.get("auto_held"):
+            full = load(j["id"])
+            if full.get("auto_publish") and not full.get("quick"):
+                threading.Thread(target=batch_finish, args=(j["id"],), daemon=True).start()
 
 
 # ---- flags: the ⚠ marks ----

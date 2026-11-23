@@ -217,6 +217,12 @@ works the same whoever made the edit, and the song page says who edited it last.
 for agents (setup, rules, notes, the quality bar); `.claude/skills/` has the playbooks, which Claude Code loads as
 skills.
 
+**The video check.** After a song is made, its page says what the Studio found out about the video: the language it
+listened in (and whether that's the lyrics' language), whether the album recording was found and used to time scenes
+and cuts, lyrics timestamps that run past the video, lyrics left out (a shortened edit), and how many lines were heard
+where they sit. Party auto-make and `ks make --auto` (batches) publish a song by themselves only when its check
+passes; a song listened to in the wrong language is made again once, by itself; anything else waits with the reason.
+
 `ks` needs only Python 3: `ks setup --url http://<studio>:5570` stores the address and the key (asked for, never
 shown), or set `STUDIO_URL` and `STUDIO_AGENT_KEY`.
 

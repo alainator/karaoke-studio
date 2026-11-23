@@ -4,7 +4,8 @@
 slow (default): starts a child (like yt-dlp/ffmpeg) and both wait 10 minutes; stubborn: the same, but the child
 ignores SIGTERM; ok: writes a finished song's files and exits 0; media: the same with real (tiny) media, lines and
 heard words; oom: says it ran out of GPU memory and fails; conf: a finished song with its by-ear confidence (job fields
-fake_lines, fake_sure (null: couldn't follow), fake_squeezed: lines crammed into too little time); baddl: the video
+fake_lines, fake_sure (null: couldn't follow), fake_squeezed: lines crammed into too little time, fake_listen /
+fake_written: the language listened in and the lyrics' language, for the video check); baddl: the video
 can't be downloaded (YouTube's bot check)."""
 import json, os, subprocess, sys, time
 
@@ -48,7 +49,13 @@ if mode == "conf":
     for f in ("out.mp4", "vocals.m4a", "lyrics.ass"):
         open(os.path.join(d, f), "wb").write(b"placeholder " * 10)
     json.dump({"version": 2, "lines": lines}, open(os.path.join(d, "words.json"), "w"))
-    json.dump({"offset": 0, "lines": n, "duration": t + 5, "lang": "en", "confidence": {"lines": n, "check": 0, "sure": sure}},
+    # fake_listen: the language it listened in (a language set on the song wins, as in pipeline.py); fake_written:
+    # the language the lyrics are written in (the video check compares the two)
+    listened = job.get("lang") or job.get("fake_listen", "en")
+    if job.get("fake_listen_once") and not job.get("lang"):
+        listened = job["fake_listen_once"]
+    json.dump({"offset": 0, "lines": n, "duration": t + 5, "lang": listened, "confidence": {"lines": n, "check": 0, "sure": sure},
+               "video_check": {"lyrics_lang": job.get("fake_written"), "album": {"state": "none"}, "lyrics_end": t - 3.0}},
               open(os.path.join(d, "result.json"), "w"))
     print("@step render", flush=True)
     print("@info made (fake, with confidence)", flush=True)

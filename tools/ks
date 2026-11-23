@@ -17,7 +17,8 @@ What an agent may do is set by its key (made on the Studio's Agents tab); withou
   ks frame SONG --line N | --at T         the video at that moment with the lyrics on screen (PNG)
   ks log SONG                             the end of the song's pipeline log
   ks search "Artist - Title"              videos and lyrics to choose from
-  ks make --yt ID --lyrics ID [--source lrclib|karamoe] --artist A --title T [--gpu auto|local|remote]
+  ks make --yt ID --lyrics ID [--source lrclib|karamoe] --artist A --title T [--gpu auto|local|remote] [--auto]
+                                          (--auto: published by itself when its video check passes)
 
   editing (times are video times, as shown: m:ss.cc or seconds; N is the line number from ks show):
   ks move SONG N (+0.8 | -1.2 | --to 1:23.40) [--ripple]   move a line (with --ripple, every later line too)
@@ -315,6 +316,13 @@ def cmd_show(a):
           f"offset {off:+.2f} s | heard in place {c.get('sure')}/{c.get('lines')} | to fix {j.get('to_check')}"
           + (" | published" + (" (changes not published)" if j.get("unpublished_changes") else "") if j.get("published") else "")
           + (" | checked by you" if j.get("reviewed") else "") + (" | edited" if j.get("edited") else ""))
+    vc = j.get("video_check")
+    if vc:
+        print("  video check: " + ("passes" if vc["ok"] else "needs a look") +
+              (f" (made again automatically: {vc['retried'].get('why')})" if vc.get("retried") else "") +
+              (f" | held: {j['auto_held']}" if j.get("auto_held") else ""))
+        for c_ in vc["checks"]:
+            print(f"    {'·' if c_.get('info') else ('✓' if c_['ok'] else '⚠')} {c_['note']}")
     if j.get("last_edit"):
         le = j["last_edit"]
         print(f"  last edited by {le.get('by')} ({le.get('kind')}) {ago(le.get('at'))}: {le.get('what') or ''}")
@@ -530,8 +538,8 @@ def cmd_search(a):
 def cmd_make(a):
     lid = a.lyrics if a.source == "karamoe" else int(a.lyrics)
     r = call("/api/jobs", {"yt": a.yt, "lrc_id": lid, "lyrics_source": a.source, "artist": a.artist, "title": a.title,
-                           "video_title": a.video_title or "", "gpu": a.gpu})
-    print(f"queued {r['id']}")
+                           "video_title": a.video_title or "", "gpu": a.gpu, **({"auto_publish": True} if a.auto else {})})
+    print(f"queued {r['id']}" + (" (published by itself if its video check passes, otherwise held with the reason)" if a.auto else ""))
 
 
 def lrclib(path):
@@ -1067,6 +1075,7 @@ def main():
     s = sub.add_parser("make"); s.add_argument("--yt", required=True); s.add_argument("--lyrics", required=True)
     s.add_argument("--source", default="lrclib", choices=["lrclib", "karamoe"]); s.add_argument("--artist", required=True)
     s.add_argument("--title", required=True); s.add_argument("--video-title"); s.add_argument("--gpu", default="auto", choices=["auto", "local", "remote"])
+    s.add_argument("--auto", action="store_true", help="publish it when its video check passes (needs the publish scope)")
     s.set_defaults(f=cmd_make)
     s = sub.add_parser("alt-lyrics"); s.add_argument("song"); s.add_argument("--artist"); s.add_argument("--title")
     s.set_defaults(f=cmd_alt_lyrics)

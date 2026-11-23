@@ -1618,6 +1618,17 @@ function memberSelect(l) {
 const leaveOk = () => !(ed && ed.dirty) || confirm("You have unsaved lyric edits. Leave without saving?");
 window.addEventListener("beforeunload", e => { if (ed && ed.dirty) { e.preventDefault(); e.returnValue = ""; } });
 
+// what the Studio found out about the video while making the song (videocheck.py), and whether it could go out unreviewed
+function videoCheckBox(j) {
+  const v = j.video_check;
+  if (!v) return "";
+  const mark = c => c.info ? "·" : c.ok ? "✓" : "⚠";
+  return `<details class="vcheck" style="margin-top:8px"${v.ok ? "" : " open"}><summary><b>Video check:</b> ${v.ok ? "passes" : '<span class="tag warn">needs a look</span>'}`
+    + `${v.retried ? ` <span class="hint">(made again automatically: ${esc(v.retried.why || "")})</span>` : ""}`
+    + `${j.auto_held ? ` <span class="hint">held: ${esc(j.auto_held)}</span>` : ""}</summary>`
+    + `<ul class="hint" style="margin:6px 0 0 0;padding-left:18px;list-style:none">${v.checks.map(c => `<li>${mark(c)} ${esc(c.note || "")}</li>`).join("")}</ul></details>`;
+}
+
 async function renderPublish(id, j) {
   let info; try { info = await api(`/api/jobs/${id}/publish-info`); } catch (e) { $("#pub").textContent = e.message; return; }
   const olds = info.old_versions.map(n => `<label class="chk"><input type="checkbox" class="old" value="${esc(n)}" checked> Remove the old YouTube version: <span class="hint">${esc(n)}</span></label>`).join("");
@@ -1625,7 +1636,7 @@ async function renderPublish(id, j) {
     <div class="row" style="justify-content:space-between">
       <div><b>${j.published ? "Published" : "Publish to the library"}</b>${j.published && j.unpublished_changes ? ' <span class="tag warn">changes not published yet</span>' : ""} as <span class="hint">Music Videos/${esc(info.name)}</span>${info.exists && !j.published ? ' <span class="tag warn">replaces the existing one</span>' : ""}</div>
       <div class="row"><button class="primary" id="pubbtn">${j.published ? "Publish again" : "Publish"}</button><button class="ghost danger" id="del">Delete</button></div>
-    </div>${olds}`;
+    </div>${olds}${videoCheckBox(j)}`;
   $("#pubbtn").onclick = async () => {
     $("#pubbtn").disabled = true;
     const remove = [...document.querySelectorAll(".old:checked")].map(c => c.value);

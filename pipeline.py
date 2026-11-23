@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config as C  # noqa: E402
 from assgen import save_lines, write_lyrics  # noqa: E402
 import versions  # noqa: E402
+import videocheck  # noqa: E402
 import earcheck  # noqa: E402
 import linecheck  # noqa: E402
 from romanize import sound_key  # noqa: E402
@@ -331,8 +332,7 @@ elif source == "karamoe":
     # kara.moe is mostly anime songs (romaji), but it has English songs too: those are listened to in English
     # (Footloose, 2026-11-22: heard "in Japanese", only its first verse was recognised and the timing fell apart).
     # A language set on the song wins.
-    _all = " ".join(t for _, t in synced)
-    lang = job.get("lang") or ("en" if _en(_all) >= 0.15 and _rj(_all) < 0.03 else "ja")
+    lang = job.get("lang") or ("en" if videocheck.lyrics_language([t for _, t in synced]) == "en" else "ja")
     align_text = [t for _, t in synced]
 # romaji lyrics sometimes carry an English translation in brackets ("Yoru no nioi ni (I'll spend all thirty
 # nights)"): drop those, but only in songs whose own lyrics aren't English (in English songs, brackets are
@@ -463,6 +463,10 @@ gc.collect(); gpu.empty_cache(DEV)
 # Meanwhile, in its own process (CPU and network, so it runs alongside Whisper on the GPU): find the album recording
 # and map the video's timeline onto it — skits, scenes and cuts found by matching the music (albumsync.py).
 album_proc = None
+ALBUM = {"state": "skipped", "why": "lyrics from kara.moe carry no album timing" if source == "karamoe" else
+         "lyrics without timestamps" if untimed else "fewer than 4 lyric lines" if len(synced) < 4 else None}
+if ALBUM["why"]:
+    say("info", f"album recording not looked for: {ALBUM['why']}")
 if source != "karamoe" and not untimed and len(synced) >= 4:
     try:
         album_proc = subprocess.Popen([sys.executable, "-I", os.path.join(os.path.dirname(os.path.abspath(__file__)), "albumsync.py"),
@@ -784,12 +788,14 @@ if album_proc is not None:
     except Exception:
         album_proc.kill(); _aout = ""
     _segs = None
+    ALBUM = {"state": "none"}
     for _ln in (_aout or "").splitlines():
         if _ln.startswith("@say "):
             say("info", _ln[5:])
         elif _ln.startswith("@segs "):
             _segs = json.loads(_ln[6:])
     if _segs:
+        ALBUM = {"state": "found", "parts": len(_segs)}
         import albumsync  # noqa: E402
         _aoffs = lambda c_: np.array([c_ + albumsync.seg_off(_segs, t_ + c_) for t_, _ in synced])
         _byact = sorted(((fit_offs(_aoffs(c_)), c_) for c_ in np.arange(-3.0, 3.01, 0.25)), reverse=True)[:3]
@@ -828,6 +834,7 @@ if album_proc is not None:
             album_dur = float(_segs[-1]["a1"])  # the real album length (LRCLIB's can be wrong)
             scenes = [s_["a0"] + s_["off"] + _c for k_, s_ in enumerate(_segs) if k_ and s_["off"] > _segs[k_ - 1]["off"] + 1.0]
             album_used = True
+            ALBUM = {"state": "used", "parts": len(_segs)}
             say("info", "using the album map for the timing" + (f" ({len(_segs)} parts: " + ", ".join(f"{s_['off'] + _c:+.1f}s" for s_ in _segs) + ")" if len(_segs) > 1 else ""))
 STEP, JUMP, PENALTY = 0.25, 2.0, 2.0
 grid = off + np.arange(-60.0, 60.0 + STEP / 2, STEP)
@@ -1617,7 +1624,11 @@ json.dump({"offset": round(off, 2), "lines": len(out_lines), "skipped": skipped,
            "lang": lang, "script": SCRIPT, "rtl": is_rtl(SCRIPT), "romaji": ("hand" if len(hand_romaji) >= 0.8 * sum(1 for o in origs if o) else "automatic") if any(origs)
            else ("kara.moe" if source == "karamoe" else None),
            "duration": round(duration, 1), "seconds": round(time.time() - t0), "encoded": "x264",
-           "confidence": CONF, "pipeline": versions.VERSION, "backing": backing_kept, "voice_swaps": swaps_used}, open(f"{job_dir}/result.json", "w"))
+           "confidence": CONF, "pipeline": versions.VERSION, "backing": backing_kept, "voice_swaps": swaps_used,
+           "video_check": {"lyrics_lang": videocheck.lyrics_language([t for _, t in synced]) if SCRIPT == "latin" else None,
+                           "sung": SUNG, "album": ALBUM, "source": source,
+                           "lyrics_end": round(float(synced[-1][0]), 1) if synced and not untimed else None}},
+          open(f"{job_dir}/result.json", "w"))
 # a song the user trimmed (ads or an intro cut off): the new render is cut the same way, lines and all
 # (the GPU helper never gets the trim: the studio cuts a song made there the same way when it comes back, app.run_remote)
 _trim = job.get("trim") or {}

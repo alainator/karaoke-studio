@@ -24,6 +24,8 @@ description: Make new karaoke songs in Karaoke Studio - search for the music vid
    e.g. Gruppa Krovi (Группа крови), so it can be found both ways in players.
 5. Cantonese songs: when made, `ks reading SONG yue` (jyutping instead of pinyin; the timing stays).
 6. When it's done (`ks list --q`), check it like any song (karaoke-fix skill). Don't publish unless asked.
+   When the person asked for a batch to go out unreviewed, queue with `--auto` (needs the "publish" scope): each
+   song is published by itself if its video check passes, otherwise it waits with the reason (`ks show SONG`).
 
 For many songs, don't queue them all at once while the person may be making their own: the studio makes one song
 at a time per GPU, first come first served. Queue one, wait until `ks status` says nothing is being made, then the

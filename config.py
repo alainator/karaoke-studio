@@ -104,7 +104,7 @@ VENC = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-g", "48", "-pi
 
 # the modules that make songs (pipeline.py imports these), and the helper itself: a helper on different code is asked to
 # update (git pull) before it gets songs, so a change to helper.py reaches the helper PC once it's pushed
-CODE_FILES = ("pipeline.py", "assgen.py", "config.py", "romanize.py", "versions.py", "albumsync.py", "fonts.py", "earcheck.py", "linecheck.py", "karamoe.py", "lyricmap.py", "helper.py", "gpu.py")
+CODE_FILES = ("pipeline.py", "assgen.py", "config.py", "romanize.py", "versions.py", "albumsync.py", "fonts.py", "earcheck.py", "linecheck.py", "karamoe.py", "lyricmap.py", "helper.py", "gpu.py", "videocheck.py")
 
 
 def code_version():

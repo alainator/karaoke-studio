@@ -417,3 +417,83 @@ def make_published(artist, title, **kw):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------- the video check (videocheck.py) and ks make --auto (batches) ----------------
+import videocheck as VC  # noqa: E402
+
+
+class VideoCheckRules(unittest.TestCase):
+    def test_lyrics_language(self):
+        self.assertEqual(VC.lyrics_language(["I've been working so hard", "you know it's all for you and me"]), "en")
+        self.assertEqual(VC.lyrics_language(["kimi no kokoro wa doko ni", "boku wa naka de nai desu"]), "ja")
+        self.assertIsNone(VC.lyrics_language(["la vida es un carnaval", "no hay que llorar"]))   # can't tell: no claim
+
+    def test_verdict(self):
+        res = {"lang": "ja", "lines": 10, "duration": 100.0, "skipped": [], "video_check": {"lyrics_lang": "en", "album": {"state": "skipped", "why": "x"}}}
+        v = VC.verdict(res, True, "9 of 10 heard")
+        self.assertFalse(v["ok"])                                    # passes the floor, but listened in the wrong language
+        self.assertEqual(v["fix"], {"lang": "en"})
+        res["lang"] = "en"
+        v = VC.verdict(res, True, "9 of 10 heard")
+        self.assertTrue(v["ok"])
+        self.assertIsNone(v["fix"])
+        self.assertTrue(any("wasn't looked for" in c["note"] for c in v["checks"]))   # the album map's skip is said
+        res["video_check"]["lyrics_end"] = 200.0                       # timestamps past the video: a longer version's copy
+        self.assertFalse(VC.verdict(res, True, "")["ok"])
+        res["video_check"]["lyrics_end"] = 90.0
+        res["skipped"] = [{}] * 5                                     # a third of the lyrics left out: a note, not a stop
+        v = VC.verdict(res, True, "")
+        self.assertTrue(v["ok"] and any(c["key"] == "left_out" for c in v["checks"]))
+        self.assertFalse(VC.verdict(res, False, "3 of 10 lines heard in place")["ok"])   # the floor stops it
+
+
+class Batches(Base):
+    def batch(self, title, **fake):
+        MAKE.clear()
+        jid = _orig_new_job({"yt": "bbbbbbbbbbb", "lrc_id": 7, "lyrics_source": "lrclib", "artist": "Batch Band", "title": title,
+                             "fake": "conf", **fake, "auto_publish": {"by": {"kind": "agent", "name": "batcher"}, "at": time.time()}},
+                            {"kind": "agent", "name": "batcher"})
+        return jid
+
+    def settle(self, jid):
+        """Run it (and the one automatic remake, if the check asks for it) until it's published or held."""
+        done = lambda: A.load(jid).get("published") or A.load(jid).get("auto_held")
+        for _ in range(3):
+            A.schedule_once()
+            if wait_for(done, 15):
+                break
+        self.assertTrue(done(), A.load(jid).get("status"))
+        return A.load(jid)
+
+    def test_a_batch_song_that_passes_is_published_by_itself(self):
+        job = self.settle(self.batch("Passes", fake_lines=10, fake_sure=9))
+        self.assertTrue(job.get("published"))
+        self.assertEqual(job["published_by"]["by"], "batcher")
+        self.assertEqual(job["quick"]["for"], "batch")
+
+    def test_below_the_floor_waits_with_its_reason(self):
+        job = self.settle(self.batch("Held", fake_lines=10, fake_sure=3))
+        self.assertFalse(job.get("published"))
+        self.assertIn("3 of 10", job["auto_held"])
+        self.assertNotIn("auto_retry", job)                           # a low score alone is never remade by itself
+
+    def test_wrong_language_is_made_again_once_in_the_lyrics_language(self):
+        job = self.settle(self.batch("Listened Wrong", fake_lines=10, fake_sure=9, fake_written="en", fake_listen_once="ja"))
+        self.assertEqual(job["auto_retry"]["fix"], {"lang": "en"})
+        self.assertEqual(job["lang"], "en")
+        self.assertTrue(job.get("published"), job.get("auto_held"))   # the remake listened in English and passed
+        v = A.video_check(job)
+        self.assertTrue(v["ok"] and v["retried"])
+
+    def test_a_wrong_language_that_stays_wrong_is_held_not_remade_twice(self):
+        job = self.settle(self.batch("Stays Wrong", fake_lines=10, fake_sure=9, fake_written="ja", fake_listen="en"))
+        # fix = listen in Japanese; the stand-in keeps the set language, so it passes on the second make
+        self.assertEqual(job["auto_retry"]["fix"], {"lang": "ja"})
+
+    def test_auto_publish_needs_the_publish_scope(self):
+        key, _ = A.KEYS.create("Maker", ["read", "make"])
+        st, _, b = jcall(A.app, "POST", "/api/jobs", {"yt": "ccccccccccc", "lrc_id": 3, "lyrics_source": "lrclib", "artist": "A",
+                                                     "title": "B", "auto_publish": True}, {"X-Studio-Agent-Key": key})
+        self.assertEqual(st, 403, b)
+        self.assertIn("publish", str(b))
