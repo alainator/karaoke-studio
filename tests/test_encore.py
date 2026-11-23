@@ -736,6 +736,39 @@ class PlaysCatalogFiles(Base):
 
 
 # ---------------- PiKaraoke is optional ----------------
+class NoDuplicates(Base):
+    """A song is listed once (2026-11-22: Light Years Away, Dance Dance and Tot Musica were each listed twice)."""
+
+    def entries(self, title):
+        return [e for e in A.catalog.read_catalog(A.LIB)["songs"] if A.catalog.norm_key(e["title"]) == A.catalog.norm_key(title)]
+
+    def test_a_remake_under_another_name_replaces_the_copy_its_deleted_job_left(self):
+        old = make_song("Nova Rae", "Glass Sky (玻璃天空)")
+        old_base = A.load(old)["published_as"]
+        self.assertEqual(jcall(A.app, "DELETE", f"/api/jobs/{old}")[0], 200)     # replaced by a remake (ks change)
+        self.assertTrue(self.entries("Glass Sky")[0].get("job_deleted"))
+        new = make_song("Nova Rae", "Glass Sky")
+        self.assertEqual([e["id"] for e in self.entries("Glass Sky")], [new])
+        self.assertFalse([f for f in os.listdir(A.MV_DIR) if f.startswith(old_base + ".")])
+        self.assertIn("replaced the earlier copy", A.load(new)["log"][-1])
+
+    def test_a_copy_whose_job_still_exists_is_never_removed_but_two_publishes_of_one_video_are_flagged(self):
+        a = make_song("Ivo Lark", "Tin Roof")
+        b = make_song("ivo lark", "tin roof", publish=False)
+        st, _, r = jcall(A.app, "POST", f"/api/jobs/{b}/publish", {"remove": []})
+        self.assertEqual(st, 200, r)
+        if A.load(a)["published_as"] != r["name"]:        # a case-sensitive drive: two names, both stay, said so
+            self.assertEqual(r["twins"], [a])
+            self.assertIn("also published by", r["message"])
+            self.assertTrue(os.path.exists(os.path.join(A.MV_DIR, A.load(a)["published_as"] + ".mp4")))
+
+    def test_two_songs_published_to_the_same_files_are_listed_once(self):
+        a = make_song("Ada Quill", "North Light")
+        time.sleep(0.01)
+        b = make_song("Ada Quill", "North Light")
+        self.assertEqual([e["id"] for e in self.entries("North Light")], [b])
+
+
 class PiKaraokeOptional(Base):
     def test_publish_without_pikaraoke(self):
         self.assertEqual(A.PK_URL, "")

@@ -636,7 +636,7 @@ def job_index():
             if j.get("artist") and j.get("title"):
                 out.append({k: j.get(k) for k in ("id", "artist", "title", "status", "published", "published_as",
                                                   "created", "finished", "cancel_requested", "encore_rids", "error",
-                                                  "started", "step", "gpu", "gpu_pref", "automake", "auto_held")})
+                                                  "started", "step", "gpu", "gpu_pref", "automake", "auto_held", "yt")})
     return out
 
 
@@ -2890,6 +2890,7 @@ def do_publish(jid, remove, actor):
         os.replace(tmp, f"{MV_DIR}/{base}.mp4")
         publish_lyrics(jid, base)
         removed = [name for name in remove if remove_lib_file(name)]
+        replaced = remove_replaced_copies(job, base)
         # its published versions share these lyrics: they get them too
         vbases = []
         for m in videoswap.entries(job_path(jid)):
@@ -2904,14 +2905,48 @@ def do_publish(jid, remove, actor):
         job.update(status="done", published=time.time(), published_as=base, unpublished_changes=False,
                    published_by=agents.stamp(actor))
         log.info("published %s as %s (by %s)", jid, base, job["published_by"]["by"])
-        job.setdefault("log", []).append(f"published as '{base}'" + (f"; removed {len(removed)} old version(s)" if removed else ""))
+        job.setdefault("log", []).append(f"published as '{base}'" + (f"; removed {len(removed)} old version(s)" if removed else "")
+                                         + (f"; replaced the earlier copy '{', '.join(replaced)}'" if replaced else ""))
         save(jid, job)
         update_catalog()
     pitch_later(jid)
     if C.ALBUM_LOOKUP and not job.get("album_meta"):   # a newly published song: its album and cover, then the catalog
         threading.Thread(target=lambda: (album_lookup(jid), update_catalog()), daemon=True).start()
     msg = pk_rescan() or "published"
-    return {"name": base, "removed": removed, "message": msg}
+    twins = published_twins(job, base)
+    if twins:
+        msg += (f"; this song is also published by {', '.join(t['id'] for t in twins)} (the same video): "
+                "the library lists it twice until one of them is deleted")
+    return {"name": base, "removed": removed, "replaced": replaced, "twins": [t["id"] for t in twins], "message": msg}
+
+
+def _same_song(a_artist, a_title, b_artist, b_title):
+    return (catalog.norm_key(a_artist), catalog.norm_key(a_title)) == (catalog.norm_key(b_artist), catalog.norm_key(b_title))
+
+
+def remove_replaced_copies(job, base):
+    """(under the lock, publishing) The library copy of this song left by a remake: same artist and title, its job
+    deleted (ks change / a remake replaces the job), published under another name (2026-11-22: Light Years Away was
+    listed twice). Its files go (with its versions'); a copy whose job still exists is never touched here."""
+    out = []
+    for e in (catalog.read_catalog(LIB) or {}).get("songs", []):
+        if not e.get("job_deleted") or e.get("base") == base or e.get("folder") != "Music Videos" \
+                or not _same_song(e.get("artist"), e.get("title"), job.get("artist"), job.get("title")):
+            continue
+        for b in [e["base"]] + [v.get("base") for v in e.get("versions") or [] if v.get("base")]:
+            for f in os.listdir(MV_DIR):
+                if f.startswith(b + ".") and os.path.isfile(os.path.join(MV_DIR, f)):
+                    os.remove(os.path.join(MV_DIR, f))
+        out.append(e["base"])
+        log.info("publish: removed %s, the earlier copy of %s - %s (its job is gone)", e["base"], job.get("artist"), job.get("title"))
+    return out
+
+
+def published_twins(job, base):
+    """Other studio songs published from the same video, same artist and title, under another name: both stay listed
+    (each has a job), so say so (2026-11-22: Dance Dance twice, one of them in lower case)."""
+    return [j for j in job_index() if j["id"] != job["id"] and j.get("published") and j.get("published_as") != base
+            and j.get("yt") and j.get("yt") == job.get("yt") and _same_song(j["artist"], j["title"], job.get("artist"), job.get("title"))]
 
 
 LIB_EXTS_MEDIA = (".mp4", ".webm", ".mkv", ".mp3", ".zip")

@@ -322,6 +322,11 @@ def build(jobs_dir, lib_dir, mv_dir, old=None, log=None, plays=None):
                 log.exception("catalog: left out %s", jid)
             continue
         if e:
+            twin = next((x for x in songs if x["base"] == e["base"]), None)
+            if twin:   # two studio songs published to the same files (made twice): listed once, the last published
+                if (e.get("published") or 0) <= (twin.get("published") or 0):
+                    continue
+                songs.remove(twin)
             songs.append(e)
             ids.add(e["id"])
             bases.add(e["base"])
