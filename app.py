@@ -2358,13 +2358,53 @@ def finish(jid, rc, err, oom, where):
         job = load(jid)
     except Exception:
         return
+    if job.get("status") == "done":
+        threading.Thread(target=after_make, args=(jid,), daemon=True, name="after-make").start()
+    elif job.get("automake"):
+        refresh_requests()
+
+
+# songs sung in a language with its own script: the original title goes next to the Latin one (origtitle.py)
+OWN_SCRIPT_LANGS = {"ja", "ko", "zh", "yue", "ru", "uk", "be", "bg", "sr", "mk", "kk", "mn", "el", "he", "ar", "fa", "ur",
+                    "ps", "hi", "mr", "ne", "bn", "pa", "gu", "ta", "te", "kn", "ml", "si", "th", "lo", "km", "my", "ka", "hy", "am"}
+
+
+def fill_title_orig(jid):
+    """A made song without an original title, sung in a language with its own script: find it (kara.moe, LRCLIB, the
+    video's title; only one that reads back as the song's title) and set it. Never overwrites one a person set."""
+    try:
+        job = load(jid)
+        r = job.get("result") or {}
+        if job.get("title_orig") or not (r.get("lang") in OWN_SCRIPT_LANGS or r.get("script") not in (None, "latin")):
+            return None
+        import origtitle
+        got = origtitle.find(job, http_json, lang=r.get("lang"))
+        if not got:
+            return None
+        with lock:
+            j = load(jid)
+            if j.get("title_orig"):
+                return None
+            j["title_orig"] = got["orig"]
+            j.setdefault("log", []).append(f"original title: {got['orig']} (from {got['source']}, reads as \"{got['read_as']}\")")
+            save(jid, j)
+        if j.get("published"):
+            update_catalog()
+        log.info("original title for %s: %s (%s)", jid, got["orig"], got["source"])
+        return got
+    except Exception:
+        log.exception("original title for %s", jid)
+        return None
+
+
+def after_make(jid):
+    """A song was made: its original title, then party auto-make or a batch (ks make --auto) finishes it."""
+    fill_title_orig(jid)
+    job = load(jid)
     if job.get("automake"):  # party auto-make: check it and publish it (or say why not); the request follows
-        if job.get("status") == "done":
-            threading.Thread(target=auto_finish, args=(jid,), daemon=True, name="automake-finish").start()
-        else:
-            refresh_requests()
-    elif job.get("auto_publish") and job.get("status") == "done":   # ks make --auto (a batch)
-        threading.Thread(target=batch_finish, args=(jid,), daemon=True, name="batch-finish").start()
+        auto_finish(jid)
+    elif job.get("auto_publish"):   # ks make --auto (a batch)
+        batch_finish(jid)
 
 
 def _finish(jid, rc, err, oom, where):

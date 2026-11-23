@@ -1023,7 +1023,11 @@ def cmd_reading(a):
 
 def cmd_rename(a):
     job = resolve(a.song)
-    r = call(f"/api/jobs/{job['id']}/rename", {"artist": a.artist, "title": a.title})
+    j = call(f"/api/jobs/{job['id']}")
+    body = {"artist": a.artist or j["artist"], "title": a.title or j["title"]}
+    if a.orig is not None:
+        body["title_orig"] = a.orig
+    r = call(f"/api/jobs/{job['id']}/rename", body)
     print(f"now '{r['name']}' ({r['message']})")
 
 
@@ -1110,7 +1114,8 @@ def main():
     s = sub.add_parser("undo"); s.add_argument("song"); s.add_argument("--any", action="store_true"); s.set_defaults(f=cmd_undo)
     s = sub.add_parser("offset"); s.add_argument("song"); s.add_argument("seconds"); s.set_defaults(f=cmd_offset)
     s = sub.add_parser("reading"); s.add_argument("song"); s.add_argument("to", choices=["zh", "yue"]); s.set_defaults(f=cmd_reading)
-    s = sub.add_parser("rename"); s.add_argument("song"); s.add_argument("--artist", required=True); s.add_argument("--title", required=True); s.set_defaults(f=cmd_rename)
+    s = sub.add_parser("rename"); s.add_argument("song"); s.add_argument("--artist"); s.add_argument("--title")
+    s.add_argument("--orig", help="the original title in its own script (逆光); \"\" removes it; no file changes"); s.set_defaults(f=cmd_rename)
     s = sub.add_parser("singers"); s.add_argument("song"); s.set_defaults(f=cmd_singers)
     s = sub.add_parser("publish"); s.add_argument("song"); s.add_argument("--remove-old", action="store_true"); s.set_defaults(f=cmd_publish)
     s = sub.add_parser("reviewed"); s.add_argument("song"); s.add_argument("--off", action="store_true")
