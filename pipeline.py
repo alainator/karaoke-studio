@@ -277,6 +277,12 @@ from romanize import script_of, SCRIPTS, SCRIPT_RE, is_rtl, romanize_generic, so
 SCRIPT_LANG = {"cyrillic": "ru", "greek": "el", "devanagari": "hi", "bengali": "bn", "gurmukhi": "pa", "gujarati": "gu",
                "tamil": "ta", "telugu": "te", "kannada": "kn", "malayalam": "ml", "sinhala": "si", "thai": "th", "lao": "lo",
                "khmer": "km", "myanmar": "my", "georgian": "ka", "armenian": "hy", "ethiopic": "am", "hebrew": "he", "arabic": "ar"}
+# English words vs romaji: which a Latin-script upload is (both are Latin letters)
+EN = set("the you i and my me is your it's i'm don't can't of in it love all that this what with be are we they "
+         "was for on so just know never can will".split())
+_en = lambda x: (lambda t: sum(w in EN for w in t) / len(t) if t else 0.0)(re.findall(r"[a-z']+", x.lower()))
+ROMAJI_HINT = set("wa wo ni ga kimi boku watashi naka kokoro nai desu dake kara made".split())
+_rj = lambda x: (lambda t: sum(w in ROMAJI_HINT for w in t) / len(t) if t else 0.0)(re.findall(r"[a-z']+", x.lower()))
 ALIGN_AS = {}  # line index -> spellings for the aligner, when they differ from what's shown (Cantonese)
 SCRIPT = script_of([t for _, t in synced])
 if any(KANA.search(t) for _, t in synced):
@@ -322,16 +328,15 @@ elif SCRIPT in SCRIPTS:
                    if _sre.search(x) else x) for k, (t, x) in enumerate(synced)]
         say("info", f"{SCRIPTS[SCRIPT][1]} lyrics: romanized, original shown above")
 elif source == "karamoe":
-    lang = job.get("lang") or "ja"  # kara.moe is mostly anime songs; a language set on the song wins (English anime songs)
+    # kara.moe is mostly anime songs (romaji), but it has English songs too: those are listened to in English
+    # (Footloose, 2026-11-22: heard "in Japanese", only its first verse was recognised and the timing fell apart).
+    # A language set on the song wins.
+    _all = " ".join(t for _, t in synced)
+    lang = job.get("lang") or ("en" if _en(_all) >= 0.15 and _rj(_all) < 0.03 else "ja")
     align_text = [t for _, t in synced]
 # romaji lyrics sometimes carry an English translation in brackets ("Yoru no nioi ni (I'll spend all thirty
 # nights)"): drop those, but only in songs whose own lyrics aren't English (in English songs, brackets are
 # usually backing vocals)
-EN = set("the you i and my me is your it's i'm don't can't of in it love all that this what with be are we they "
-         "was for on so just know never can will".split())
-_en = lambda x: (lambda t: sum(w in EN for w in t) / len(t) if t else 0.0)(re.findall(r"[a-z']+", x.lower()))
-ROMAJI_HINT = set("wa wo ni ga kimi boku watashi naka kokoro nai desu dake kara made".split())
-_rj = lambda x: (lambda t: sum(w in ROMAJI_HINT for w in t) / len(t) if t else 0.0)(re.findall(r"[a-z']+", x.lower()))
 _romanized = SCRIPT != "latin" or _rj(" ".join(t for _, t in synced)) > 0.05  # romaji uploads (not e.g. Spanish)
 if _romanized and _en(" ".join(re.sub(r"\([^)]*\)", " ", t) for _, t in synced)) < 0.05:
     def _strip(t):
