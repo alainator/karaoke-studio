@@ -226,6 +226,14 @@ passes; a song listened to in the wrong language is made again once, by itself; 
 `ks` needs only Python 3: `ks setup --url http://<studio>:5570` stores the address and the key (asked for, never
 shown), or set `STUDIO_URL` and `STUDIO_AGENT_KEY`.
 
+## UltraStar export
+
+`python -I deploy/export-ultrastar.py OUT_DIR [--q TEXT] [--copy]` writes the published songs as an UltraStar song
+library (one folder per song: `song.txt`, the instrumental, the guide vocals, the video and the cover), for singing
+games that read UltraStar files (UltraStar Deluxe, Vocaluxe, Performous, AllKaraoke). The notes are the Studio's own
+melody, cut at each word, a 40 ms beat grid with no tempo guessing; a word the Studio has no melody for is freestyle
+(shown, not scored). Media are hard links on the same drive (no extra space), copies otherwise. See `ultrastar.py`.
+
 ## Logs
 
 - `data/logs/studio.log`: what the studio did and when (queued, started on which card, finished, failed and why, published).
