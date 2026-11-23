@@ -57,7 +57,8 @@
           "name": "Encore on kit-01",
           "last_seen": 1794485520.0
         }
-      ]
+      ],
+      "photo": null
     },
     "schema": "profiles.export.response.schema.json"
   }

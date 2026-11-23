@@ -20,7 +20,8 @@
       "favorites": [],
       "prefs": [],
       "history": [],
-      "players": []
+      "players": [],
+      "photo": null
     },
     "schema": "profiles.export.response.schema.json"
   }

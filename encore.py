@@ -57,8 +57,11 @@ create table if not exists profile_events (seq integer primary key autoincrement
 create index if not exists profile_events_uid on profile_events (uid);
 create table if not exists profile_tombs (uid text primary key, seq integer, at real, merged_into text, player text, stored real);
 create table if not exists bundle_have (player text primary key, have text, at real);
+create table if not exists profile_photos (sha text, uid text, stored real, primary key (sha, uid));
 """
 PROFILE_PAGE = 500              # events per sync answer (then "more": true)
+PHOTO_MAX = 200 * 1024          # a profile picture (§2.6 photo): Encore sends a 256 px JPEG
+SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 def token_hash(token):
@@ -438,9 +441,54 @@ class Store:
         r = self.db.execute("select seq from sqlite_sequence where name='profile_events'").fetchone()
         return int(r[0]) if r else 0
 
+    # ---------------- profile pictures (§2.6 photo): the bytes, by their sha256, next to the database ----------------
+    def _photo_dir(self):
+        return os.path.join(os.path.dirname(self.path), "profile-photos")
+
+    def photo_put(self, uid, sha, data):
+        """Store a profile's picture. "ok", or why not: "deleted" (a tombstoned profile), "bad" (not a JPEG, or not
+        that sha256), "big" (over PHOTO_MAX)."""
+        if len(data) > PHOTO_MAX:
+            return "big"
+        if not data.startswith(b"\xff\xd8\xff") or hashlib.sha256(data).hexdigest() != sha:
+            return "bad"
+        with self.lock:
+            if self.db.execute("select 1 from profile_tombs where uid=?", (uid,)).fetchone():
+                return "deleted"
+            d = self._photo_dir()
+            os.makedirs(d, exist_ok=True)
+            f = os.path.join(d, sha + ".jpg")
+            if not os.path.exists(f):
+                with open(f + ".tmp", "wb") as o:
+                    o.write(data)
+                os.replace(f + ".tmp", f)
+            self.db.execute("insert or ignore into profile_photos (sha, uid, stored) values (?, ?, ?)", (sha, uid, self.now()))
+            self.db.commit()
+        return "ok"
+
+    def photo_path(self, uid, sha):
+        """The file of a picture this profile uploaded, or None."""
+        with self.lock:
+            if not self.db.execute("select 1 from profile_photos where sha=? and uid=?", (sha, uid)).fetchone():
+                return None
+        f = os.path.join(self._photo_dir(), sha + ".jpg")
+        return f if os.path.isfile(f) else None
+
+    def _erase_photos(self, uid):
+        """(under the lock) A deleted profile's pictures go (a file another profile also uploaded stays)."""
+        shas = [r[0] for r in self.db.execute("select sha from profile_photos where uid=?", (uid,))]
+        self.db.execute("delete from profile_photos where uid=?", (uid,))
+        for sha in shas:
+            if not self.db.execute("select 1 from profile_photos where sha=?", (sha,)).fetchone():
+                try:
+                    os.remove(os.path.join(self._photo_dir(), sha + ".jpg"))
+                except OSError:
+                    pass
+
     def _erase_uid(self, uid):
-        """Delete-everywhere for one profile (call under the lock): its events go, and the requests, flags and plays
-        it sent stay without the uid."""
+        """Delete-everywhere for one profile (call under the lock): its events and pictures go, and the requests,
+        flags and plays it sent stay without the uid."""
+        self._erase_photos(uid)
         self.db.execute("delete from profile_events where uid=?", (uid,))
         for t in ("requests", "flags", "plays"):
             self.db.execute(f"update {t} set uid=null where uid=?", (uid,))
@@ -458,7 +506,7 @@ class Store:
             rows = self.db.execute("select player, body from profile_events where uid=? order by seq", (uid,)).fetchall()
         if not tomb and not rows:
             return None
-        prof, favs, prefs, hist, senders = None, {}, {}, [], []
+        prof, favs, prefs, hist, senders, photo = None, {}, {}, [], [], None
         for r in rows:
             e = json.loads(r["body"])
             if r["player"] not in senders:
@@ -473,13 +521,16 @@ class Store:
                 prefs[k] = e if k not in prefs or self._wins(e, prefs[k]) else prefs[k]
             elif e["stream"] == "history":
                 hist.append(e)
+            elif e["stream"] == "photo":
+                photo = e if photo is None or self._wins(e, photo) else photo
         if tomb:
             return {"deleted": True, "merged_into": tomb["merged_into"], "profile": None, "favorites": {}, "prefs": {},
-                    "history": [], "players": [tomb["player"]], "last": tomb["at"]}
+                    "history": [], "players": [tomb["player"]], "last": tomb["at"], "photo": None}
         hist.sort(key=lambda e: (e["at"], e["eid"]))
         last = max([e["at"] for e in [prof] + list(favs.values()) + list(prefs.values()) + hist if e] or [0])
         return {"deleted": False, "merged_into": None, "profile": prof, "favorites": favs, "prefs": prefs,
-                "history": hist, "players": senders, "last": last}
+                "history": hist, "players": senders, "last": last,
+                "photo": {"sha": photo["photo"], "at": photo["at"]} if photo and photo.get("photo") else None}
 
     def profile_export(self, uid):
         """GET /api/encore/profiles/<uid>/export: everything kept about one profile (never its PIN hash), or None."""
@@ -491,14 +542,15 @@ class Store:
         players = [{"player": p, "name": names.get(p) or "an unlinked player", "last_seen": seen.get(p)}
                    for p in st["players"] if UUID_RE.match(p or "")]
         if st["deleted"]:
-            return {"uid": uid, "deleted": True, "profile": None, "favorites": [], "prefs": [], "history": [], "players": []}
+            return {"uid": uid, "deleted": True, "profile": None, "favorites": [], "prefs": [], "history": [], "players": [],
+                    "photo": None}
         p = st["profile"]
         return {"uid": uid, "deleted": False,
                 "profile": {"name": p["name"], "color": p["color"], "created": p["created"], "updated": p["at"],
                             "pin": bool(p.get("pin_hash"))} if p else None,
                 "favorites": [{"song": e["song"], "on": e["on"], "at": e["at"]} for e in st["favorites"].values()],
                 "prefs": [{"key": e["key"], "value": e["value"], "at": e["at"]} for e in st["prefs"].values()],
-                "history": st["history"], "players": players}
+                "history": st["history"], "players": players, "photo": st["photo"]}
 
     def profiles(self):
         """The admin list: name, colour, PIN set or not, last event, which players, deleted or not. No history."""
@@ -515,6 +567,7 @@ class Store:
             out.append({"uid": uid, "name": p["name"] if p else None, "color": p["color"] if p else None,
                         "pin": bool(p and p.get("pin_hash")), "created": p["created"] if p else None,
                         "last": st["last"], "deleted": st["deleted"], "merged_into": st["merged_into"],
+                        "photo": (st.get("photo") or {}).get("sha"),
                         "players": [names.get(x) or ("Preset player" if x == PRESET else "an unlinked player") for x in st["players"]]})
         out.sort(key=lambda r: (r["deleted"], -(r["last"] or 0)))
         return out

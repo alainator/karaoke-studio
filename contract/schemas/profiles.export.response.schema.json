@@ -131,6 +131,26 @@
         }
       },
       "description": "Optional: the linked players that sent events for this profile."
+    },
+    "photo": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "required": [
+        "sha",
+        "at"
+      ],
+      "properties": {
+        "sha": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "at": {
+          "type": "number"
+        }
+      },
+      "description": "The profile picture now (its sha256; the bytes: GET /api/encore/profiles/<uid>/photo/<sha256>), or null. Optional (added 2026-11-22): a Studio from before profile pictures leaves it out."
     }
   },
   "$defs": {

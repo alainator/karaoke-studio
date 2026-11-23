@@ -4206,6 +4206,33 @@ def encore_profile_export(uid: str, req: Request):
     return x
 
 
+@app.put("/api/encore/profiles/{uid}/photo/{sha}")
+@_guard
+async def encore_profile_photo_put(uid: str, sha: str, req: Request):
+    """§2.6 photo: a profile picture's bytes (a JPEG named by its sha256), before the photo event that points to it."""
+    if not encore.UUID_RE.match(uid) or not encore.SHA_RE.match(sha):
+        raise EncoreError(404, "no such picture")
+    data = await req.body()
+    r = await asyncio.to_thread(STORE.photo_put, uid, sha, data)
+    if r == "big":
+        raise EncoreError(413, f"a profile picture is at most {encore.PHOTO_MAX // 1024} KB")
+    if r == "bad":
+        raise EncoreError(400, "not a JPEG, or not the picture that sha256 names")
+    if r == "deleted":
+        raise EncoreError(404, "that profile was deleted")
+    return {"stored": True}
+
+
+@app.get("/api/encore/profiles/{uid}/photo/{sha}")
+@_guard
+def encore_profile_photo_get(uid: str, sha: str, req: Request):
+    """§2.6 photo: a profile picture another player uploaded (404 until it's here, or once the profile is deleted)."""
+    f = STORE.photo_path(uid, sha) if encore.UUID_RE.match(uid) and encore.SHA_RE.match(sha) else None
+    if not f:
+        raise EncoreError(404, "no such picture")
+    return FileResponse(f, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=31536000, immutable"})
+
+
 @app.get("/api/encore/unpublished")
 @_guard
 def encore_unpublished(req: Request):
@@ -4386,6 +4413,16 @@ def encore_file(path: str, req: Request):
 
 
 # ---- the admin pages (the web app, behind its own login) ----
+@app.get("/api/profiles/{uid}/photo")
+def profile_photo(uid: str):
+    """The admin page: a profile's picture now (Players tab)."""
+    st = STORE.profile_state(uid) if encore.UUID_RE.match(uid) else None
+    f = STORE.photo_path(uid, st["photo"]["sha"]) if st and st.get("photo") else None
+    if not f:
+        raise HTTPException(404, "no picture")
+    return FileResponse(f, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=300"})
+
+
 @app.get("/api/profiles")
 def profiles_list():
     """Encore user profiles backed up here (§2.6): names, colours, last activity, which players. No history."""

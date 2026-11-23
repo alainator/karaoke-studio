@@ -151,7 +151,7 @@ class Profiles(unittest.TestCase):
         # late events from an offline kit are accepted and dropped
         k = self.sync("kit", [fav(mia, "s2"), prof(mia, name="Back")])
         self.assertEqual(A.STORE.q("select count(*) from profile_events where uid=?", (mia,))[0][0], 1)
-        self.assertEqual(self.export(mia), {"uid": mia, "deleted": True, "profile": None, "favorites": [], "prefs": [], "history": [], "players": []})
+        self.assertEqual(self.export(mia), {"uid": mia, "deleted": True, "profile": None, "favorites": [], "prefs": [], "history": [], "players": [], "photo": None})
         self.assertEqual(self.export(other)["profile"]["name"], "Sam")     # others untouched
         # the admin list says deleted, no name
         row = [p for p in jcall(A.app, "GET", "/api/profiles")[2]["profiles"] if p["uid"] == mia][0]
@@ -198,7 +198,7 @@ class Profiles(unittest.TestCase):
         rows = jcall(A.app, "GET", "/api/profiles")[2]["profiles"]
         row = [p for p in rows if p["uid"] == u][0]
         self.assertEqual((row["name"], row["pin"], row["players"]), ("Lee", True, ["Home Encore"]))
-        self.assertEqual(set(row), {"uid", "name", "color", "pin", "created", "last", "deleted", "merged_into", "players"})
+        self.assertEqual(set(row), {"uid", "name", "color", "pin", "created", "last", "deleted", "merged_into", "players", "photo"})
         self.assertNotIn("bb" * 16, json.dumps(rows))
         key, _ = A.KEYS.create("Profile peeker", ["read"])
         self.assertEqual(jcall(A.app, "GET", "/api/profiles", None, {"X-Studio-Agent-Key": key})[0], 403)  # people only
@@ -206,3 +206,74 @@ class Profiles(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------- profile pictures (§2.6 photo) ----------------
+import hashlib  # noqa: E402
+from tests._asgi import call  # noqa: E402
+
+JPEG = b"\xff\xd8\xff\xe0" + b"picture" * 50
+
+
+def photo(uid, data):
+    return {"eid": U(), "stream": "photo", "uid": uid, "at": at(), "photo": hashlib.sha256(data).hexdigest() if data else None}
+
+
+class ProfilePhotos(unittest.TestCase):
+    setUp, now, sync, export = Profiles.setUp, Profiles.now, Profiles.sync, Profiles.export
+
+    def put(self, uid, data, sha=None, who="home"):
+        tok = self.home_tok if who == "home" else self.kit_tok
+        sha = sha or hashlib.sha256(data).hexdigest()
+        st, _, b = call(A.app, "PUT", f"/api/encore/profiles/{uid}/photo/{sha}", data,
+                        {"Authorization": "Bearer " + tok, "Content-Type": "image/jpeg"}, client=addr())
+        return st
+
+    def get(self, uid, data, who="kit"):
+        tok = self.home_tok if who == "home" else self.kit_tok
+        return call(A.app, "GET", f"/api/encore/profiles/{uid}/photo/{hashlib.sha256(data).hexdigest()}", None,
+                    {"Authorization": "Bearer " + tok}, client=addr())
+
+    def test_a_picture_goes_up_then_its_event_and_the_other_player_gets_both(self):
+        mia = U()
+        kit = self.now("kit")
+        self.sync("home", [prof(mia)])
+        self.assertEqual(self.get(mia, JPEG)[0], 404)                 # not uploaded yet
+        self.assertEqual(self.put(mia, JPEG), 200)
+        ev = photo(mia, JPEG)
+        self.assertEqual(S.errors("profile-event.schema.json", ev), [])
+        self.sync("home", [ev])
+        got = self.sync("kit", [], kit)["events"]
+        self.assertIn(ev, got)
+        st, h, body = self.get(mia, JPEG)
+        self.assertEqual((st, body, h.get("content-type")), (200, JPEG, "image/jpeg"))
+        self.assertEqual(self.export(mia)["photo"], {"sha": ev["photo"], "at": ev["at"]})
+        listed = next(p for p in A.STORE.profiles() if p["uid"] == mia)
+        self.assertEqual(listed["photo"], ev["photo"])
+        st, _, body = call(A.app, "GET", f"/api/profiles/{mia}/photo")   # the Players tab
+        self.assertEqual((st, body), (200, JPEG))
+        # removed: the latest photo event is null; the export says so
+        self.sync("home", [photo(mia, None)])
+        self.assertIsNone(self.export(mia)["photo"])
+
+    def test_refused_pictures(self):
+        mia = U()
+        self.assertEqual(self.put(mia, b"not a jpeg"), 400)
+        self.assertEqual(self.put(mia, JPEG, sha="0" * 64), 400)            # not the picture that sha names
+        self.assertEqual(self.put(mia, b"\xff\xd8\xff" + b"x" * (E.PHOTO_MAX + 1)), 413)
+        self.assertEqual(self.get(U(), JPEG)[0], 404)                       # another profile's sha: not served
+        self.assertEqual(self.put(mia, JPEG), 200)
+        self.assertEqual(self.get(U(), JPEG)[0], 404)                       # only to the uid that uploaded it
+
+    def test_deleting_a_profile_erases_its_pictures(self):
+        mia = U()
+        self.sync("home", [prof(mia)])
+        self.assertEqual(self.put(mia, JPEG + b"mia"), 200)
+        self.sync("home", [photo(mia, JPEG + b"mia")])
+        f = A.STORE.photo_path(mia, hashlib.sha256(JPEG + b"mia").hexdigest())
+        self.assertTrue(os.path.exists(f))
+        self.sync("home", [tomb(mia)])
+        self.assertFalse(os.path.exists(f))
+        self.assertEqual(self.get(mia, JPEG + b"mia")[0], 404)
+        self.assertEqual(self.put(mia, JPEG + b"mia"), 404)                  # a deleted profile takes no new one
+        self.assertIsNone(self.export(mia)["photo"])

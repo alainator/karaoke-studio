@@ -227,6 +227,15 @@ profile PIN, optional), "created", "deleted": bool}` plus event streams:
   "expert", "points": int, "pitch": 0-100, "timing": 0-100, "words": 0-100 (optional, §2.9), "acc": 0-100,
   "grade": "AAA"|"AA"|"A"|"B"|"C"|"D", "max_combo": int, "partial": bool (optional: the song was skipped/stopped)}`.
   Scores sync with the rest of the user's history (a user's best grades follow them between kits).
+- `photo` (added 2026-11-22): `{"eid", "uid", "photo": "<sha256 of the JPEG>" | null, "at"}` (latest `at` wins per uid,
+  like the profile record; null: removed). The picture itself is a small square JPEG (Encore makes it 256 px, at most
+  200 KB) that doesn't ride in the event: `PUT /api/encore/profiles/<uid>/photo/<sha256>` (body: the JPEG,
+  `Content-Type: image/jpeg`) stores it, refused with 400 when the body isn't a JPEG or isn't that sha256, 413 over
+  200 KB, 404 for a deleted profile; `GET` on the same path answers it (404: not uploaded yet, not that uid's, or
+  erased). Encore uploads the bytes before it sends the event, so a player that gets the event can fetch them; one
+  that gets a 404 tries again on a later sync, until a newer photo event replaces it. Only saved profiles' pictures
+  sync: a guest's stays at the party. A tombstone erases the pictures with everything else. A Studio from before this
+  answers 400 to a photo event (its schema has no `photo` stream): Encore keeps that event aside and carries on.
 - later: `range`.
 
 `POST /api/encore/profiles/sync` `{"player": uuid, "since": <studio cursor or null>, "events": [...]}` →
@@ -238,7 +247,7 @@ my data"). The Studio lists profiles (names, last seen, which players) for admin
 
 Built as Encore proposed (its PROPOSED.md, 2026-11-20), with the schemas `profile-event.schema.json`,
 `profiles.sync.request.schema.json`, `profiles.sync.response.schema.json`, `profiles.export.response.schema.json` and
-fixtures 24–31. What the Studio does:
+fixtures 24–31. The export also carries `"photo": {"sha", "at"}` or null (optional; added 2026-11-22). What the Studio does:
 - Stores each event once (by `eid`) with a growing sequence number and the sending player; relays events to the other
   players in that order, never back to the sender, at most 500 per answer (`more: true` when cut). It doesn't merge on
   the way: players merge by `(at, eid)` (latest wins per profile record, per (uid, song), per (uid, key); history whole).

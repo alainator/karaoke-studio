@@ -2127,9 +2127,9 @@ async function loadProfiles() {
   const ps = d.profiles;
   $("#profiles").innerHTML = ps.length ? `<table class="ptable"><thead><tr><th>Singer</th><th>Last active</th><th>From</th><th class="c-opt">PIN</th></tr></thead><tbody>
     ${ps.map(p => p.deleted ? `<tr style="opacity:.6"><td><i>deleted</i>${p.merged_into ? ' <span class="hint">(merged into another profile)</span>' : ""}<div class="hint">${esc(p.uid.slice(0, 8))}</div></td><td>${esc(ago(p.last))}</td><td>${esc(p.players.join(", "))}</td><td class="c-opt"></td></tr>`
-      : `<tr><td><b><span style="color:${/^#[0-9a-f]{6}$/i.test(p.color || "") ? p.color : "inherit"}">●</span> ${esc(p.name || "(no name yet)")}</b><div class="hint">${esc(p.uid.slice(0, 8))}</div></td>
+      : `<tr><td><b>${p.photo ? `<img src="/api/profiles/${esc(p.uid)}/photo?v=${esc(p.photo.slice(0, 12))}" alt="" style="width:28px;height:28px;border-radius:50%;object-fit:cover;vertical-align:middle;margin-right:6px;border:2px solid ${/^#[0-9a-f]{6}$/i.test(p.color || "") ? p.color : "var(--line)"}">` : `<span style="color:${/^#[0-9a-f]{6}$/i.test(p.color || "") ? p.color : "inherit"}">●</span>`} ${esc(p.name || "(no name yet)")}</b><div class="hint">${esc(p.uid.slice(0, 8))}</div></td>
         <td>${esc(ago(p.last))}</td><td>${esc(p.players.join(", "))}</td><td class="c-opt">${p.pin ? "set" : "–"}</td></tr>`).join("")}</tbody></table>
-    <p class="hint">Profiles are made and used in Encore (favourites, lyric styles, what they sang); the studio keeps a backup and shares them between linked players. Deleting one in Encore deletes it here and on every player; Encore's "Download my data" gives a singer everything kept about them.</p>`
+    <p class="hint">Profiles are made and used in Encore (favourites, lyric styles, what they sang); the studio keeps a backup (their profile picture too) and shares them between linked players. Deleting one in Encore deletes it here and on every player; Encore's "Download my data" gives a singer everything kept about them.</p>`
     : `<div class="empty">No singer profiles yet. Singers make one in Encore; linked players back them up here.</div>`;
 }
 

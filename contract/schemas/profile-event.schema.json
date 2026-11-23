@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:encore-studio:contract:profile-event.schema.json",
-  "title": "A profile event (§2.6: profile, favorites, prefs, history)",
+  "title": "A profile event (§2.6: profile, favorites, prefs, history, photo)",
   "oneOf": [
     {
       "title": "profile",
@@ -304,6 +304,45 @@
         }
       },
       "description": "Append-only: one event per user per song sung (a duet sung by two users is two events). at = when it ended."
+    },
+    {
+      "title": "photo",
+      "type": "object",
+      "required": [
+        "eid",
+        "stream",
+        "uid",
+        "at",
+        "photo"
+      ],
+      "properties": {
+        "eid": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "description": "The event's id, made once by the Encore that made the event (str(uuid4())). Idempotent: the same eid twice is one event."
+        },
+        "uid": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "description": "The profile (user) the event belongs to."
+        },
+        "at": {
+          "type": "number",
+          "minimum": 0,
+          "description": "When it happened: unix time in seconds, with milliseconds (e.g. 1795200000.123), from the clock of the Encore that made it (an edit: when it was made, kept strictly increasing per Encore; history: when the song ended; a merge re-sends events with their original at). Latest-wins rules compare (at, eid): a higher at wins, an equal at goes to the higher eid (as a string)."
+        },
+        "stream": {
+          "const": "photo"
+        },
+        "photo": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "The profile picture: the sha256 (hex) of its JPEG, whose bytes go up with PUT /api/encore/profiles/<uid>/photo/<sha256> before this event is sent and come down with GET on the same path; null: the picture was removed. Latest (at, eid) wins, as for the profile record."
+        }
+      }
     }
   ],
   "description": "One profile event (§2.6). The stream decides its shape.",
