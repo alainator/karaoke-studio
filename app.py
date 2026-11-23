@@ -3147,9 +3147,12 @@ async def encore_gate(req: Request, call_next):
             return _err(403, "only the player API (/api/encore/) answers on this network")
         return await call_next(req)
     audio = path == "/api/encore/score-words" and req.method == "POST"  # (§2.9: the one body that's audio)
+    picture = req.method == "PUT" and path.startswith("/api/encore/profiles/") and "/photo/" in path   # (§2.6 photo)
+    limit = wordscore.MAX_BYTES if audio else encore.PHOTO_MAX if picture else MAX_BODY
     try:
-        if int(req.headers.get("content-length") or 0) > (wordscore.MAX_BYTES if audio else MAX_BODY):
-            return _err(413, "the recording is too big (8 MB at most)" if audio else "the body is too big (64 KB at most)")
+        if int(req.headers.get("content-length") or 0) > limit:
+            return _err(413, "the recording is too big (8 MB at most)" if audio else
+                        f"a profile picture is at most {encore.PHOTO_MAX // 1024} KB" if picture else "the body is too big (64 KB at most)")
     except ValueError:
         return _err(400, "bad Content-Length")
     if path != "/api/encore/pair":

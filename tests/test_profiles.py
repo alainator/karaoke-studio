@@ -256,6 +256,12 @@ class ProfilePhotos(unittest.TestCase):
         self.sync("home", [photo(mia, None)])
         self.assertIsNone(self.export(mia)["photo"])
 
+    def test_a_real_size_picture_goes_through_the_player_gate(self):
+        mia = U()
+        big = b"\xff\xd8\xff" + os.urandom(150 * 1024)          # a 256 px photo can be well over the 64 KB JSON limit
+        self.assertEqual(self.put(mia, big), 200)
+        self.assertEqual(self.get(mia, big)[2], big)
+
     def test_refused_pictures(self):
         mia = U()
         self.assertEqual(self.put(mia, b"not a jpeg"), 400)
