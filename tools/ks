@@ -13,7 +13,11 @@ What an agent may do is set by its key (made on the Studio's Agents tab); withou
   ks show SONG                            the lines: times, ⚠ marks and why, notes, singers, text
   ks check SONG                           by ear, now: which lines sit away from where they're heard
   ks heard SONG --line N | --at T [--span S]   what the transcription heard around there
-  ks look SONG --line N | --at T [--span S]    picture: vocals spectrogram + line blocks + heard words (PNG)
+  ks look SONG --line N | --at T [--span S] [--align]   picture: vocals spectrogram, melody, line blocks, heard words
+                                          (PNG); --align adds where the aligner puts line N's words
+  ks align SONG N [--json] | ks align SONG --window START END   where the forced aligner puts line N when it hears it
+                                          together with the line before (or every line in a stretch): its start vs
+                                          now, per word; nothing is saved
   ks frame SONG --line N | --at T         the video at that moment with the lyrics on screen (PNG)
   ks log SONG                             the end of the song's pipeline log
   ks search "Artist - Title" | LINK       videos and lyrics to choose from (a YouTube link: that video first, and the
@@ -63,7 +67,7 @@ What an agent may do is set by its key (made on the Studio's Agents tab); withou
   video: only when the person asks; the Studio refuses them unless the key allows them.
 
 Where the Studio is: STUDIO_URL, else the file `url` in the config folder (ks setup), else http://127.0.0.1:5570.
-The agent key: STUDIO_AGENT_KEY, else the file `agent-key` in the config folder (~/.config/karaoke-studio/, or
+The agent key: STUDIO_AGENT_KEY, else the file named by STUDIO_AGENT_KEY_FILE, else the file `agent-key` in the config folder (~/.config/karaoke-studio/, or
 $XDG_CONFIG_HOME/karaoke-studio/; on Windows %APPDATA%\\karaoke-studio\\). Pictures go to ~/.cache/karaoke-studio/ks
 ($KS_OUT to change it).
 """
@@ -97,7 +101,18 @@ def agent_key():
     k = os.environ.get("STUDIO_AGENT_KEY", "").strip()
     if k:
         return k
-    k, p = _read_conf("agent-key")
+    kf = os.environ.get("STUDIO_AGENT_KEY_FILE", "").strip()
+    if kf:   # a key file of its own (e.g. a benchmark sandbox's): only that one, never the config folder's
+        try:
+            with open(os.path.expanduser(kf), encoding="utf-8") as f:
+                k = f.read().strip()
+        except OSError as e:
+            sys.exit(f"ks: can't read STUDIO_AGENT_KEY_FILE ({e.strerror})")
+        if not k:
+            sys.exit("ks: STUDIO_AGENT_KEY_FILE is empty")
+        p = os.path.expanduser(kf)
+    else:
+        k, p = _read_conf("agent-key")
     if k and os.name != "nt":
         try:
             if os.stat(p).st_mode & (stat.S_IRWXG | stat.S_IRWXO):
@@ -124,7 +139,7 @@ def headers(extra=None):
     return dict(h, **(extra or {}))
 
 
-def call(path, body=None, method=None, timeout=60, raw=False):
+def call(path, body=None, method=None, timeout=60, raw=False, with_headers=False):
     method = method or ("POST" if body is not None else "GET")
     req = urllib.request.Request(API + path, data=json.dumps(body).encode() if body is not None else None,
                                  headers=headers({"Content-Type": "application/json"}), method=method)
@@ -132,7 +147,7 @@ def call(path, body=None, method=None, timeout=60, raw=False):
         with urllib.request.urlopen(req, timeout=timeout) as r:
             data = r.read()
             if raw:
-                return data
+                return (data, r.headers) if with_headers else data
             return json.loads(data) if data[:1] in (b"{", b"[") else data.decode("utf-8", "replace")
     except urllib.error.HTTPError as e:
         try:
@@ -501,15 +516,106 @@ def cmd_heard(a):
             print(f"{k + 1:3} {'⚠' if l.get('weak') else ' '} {fmt(a0 + off)}-{fmt(b0 + off)}  {text_of(l)}")
 
 
+LOOK_ROWS = {
+    "spectrogram": "top: the vocals, voices are the bright stripes (dark columns = no singing)",
+    "melody": "cyan: the melody (pitch of the sung frames; a white tick where a new note starts, so syllables show "
+              "inside unbroken singing)",
+    "lines": "line blocks (orange = ⚠, white = the one asked for) with their numbers and word-start ticks",
+    "aligner": "magenta: where the aligner puts the asked line's words, heard together with the line before (ks align); "
+               "dashed: the boundary (where the aligner starts the line; a thin violet line where it ends the line before)",
+    "heard": "green: words Whisper heard at those times",
+}
+
+
 def cmd_look(a):
     job = resolve(a.song)
     d = get_lines(job)
     t0, t1, i = window(job, d, a)
     t0 = max(0.0, t0)
-    q = urllib.parse.urlencode({"t0": f"{t0:.2f}", "t1": f"{t1:.2f}", "line": i + 1 if i is not None else 0})
-    out = save_png(call(f"/api/jobs/{job['id']}/agent/look?{q}", timeout=300, raw=True), f"{job['id']}-look-{t0:.0f}-{t1:.0f}.png")
-    print(f"{out}\n(top: the vocals, voices are the bright stripes; middle: line blocks (orange = ⚠, white = the one asked for), "
-          f"with their numbers; bottom: words Whisper heard at those times; {t1 - t0:.0f} s shown)")
+    if a.align and i is None:
+        die("--align needs --line N")
+    q = urllib.parse.urlencode({"t0": f"{t0:.2f}", "t1": f"{t1:.2f}", "line": i + 1 if i is not None else 0,
+                                "align": 1 if a.align else 0})
+    data, hd = call(f"/api/jobs/{job['id']}/agent/look?{q}", timeout=300, raw=True, with_headers=True)
+    out = save_png(data, f"{job['id']}-look-{t0:.0f}-{t1:.0f}{'-align' if a.align else ''}.png")
+    rows = [r for r in (hd.get("X-Rows") or "spectrogram,lines,heard").split(",") if r in LOOK_ROWS]
+    print(out)
+    print("(" + "; ".join(LOOK_ROWS[r] for r in rows) + f"; {t1 - t0:.0f} s shown)")
+    if "melody" not in rows:
+        print("(no melody row: this song has no pitch file yet; deploy/write-pitch.py on the Studio's machine makes them)")
+    al = hd.get("X-Align") or ""
+    if a.align and al != "ok":
+        print("(no aligner row: " + ("the Studio is busy making a song, try again in a moment" if al == "busy" else al or "no answer") + ")")
+
+
+def conf_word(c):
+    return "?" if c is None else "low" if c < 0.2 else "medium" if c < 0.5 else "high"
+
+
+def align_text(r):
+    """ks align's answer as text (no lyrics beyond the song's own words, which ks show prints too)."""
+    out = [f"aligned {fmt(r['window'][0])}-{fmt(r['window'][1])} together ({r['device']}, {r['seconds']} s):"]
+    for x in r["lines"]:
+        tag = " (the line asked for)" if x["line"] - 1 == r.get("target") else " (the line before)" if x["line"] - 1 == r.get("prev") else ""
+        if x["at"] is None:
+            out.append(f"{x['line']:3} now {fmt(x['now'])}: no word with letters to align{tag}")
+            continue
+        d = x["delta"]
+        side = "same as now" if abs(d) < 0.1 else f"{abs(d):.1f} s {'earlier' if d < 0 else 'later'} than now"
+        out.append(f"{x['line']:3} aligner {fmt(x['at'])}, {side}, confidence {x['conf']:.2f} ({conf_word(x['conf'])}){tag}")
+        out.append("      " + "  ".join(f"{w['w']}@{fmt(w['at']) if w['at'] is not None else '-'}"
+                                        f"({w['conf']:.2f})" if w['conf'] is not None else f"{w['w']}@-" for w in x["words"]))
+    t = next((x for x in r["lines"] if x["line"] - 1 == r.get("target")), None)
+    p = next((x for x in r["lines"] if x["line"] - 1 == r.get("prev")), None)
+    if t is not None and t["at"] is not None:
+        if p is not None and p["delta"] is not None and abs(p["delta"]) > 0.5:
+            out.append(f"the line before moves too ({p['delta']:+.1f} s): the window is probably off (the line before isn't "
+                       f"where it is now, or the singing there doesn't match the words); trust this less, look first")
+        else:
+            out.extend(boundary_text(t, p))
+    return "\n".join(out + ["(evidence, not a fix: on lines people fixed this was right about 1 in 4 times, and it also "
+                             "moves about 1 in 10 good lines; act only when the melody row or the heard words agree)"])
+
+
+def boundary_text(t, p):
+    """The boundary between the line before and this one: where the aligner puts it vs now, and the pair edit. People
+    fixing a late line usually also cut the line before's end (its held last note runs into this line's singing)."""
+    n, y = t["line"], t["at"]
+    out = []
+    if p is not None and p.get("end") is not None:
+        out.append(f"boundary: aligner {fmt(p['end'])} / {fmt(y)} (line {p['line']} ends, line {n} starts); now line "
+                   f"{p['line']} ends {fmt(p['now_end'])}, line {n} starts {fmt(t['now'])}")
+    d = t["delta"]
+    if abs(d) < 0.3:
+        out.append("the aligner agrees with where the line starts now (within 0.3 s)")
+        return out
+    if d > 0:
+        out.append(f"the aligner starts it {d:.1f} s later: lines may light up early (up to 2.5 s), so leave it unless the "
+                   f"picture shows its block starting on the line before's singing")
+        return out
+    cmds = []
+    if p is not None and p["now_end"] > y - 0.05:   # the line before runs into this one's singing: cut it first
+        cmds.append(f"ks stretch SONG {p['line']} --end {fmt(max(p['now'] + 0.2, y - 0.05))}")
+    cmds.append(f"ks stretch SONG {n} --start {fmt(y)}")
+    out.append(f"if the melody row or the heard words agree (ks look SONG --line {n} --align; ks heard SONG --line {n}): "
+               + "; ".join(cmds))
+    return out
+
+
+def cmd_align(a):
+    job = resolve(a.song)
+    d = get_lines(job)
+    if a.window:
+        q = {"t0": f"{parse_t(a.window[0]):.2f}", "t1": f"{parse_t(a.window[1]):.2f}"}
+    elif a.n:
+        q = {"line": line_no(d["lines"], a.n) + 1}
+    else:
+        die("give a line number, or --window START END")
+    r = call(f"/api/jobs/{job['id']}/agent/align?{urllib.parse.urlencode(q)}", timeout=300)
+    if a.json:
+        print(json.dumps(r, ensure_ascii=False, indent=1))
+        return
+    print(align_text(r))
 
 
 def cmd_frame(a):
@@ -1210,6 +1316,10 @@ def main():
     for name, f in (("heard", cmd_heard), ("look", cmd_look), ("frame", cmd_frame)):
         s = sub.add_parser(name); s.add_argument("song"); s.add_argument("--line", type=int); s.add_argument("--at")
         s.add_argument("--span", type=float); s.set_defaults(f=f)
+        if name == "look":
+            s.add_argument("--align", action="store_true", help="also where the aligner puts line N's words (ks align)")
+    s = sub.add_parser("align"); s.add_argument("song"); s.add_argument("n", nargs="?")
+    s.add_argument("--window", nargs=2, metavar=("START", "END")); s.add_argument("--json", action="store_true"); s.set_defaults(f=cmd_align)
     s = sub.add_parser("log"); s.add_argument("song"); s.add_argument("-n", type=int, default=40); s.set_defaults(f=cmd_log)
     s = sub.add_parser("search"); s.add_argument("query"); s.set_defaults(f=cmd_search)
     s = sub.add_parser("make"); s.add_argument("--yt", required=True); s.add_argument("--lyrics", required=True)

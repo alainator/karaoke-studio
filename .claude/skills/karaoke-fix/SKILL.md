@@ -31,10 +31,16 @@ or a unique piece of "Artist - Title". `ks whoami` says what your key allows.
 3. For each line in doubt, look before you move:
    - `ks heard SONG --line N`: the words Whisper heard around it, with times.
    - `ks look SONG --line N` (or `--at 1:23 --span 14`), then open the PNG it prints. Top: the vocal spectrogram;
-     singing shows as bright stripes, gaps show as dark columns. Middle: the line blocks with their numbers
-     (orange = ⚠, white = the line you asked for, small ticks = each word's start). Bottom (green): the words
-     Whisper heard, at their times. A block should sit over the stripes of its own words, and its heard words
-     should be under it.
+     singing shows as bright stripes, gaps show as dark columns. Cyan row: the melody (pitch of the sung frames, a
+     white tick where a new note starts), so syllables show even where the singing never stops. Then the line blocks
+     with their numbers (orange = ⚠, white = the line you asked for, small ticks = each word's start). Bottom
+     (green): the words Whisper heard, at their times. A block should sit over the stripes of its own words, and its
+     heard words should be under it. `--align` adds a magenta row and a dashed boundary: where the aligner puts
+     line N when it hears it together with the line before (see below).
+   - `ks align SONG N`: that alignment as numbers: each word's place and confidence, the line's start vs now, the
+     boundary with the line before, and the pair edit to try. `ks align SONG --window 2:25 2:45` does every line in
+     a stretch (a line far from where it's sung). It's evidence, not a fix: alone it is right about 1 in 4 times on
+     late lines and would move 1 in 10 good lines.
    - `ks frame SONG --line N` (or `--at T`), then open the PNG: what's on screen then, as players show it.
 4. Fix with the smallest change that makes it right:
    - Whole line in the wrong place: `ks move SONG N +1.2`, or `ks move SONG N --to 1:23.40` (its start).
@@ -62,9 +68,14 @@ or a unique piece of "Artist - Title". `ks whoami` says what your key allows.
   phrase with about the right rhythm, between neighbours that are right, it's fine: `ks note` it ("looks fine: ...").
   If the singing runs on past the block (a held note), stretch the end to where the stripes stop instead (that
   clears the mark too).
-- **A line that starts late**: its first words are heard (or the phrase's stripes begin) more than about half a
-  second before the block. Stretch its start to there (`--start`); if the previous line overlaps, end that one
-  just before (`ks stretch SONG N-1 --end ...`). Stretch beats move when only one edge is wrong.
+- **A line that starts late, sung straight on from the line before** (the most common fix people make: 0.5-2 s
+  late, often marked ⚠ but not always). There's no dark gap to see, and the crowd's timing shares the late start, so
+  `ks alt-lyrics` won't help. It is a late **boundary**: the line before's held last note was stretched over this
+  line's singing. Check three things: where the melody row starts this line's first note, where its first words are
+  heard (`ks heard`), and `ks align SONG N`. When two of the three agree, fix both sides of the boundary, the line
+  before's end first, then this line's start (`ks align` prints the pair: `ks stretch SONG N-1 --end T-0.05;
+  ks stretch SONG N --start T`). When they disagree, leave it and note it (`ks note SONG N "check: ..."`). If
+  `ks align` says the line before moves too, its window is off: trust the picture instead.
 - **A held last note** ending after the block: stretch the end to where the singing stops.
 - **Lyrics with careless timing**: many lines squeezed together, or whole sections misplaced. Line by line is
   slow: `ks alt-lyrics SONG` scores every LRCLIB copy against what's heard; a copy that fits clearly better (for

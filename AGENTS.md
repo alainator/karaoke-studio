@@ -24,7 +24,8 @@ HTTP API only, so it runs on any machine that can reach the Studio (copy it, or 
    what it may do. Make the key; it is shown once.
 2. On the agent's machine: `ks setup --url http://<studio address>:5570`, paste the key when asked. The key is kept
    in `~/.config/karaoke-studio/agent-key` (readable only by you; `%APPDATA%\karaoke-studio\` on Windows) and never
-   printed. Or set `STUDIO_URL` and `STUDIO_AGENT_KEY` in the agent's environment.
+   printed. Or set `STUDIO_URL` and `STUDIO_AGENT_KEY` (or `STUDIO_AGENT_KEY_FILE`, a file holding the key) in the
+   agent's environment.
 3. `ks whoami`: who the Studio takes you for and what your key allows. `ks status`: is it up, what's queued.
 
 Without a key, ks still works against a Studio that doesn't require one (`AGENT_KEYS_REQUIRED` off): its edits are
@@ -113,8 +114,18 @@ You can't listen, but the Studio can, and it can draw what it hears:
 - `ks check SONG`: the Studio's by-ear check of the lines as they are now: which lines are heard somewhere else, and
   the move to try.
 - `ks heard SONG --line N`: the words the transcription heard around a line, with times.
-- `ks look SONG --line N`: a PNG of the vocals' spectrogram (singing = bright stripes) with the line blocks and the
-  heard words under them. A block should sit over its own stripes and words. Open the picture; don't guess.
+- `ks look SONG --line N`: a PNG of the vocals' spectrogram (singing = bright stripes), the melody (pitch of the sung
+  frames, a tick at each new note: syllables show inside unbroken singing), the line blocks and the heard words under
+  them. A block should sit over its own stripes and words. Open the picture; don't guess. `--align` adds where the
+  aligner puts line N and the boundary with the line before.
+- `ks align SONG N`: the forced aligner (the one that timed the song) hears line N together with the line before
+  it, from the previous line's start to the next line's start: each word's place and confidence, the start vs now,
+  the boundary, and the pair edit to try (`--window START END`: every line in a stretch; `--json` for scripts).
+  It uses the Studio's GPU for a few seconds and answers "busy" while a song is being made.
+- Lines sung straight on from the previous one are the commonest late lines (0.5-2 s): no dark gap shows, the
+  crowd's lyric timing shares the late start (`ks alt-lyrics` won't help), and the line before's end usually runs
+  into them. Fix the boundary (the line before's end, then the line's start) when two of the melody row, the heard
+  words and `ks align` agree; when they don't, leave a `check:` note.
 - `ks frame SONG --line N`: the video frame with the lyrics as players show them.
 - After editing, run `ks check` again. If the Studio couldn't follow the song by ear (few or no heard words), judge
   each line by its stripes and say how sure you are.
@@ -133,3 +144,8 @@ keep the old version until then).
   can reach the Studio's port. `STUDIO_PERSON_HEADER` names the header your login proxy sets (default
   `X-authentik-username`); edits by people are signed with it, otherwise "web".
 - The song page says who edited it last; the editor's **Undo** takes back the last edit, whoever made it.
+- `deploy/agent-bench.py` measures an agent against your own hand fixes: it copies songs you fixed into a sandbox
+  reset to the Studio's automatic version (your fixes kept apart), runs a throwaway Studio on them with a key that
+  can only read, edit and leave notes, and scores the agent's result line by line against yours. The fixing agent
+  needs only `STUDIO_URL` and `STUDIO_AGENT_KEY_FILE` (ks reads the key from that file). The script's own help says
+  how to run it.

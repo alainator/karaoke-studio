@@ -5539,9 +5539,10 @@ async def agent_check(jid: str):
 
 
 @app.get("/api/jobs/{jid}/agent/look")
-async def agent_look(jid: str, t0: float, t1: float, line: int = 0):
-    """A picture (PNG) of [t0, t1] (video time): the vocals' spectrogram, the line blocks (orange = ⚠; line = the
-    1-based line drawn in white) and the words heard."""
+async def agent_look(jid: str, t0: float, t1: float, line: int = 0, align: int = 0):
+    """A picture (PNG) of [t0, t1] (video time): the vocals' spectrogram, the melody (pitch.f0.npz, when the song has
+    one), the line blocks (orange = ⚠; line = the 1-based line drawn in white), with align=1 where the aligner puts
+    that line's words (heard together with the line before: agent/align), and the words heard. X-Rows: the rows drawn."""
     import tempfile
     job = _done(jid)
     if not (0 <= t0 < t1 and t1 - t0 <= 120):
@@ -5549,14 +5550,90 @@ async def agent_look(jid: str, t0: float, t1: float, line: int = 0):
     cache, png = job_path(jid, "spectro.webp"), job_path(jid, "spectro.png")
     if not os.path.exists(cache) and not os.path.exists(png):
         await asyncio.to_thread(_make_spectro, jid, cache)
+    aligned, note = None, ""
+    if align and line > 0:
+        try:
+            r = await asyncio.to_thread(_run_align, jid, job, line - 1, None, None)
+            aligned = next((x for x in r["lines"] if x["line"] == line), None)
+            prev = next((x for x in r["lines"] if r.get("prev") is not None and x["line"] == r["prev"] + 1), None)
+            if aligned and prev:   # the boundary: where the aligner ends the line before (drawn with this line's start)
+                aligned = dict(aligned, prev_line=prev["line"], prev_end=prev.get("end"))
+        except HTTPException as e:
+            note = "busy" if e.status_code == 503 else str(e.detail)[:120]
     fd, out = tempfile.mkstemp(suffix=".png")
     os.close(fd)
     try:
-        r = await asyncio.to_thread(_ks().look, job_path(jid), float(job.get("offset") or 0.0), t0, t1, line - 1, out)
+        r = await asyncio.to_thread(_ks().look, job_path(jid), float(job.get("offset") or 0.0), t0, t1, line - 1, out,
+                                    aligned)
         data = open(out, "rb").read()
     finally:
         os.remove(out)
-    return Response(data, media_type="image/png", headers={"Cache-Control": "no-store", "X-Lines": ",".join(map(str, r["lines"]))})
+    return Response(data, media_type="image/png", headers={
+        "Cache-Control": "no-store", "X-Lines": ",".join(map(str, r["lines"])), "X-Rows": ",".join(r.get("rows") or []),
+        "X-Align": note.encode("ascii", "replace").decode() if note else ("ok" if aligned else "")})
+
+
+# ---- agent/align: one line heard together with the line before it (tools/ks_helper.py align_plan, align) ----
+ALIGN_LOCK = threading.Lock()   # one at a time
+ALIGN_GPU_MIB = wordscore.GPU_MIB
+
+
+def align_device():
+    """Where an agent's align may run now: never while a song is being made here or waits for the card (None = busy);
+    the GPU when it has room, else the CPU (slower: about 10 s more)."""
+    if slots["local"] is not None or any(j["status"] in ("queued", "running") for j in job_index()):
+        return None
+    try:
+        if C.USE_LOCAL_GPU and gpu_free_mib() >= ALIGN_GPU_MIB:
+            return pitchmod._gpu_device()
+    except Exception:
+        pass
+    return "cpu"
+
+
+def _run_align(jid, job, n, t0, t1):
+    """Align a line (0-based n, with the line before) or every lead line in [t0, t1]; HTTPException 503 when busy."""
+    K = _ks()
+    lines = load_lines(job_path(jid, "words.json"))
+    off = float(job.get("offset") or 0.0)
+    try:
+        plan = K.align_plan(lines, off, n=n, t0=t0, t1=t1, duration=(job.get("result") or {}).get("duration"))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if not ALIGN_LOCK.acquire(blocking=False):
+        raise HTTPException(503, "busy, try in a moment (another align is running)")
+    try:
+        dev = align_device()
+        if dev is None:
+            raise HTTPException(503, "busy, try in a moment (a song is being made)")
+        r = subprocess.run([sys.executable, "-I", os.path.join(HERE, "tools", "ks_helper.py"), "align", job_path(jid),
+                            str(off), dev, json.dumps(plan)], capture_output=True, text=True, timeout=240)
+    except subprocess.TimeoutExpired:
+        raise HTTPException(504, "the aligner took too long")
+    finally:
+        ALIGN_LOCK.release()
+    try:
+        out = json.loads(r.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        log.warning("agent align %s failed: %s", jid, (r.stderr or "").strip()[-300:])
+        raise HTTPException(500, "the aligner failed: " + ((r.stderr or "").strip().splitlines() or ["no output"])[-1][:200])
+    if out.get("error"):
+        raise HTTPException(400, out["error"])
+    return out
+
+
+@app.get("/api/jobs/{jid}/agent/align")
+async def agent_align(jid: str, line: int = 0, t0: float = -1.0, t1: float = -1.0):
+    """Where the forced aligner (MMS_FA, as the pipeline) puts a line's words when it hears them together with the
+    line before it, over [previous line's start - 0.3, next line's start] (line: 1-based), or every lead line inside
+    [t0, t1] (video time, at most 60 s). Per line: its start now and the aligner's, the move, the line's confidence
+    and each word's. Nothing is saved. 503 "busy" while a song is being made or another align runs."""
+    job = _done(jid)
+    if line > 0:
+        return await asyncio.to_thread(_run_align, jid, job, line - 1, None, None)
+    if t0 < 0 or t1 <= t0:
+        raise HTTPException(400, "give line=N, or t0 and t1 (video time)")
+    return await asyncio.to_thread(_run_align, jid, job, None, t0, t1)
 
 
 @app.get("/api/jobs/{jid}/agent/frame")
