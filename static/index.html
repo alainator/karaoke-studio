@@ -198,6 +198,12 @@ nav button.on .nbadge { background: var(--on-accent); color: var(--accent); }
   /* scrolled down: only the search box (and the count) stay up top */
   .finder.compact select, .finder.compact .chips, .finder.compact .azbar { display: none; }
 }
+.improw { cursor: default; align-items: flex-start; }
+.improw .imptick { width: 20px; height: 20px; margin-top: 4px; flex: none; }
+.improw input[type=text] { padding: 6px 9px; font-size: 15px; font-weight: 700; flex: 1 1 150px; }
+.improw.off { opacity: .72; }
+#imptext { width: 100%; min-height: 160px; border-radius: var(--r-s); padding: 10px; font-size: 15px; }
+.impbar { position: sticky; bottom: 0; margin-top: 14px; padding: 12px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .appbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 10px}.appbar:empty{display:none}
 </style>
 </head>
@@ -216,12 +222,15 @@ nav button.on .nbadge { background: var(--on-accent); color: var(--accent); }
 </header>
 <main>
   <section id="v-make" class="view on">
+    <div id="searchpane">
     <form class="search" id="sform">
-      <input type="text" id="q" placeholder="Artist - Title   (e.g. Linkin Park - Numb)" autocomplete="off">
+      <input type="text" id="q" placeholder="Artist - Title, or a YouTube link   (e.g. Linkin Park - Numb)" autocomplete="off">
       <button class="primary" id="sbtn">Search</button>
     </form>
-    <p class="hint">Finds the official music video and timed lyrics. Pick one of each, then Make. Latin-alphabet languages, Japanese, Korean and Mandarin Chinese (romanized, with the original line shown above).</p>
+    <p class="hint">Finds the official music video and timed lyrics. Pick one of each, then Make. A pasted YouTube link uses that video and names the song from its title. Latin-alphabet languages, Japanese, Korean and Mandarin Chinese (romanized, with the original line shown above). <a class="lnk" href="#make/import" id="implink">Import a list…</a> (a YouTube playlist, or many songs at once)</p>
     <div id="results"></div>
+    </div>
+    <div id="importpane" style="display:none"></div>
   </section>
 
   <section id="v-jobs" class="view">
@@ -345,11 +354,15 @@ function show(v) {
   if (v === "players") loadPlayers(); else clearInterval(PL.timer);
   if (v === "agents") loadAgents();
   if (v !== "jobs") closePlayer();
+  if (v !== "make") clearTimeout(IMP.timer);
 }
 document.querySelectorAll("nav button").forEach(b => b.onclick = () => { if (leaveOk()) { ed = null; location.hash = b.dataset.v; } });
 window.onhashchange = () => {
-  const [v, id] = location.hash.slice(1).split("/");
+  const [v, id, sub] = location.hash.slice(1).split("/");
   show(v || "make");
+  const imp = (v || "make") === "make" && id === "import";
+  $("#searchpane").style.display = imp ? "none" : ""; $("#importpane").style.display = imp ? "" : "none";
+  if (imp) openImport(sub || null); else clearTimeout(IMP.timer);
   const detail = v === "jobs" && id;
   $("#jobsindex").style.display = detail ? "none" : "";
   if (detail) { openJob(id); window.scrollTo(0, 0); }
@@ -374,6 +387,7 @@ const statusReady = status(); setInterval(async () => {
 let pick = {video: null, lyr: null, data: null};
 let PENDING_REPLACE = null;  // set by "Change video or lyrics" on a song: the next search is for replacing it
 let PENDING_REQUEST = null;  // set by "Find and make" on a song request: the song made from this search answers it
+let PENDING_IMPORT = null;   // set by "Change…" on an import's row: the song made from this search takes that row's place
 function changePicks(j) {
   if (!leaveOk()) return;
   PENDING_REPLACE = {id: j.id, name: `${j.artist} – ${j.title}`, artist: j.artist, title: j.title, yt: j.yt, lyr: `${j.lyrics_source || "lrclib"}:${j.lrc_id}`};
@@ -388,8 +402,9 @@ $("#sform").onsubmit = async e => {
   $("#results").innerHTML = `<p class="hint"><span class="spinner"></span> Searching YouTube and LRCLIB…</p>`;
   const replaces = PENDING_REPLACE || (pick && pick.replaces) || null; PENDING_REPLACE = null;
   const request = PENDING_REQUEST || (pick && pick.request) || null; PENDING_REQUEST = null;
-  try { pick = {video: null, lyr: null, replaces, request, data: await api("/api/search?q=" + encodeURIComponent(q))}; renderResults(); }
-  catch (err) { $("#results").innerHTML = `<div class="empty">${esc(err.message)}</div>`; if (replaces || request) pick = {video: null, lyr: null, data: null, replaces, request}; }
+  const fromImport = PENDING_IMPORT || (pick && pick.fromImport) || null; PENDING_IMPORT = null;
+  try { pick = {video: null, lyr: null, replaces, request, fromImport, data: await api("/api/search?q=" + encodeURIComponent(q))}; renderResults(); }
+  catch (err) { $("#results").innerHTML = `<div class="empty">${esc(err.message)}</div>`; if (replaces || request || fromImport) pick = {video: null, lyr: null, data: null, replaces, request, fromImport}; }
   $("#sbtn").disabled = false;
 };
 // timed lyrics, or plain ones (placed by listening), or pasted ones
@@ -434,6 +449,7 @@ function renderResults() {
     if (!pick.lyr) pick.lyr = d.lyrics.find(l => lkey(l) === pick.replaces.lyr) || null;
     pick.replaces.yt = null;
   }
+  if (!pick.video && d.pinned) pick.video = d.videos.find(v => v.id === d.pinned) || null;  // the person's own link
   if (!pick.video) {
     // prefer an unflagged video whose length matches some timed lyrics (skips short/TV versions)
     const fits = v => d.lyrics.some(l => usable(l) && l.duration && Math.abs(l.duration - v.duration) <= 6);
@@ -447,7 +463,7 @@ function renderResults() {
       <img src="${esc(v.thumb)}" alt="" loading="lazy">
       <div><div class="t">${esc(v.title)}</div>
       <div class="m">${esc(v.channel)} · ${fmt(v.duration)} · ${v.views ? (v.views/1e6).toFixed(v.views > 1e7 ? 0 : 1) + "M views" : ""}</div>
-      <div>${v.official_channel ? '<span class="tag good">artist channel</span>' : ""}${v.verified && !v.official_channel ? '<span class="tag">verified</span>' : ""}${v.flags.map(f => `<span class="tag warn">${esc(f)}</span>`).join("")}
+      <div>${v.link ? '<span class="tag good">your link</span>' : ""}${v.official_channel ? '<span class="tag good">artist channel</span>' : ""}${v.verified && !v.official_channel ? '<span class="tag">verified</span>' : ""}${v.flags.map(f => `<span class="tag warn">${esc(f)}</span>`).join("")}
       <a class="tag" href="https://www.youtube.com/watch?v=${esc(v.id)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">watch ↗</a></div></div>
     </div>`).join("") || `<div class="empty">No videos found</div>`;
   const dur = pick.video ? pick.video.duration : null;
@@ -472,11 +488,14 @@ function renderResults() {
     </div>`;
   const canMake = pick.video && pick.lyr && usable(pick.lyr);
   if (pick.replaces && !pick.names) pick.names = {artist: pick.replaces.artist || "", title: pick.replaces.title || "", edited: true, from: "the song"};
+  if (pick.fromImport && !pick.names && pick.fromImport.title) pick.names = {artist: pick.fromImport.artist || "", title: pick.fromImport.title, edited: true, from: "the import"};
+  if (d.link && !pick.names) pick.names = {artist: d.artist || "", title: d.title || "", edited: true, link: true, from: d.link.names_from};
   if (!pick.names || !pick.names.edited) pick.names = autoNames(d);
   const notes = (d.notes || []).map(n => `<div class="empty" style="padding:10px;margin-top:10px">${esc(n)}</div>`).join("");
   const repl = pick.replaces ? `<div class="aibox" style="margin-bottom:10px;border-color:#ffb020"><b>Changing “${esc(pick.replaces.name)}”.</b> Pick the video and lyrics again; when you press Make, the new song replaces it. <button class="ghost" id="unreplace" style="padding:3px 8px;font-size:12px">Keep it and make a separate song</button></div>` : "";
+  const forImp = pick.fromImport ? `<div class="aibox" style="margin-bottom:10px"><b>For row ${pick.fromImport.n} of the import.</b> Pick the video and lyrics; when you press Make, this song takes that row's place (it won't be made twice). <a class="lnk" href="#make/import/${esc(pick.fromImport.id)}">Back to the import</a> <button class="ghost" id="unimport" style="padding:3px 8px;font-size:12px">Not for the import</button></div>` : "";
   const forReq = pick.request ? `<div class="aibox" style="margin-bottom:10px"><b>For ${esc(pick.request.by || "a guest")}'s request: ${esc(pick.request.label)}.</b> The song you make now answers it (the guest sees it being made, then ready). <button class="ghost" id="unrequest" style="padding:3px 8px;font-size:12px">Not for the request</button></div>` : "";
-  $("#results").innerHTML = `${notes}${repl}${forReq}
+  $("#results").innerHTML = `${notes}${repl}${forImp}${forReq}
     <div class="cols">
       <div><h2>Music video</h2><div class="list">${vids}</div></div>
       <div><h2>Lyrics</h2><div class="list">${lyrsAll}</div></div>
@@ -485,13 +504,13 @@ function renderResults() {
       <div id="dupwarn"></div>
       <input type="text" id="artist" value="${esc(pick.names.artist)}" placeholder="Artist">
       <input type="text" id="title" value="${esc(pick.names.title)}" placeholder="Title">
-      <span class="hint namesrc">${pick.names.edited ? `your names <button class="ib" id="renames" title="Fill in the names from the lyrics or the video again">↺</button>` : `names from ${esc(pick.names.from)}`}</span>
+      <span class="hint namesrc">${pick.names.link ? `names from your link (${esc(pick.names.from)}) <button class="ib" id="renames" title="Fill in the names from the lyrics or the video again">↺</button>` : pick.names.edited ? `your names <button class="ib" id="renames" title="Fill in the names from the lyrics or the video again">↺</button>` : `names from ${esc(pick.names.from)}`}</span>
       ${gpuMenu()}
       <button class="primary" id="make" ${canMake ? "" : "disabled"}>Make karaoke</button>
       <span class="hint">${canMake ? "about 1–2 minutes" : "pick a video and lyrics (or paste them)"}</span>
     </div>`;
   document.querySelectorAll("[data-vid]").forEach(c => c.onclick = () => { pick.video = d.videos.find(v => v.id === c.dataset.vid); if (!(pick.lyr && pick.lyr.source === "pasted")) pick.lyr = null; renderResults(); });
-  ["artist", "title"].forEach(k => $("#" + k).oninput = e => { pick.names[k] = e.target.value; if (!pick.names.edited) { pick.names.edited = true; $(".namesrc").innerHTML = `your names <button class="ib" id="renames" title="Fill in the names from the lyrics or the video again">↺</button>`; $("#renames").onclick = refillNames; } });
+  ["artist", "title"].forEach(k => $("#" + k).oninput = e => { pick.names[k] = e.target.value; pick.names.link = false; if (!pick.names.edited) { pick.names.edited = true; $(".namesrc").innerHTML = `your names <button class="ib" id="renames" title="Fill in the names from the lyrics or the video again">↺</button>`; $("#renames").onclick = refillNames; } });
   if ($("#renames")) $("#renames").onclick = refillNames;
   $("#pastecard").onclick = e => {
     if (e.target.closest("textarea, button")) return;
@@ -521,6 +540,7 @@ function renderResults() {
   document.querySelectorAll(".lyrview").forEach(v => v.onclick = e => e.stopPropagation());
   if ($("#unreplace")) $("#unreplace").onclick = () => { pick.replaces = null; renderResults(); };
   if ($("#unrequest")) $("#unrequest").onclick = () => { pick.request = null; renderResults(); };
+  if ($("#unimport")) $("#unimport").onclick = () => { pick.fromImport = null; renderResults(); };
   $("#make").onclick = () => makeJob(false);
 }
 function gpuMenu(id = "gpupick") {
@@ -576,7 +596,7 @@ function autoNames(d) {
   if (v && v.artist && v.title) return {...v, from: "the video's title", edited: false};
   return {...typed, from: "your search", edited: false};
 }
-function refillNames() { pick.names = null; renderResults(); }
+function refillNames() { pick.names = null; if (pick.data && pick.data.link) pick.data = Object.assign({}, pick.data, {link: null}); renderResults(); }
 // Already made (or waiting / being made)? Say so before making it again; making another version stays possible.
 function showDup(like) {
   const j = like[0];
@@ -597,11 +617,110 @@ async function makeJob(force) {
     if (like.length) { $("#make").disabled = false; return showDup(like); }
   }
   try {
-    const r = await api("/api/jobs", {method: "POST", body: JSON.stringify({yt: pick.video.id, lrc_id: pick.lyr.id, lyrics_source: pick.lyr.source, ...(pick.lyr.source === "pasted" ? {lyrics_text: pick.lyr.text} : {}), artist, title, video_title: pick.video.title, gpu: $("#gpupick") ? $("#gpupick").value : "auto", ...(pick.replaces ? {replace: pick.replaces.id} : {}), ...(pick.request ? {request: pick.request.rid} : {})})});
+    const r = await api("/api/jobs", {method: "POST", body: JSON.stringify({yt: pick.video.id, lrc_id: pick.lyr.id, lyrics_source: pick.lyr.source, ...(pick.lyr.source === "pasted" ? {lyrics_text: pick.lyr.text} : {}), artist, title, video_title: pick.video.title, gpu: $("#gpupick") ? $("#gpupick").value : "auto", ...(pick.replaces ? {replace: pick.replaces.id} : {}), ...(pick.request ? {request: pick.request.rid} : {}), ...(pick.fromImport ? {import_row: {id: pick.fromImport.id, n: pick.fromImport.n}} : {})})});
     // the search is done with: start the Make tab fresh next time
+    const back = pick.fromImport;
     $("#q").value = ""; $("#results").innerHTML = ""; pick = {video: null, lyr: null, data: null};
-    location.hash = "jobs/" + r.id;
+    location.hash = back ? `make/import/${back.id}` : "jobs/" + r.id;
   } catch (e) { toast(e.message); $("#make").disabled = false; }
+}
+
+// ---------- import a list: a YouTube playlist or pasted songs, looked up by the studio, reviewed here, then made ----------
+const IMP = {timer: null, id: null, data: null, edits: {}};
+const impKey = id => "ks.imp." + id;
+async function openImport(id) {
+  clearTimeout(IMP.timer);
+  if (!id) return importStart();
+  if (IMP.id !== id) { IMP.id = id; IMP.data = null; IMP.edits = lsGet(impKey(id), {}); $("#importpane").innerHTML = `<p class="hint"><span class="spinner"></span> Loading the import…</p>`; }
+  try { IMP.data = await api(`/api/imports/${encodeURIComponent(id)}`); }
+  catch (e) { $("#importpane").innerHTML = `<a class="back" href="#make/import">← Import a list</a><div class="empty">${esc(e.message)}</div>`; return; }
+  if (IMP.data.state === "cancelled") { location.hash = "make/import"; return; }
+  renderImport();
+  if (["listing", "looking"].includes(IMP.data.state) && location.hash === `#make/import/${id}`) IMP.timer = setTimeout(() => openImport(id), 2000);
+}
+async function importStart() {
+  IMP.id = null;
+  let recent = [];
+  try { recent = (await api("/api/imports")).imports.filter(i => i.state !== "cancelled"); } catch {}
+  const st = i => i.state === "listing" ? "reading the playlist…" : i.state === "looking" ? `looking up ${i.total - i.waiting} of ${i.total}…` : i.state === "made" ? `${i.made} made` : `${i.ready} ready, ${i.skipped} skipped`;
+  $("#importpane").innerHTML = `<a class="back" href="#make">← Search</a>
+    <h2 style="margin-top:6px">Import a list</h2>
+    <p class="hint">Paste a <b>YouTube playlist link</b> (its own videos are used), or <b>songs one per line</b>: <code>Artist - Title</code> or a YouTube video link (numbering like “1.” is fine). Up to 50 songs. The studio finds the video and timed lyrics for each; you check them before anything is made.</p>
+    <textarea id="imptext" placeholder="https://www.youtube.com/playlist?list=…&#10;or&#10;Artist - Title&#10;Artist - Title&#10;https://youtu.be/…"></textarea>
+    <div class="row" style="margin-top:8px"><button class="primary" id="impgo">Look them up</button><span class="hint">about 5–10 seconds a song</span></div>
+    ${recent.length ? `<h2>Recent imports</h2><div class="list">${recent.map(i => `<a class="card" style="text-decoration:none;color:inherit" href="#make/import/${esc(i.id)}"><div><div class="t">${i.kind === "playlist" ? `Playlist${i.playlist && i.playlist.title ? `: ${esc(i.playlist.title)}` : ""}` : `${i.total} song${i.total === 1 ? "" : "s"} pasted`}</div><div class="m">by ${esc((i.by || {}).by || "?")} · ${esc(new Date(i.created * 1000).toLocaleString())} · ${esc(st(i))}</div></div></a>`).join("")}</div><p class="hint">Imports are kept for 24 hours.</p>` : ""}`;
+  $("#impgo").onclick = async () => {
+    const text = $("#imptext").value.trim(); if (!text) return toast("Paste a playlist link or some songs");
+    $("#impgo").disabled = true;
+    try { const r = await api("/api/imports", {method: "POST", body: JSON.stringify({text})}); location.hash = `make/import/${r.id}`; }
+    catch (e) { toast(e.message); $("#impgo").disabled = false; }
+  };
+}
+function impRow(r) {
+  const e = IMP.edits[r.n] || {}, tick = e.tick != null ? e.tick : r.tick;
+  const v = r.video, l = r.lyrics, busy = r.status === "waiting";
+  const status = busy ? `<span class="hint"><span class="spinner"></span> looking it up…</span>`
+    : r.job ? `<span class="tag good">${r.how === "by hand" ? "made by hand" : "made"}</span> <a class="lnk" href="#jobs/${esc(r.job)}">open →</a>`
+    : r.status === "ready" ? `<span class="tag good">ready</span>` : `<span class="tag warn">skipped</span> <span class="hint">${esc(r.why || "")}</span>`;
+  return `<div class="card improw ${tick && r.can_make ? "" : "off"}" data-n="${r.n}">
+    <input type="checkbox" class="imptick" data-n="${r.n}" ${tick && r.can_make ? "checked" : ""} ${r.can_make ? "" : "disabled"} aria-label="Make row ${r.n}">
+    ${v && v.id ? `<img src="${esc(v.thumb || `https://i.ytimg.com/vi/${v.id}/mqdefault.jpg`)}" alt="" loading="lazy">` : ""}
+    <div style="flex:1;min-width:0">
+      ${busy ? `<div class="t">${r.n}. ${esc(r.input || "")}</div>` : `<div class="row"><span class="hint">${r.n}.</span><input type="text" class="impa" data-n="${r.n}" value="${esc(e.artist != null ? e.artist : r.artist || "")}" placeholder="Artist" ${r.job ? "disabled" : ""}><input type="text" class="impt" data-n="${r.n}" value="${esc(e.title != null ? e.title : r.title || "")}" placeholder="Title" ${r.job ? "disabled" : ""}></div>`}
+      ${v ? `<div class="m">🎬 ${esc(v.title)} · ${esc(v.channel || "")}${v.duration ? " · " + fmt(v.duration) : ""} ${v.link ? '<span class="tag">your pick</span>' : v.official_channel ? '<span class="tag good">artist channel</span>' : ""}${(v.flags || []).map(f => `<span class="tag warn">${esc(f)}</span>`).join("")}${v.id ? `<a class="tag" href="https://www.youtube.com/watch?v=${esc(v.id)}" target="_blank" rel="noopener">watch ↗</a>` : ""}</div>` : ""}
+      ${l ? `<div class="m">📝 ${esc(l.source === "karamoe" ? "kara.moe" : "LRCLIB")}: ${esc(l.artist || "")} – ${esc(l.title || "")} · ${l.timed ? `timed, ${l.lines} lines` : "not timed"} · ${esc(l.lang)}${l.duration ? " · " + fmt(l.duration) : ""}</div>` : ""}
+      <div style="margin-top:4px">${status}${(r.notes || []).map(x => ` <span class="hint">· ${esc(x)}</span>`).join("")}</div>
+    </div>
+    ${busy || r.job ? "" : `<button class="ghost sm" data-change="${r.n}" title="Pick the video and lyrics yourself in the search">Change…</button>`}
+  </div>`;
+}
+function impTicked() {
+  return (IMP.data.rows || []).filter(r => r.can_make && ((IMP.edits[r.n] || {}).tick != null ? IMP.edits[r.n].tick : r.tick));
+}
+function renderImport() {
+  const d = IMP.data, rows = d.rows || [], looking = ["listing", "looking"].includes(d.state);
+  const head = d.kind === "playlist" ? `Playlist${d.playlist && d.playlist.title ? `: ${esc(d.playlist.title)}` : ""}` : `${d.total} song${d.total === 1 ? "" : "s"} pasted`;
+  const n = impTicked().length;
+  $("#importpane").innerHTML = `<a class="back" href="#make/import">← Import a list</a>
+    <h2 style="margin-top:6px">${head}</h2>
+    <p class="hint">Started by ${esc((d.by || {}).by || "?")} · ${d.state === "listing" ? `<span class="spinner"></span> reading the playlist…` : looking ? `<span class="spinner"></span> looking them up: ${d.total - d.waiting} of ${d.total} done` : `${d.ready} ready, ${d.skipped} skipped${d.made ? `, ${d.made} made` : ""}`}. Check each song (the video, the lyrics, the names) before making it: <b>Change…</b> picks them yourself.</p>
+    ${d.left_out ? `<div class="aibox" style="border-color:var(--warn)">Only the first 50 songs were taken; ${d.left_out} more ${d.left_out === 1 ? "was" : "were"} left out (import the rest as another list).</div>` : ""}
+    ${d.error ? `<div class="empty" style="padding:10px">${esc(d.error)}</div>` : ""}
+    <div class="list" style="margin-top:10px">${rows.map(impRow).join("")}</div>
+    <div class="impbar card" style="cursor:default">
+      <button class="primary" id="impmake" ${looking || !n ? "disabled" : ""}>Make ticked (${n})</button>
+      ${gpuMenu("impgpu")}
+      <button class="ghost" id="impcancel">${d.made ? "Done" : "Cancel"}</button>
+      <span class="hint">${looking ? "wait until every song is looked up" : n ? "they join the queue in this order" : "tick the songs to make"}</span>
+    </div>`;
+  const keep = () => lsSet(impKey(d.id), IMP.edits);
+  const ed = n_ => (IMP.edits[n_] = IMP.edits[n_] || {});
+  document.querySelectorAll(".imptick").forEach(c => c.onchange = () => { ed(+c.dataset.n).tick = c.checked; keep(); renderImport(); });
+  document.querySelectorAll(".impa").forEach(i => i.oninput = () => { ed(+i.dataset.n).artist = i.value; keep(); });
+  document.querySelectorAll(".impt").forEach(i => i.oninput = () => { ed(+i.dataset.n).title = i.value; keep(); });
+  document.querySelectorAll("[data-change]").forEach(b => b.onclick = () => {
+    const r = rows.find(x => x.n === +b.dataset.change), e = IMP.edits[r.n] || {};
+    PENDING_IMPORT = {id: d.id, n: r.n, artist: e.artist != null ? e.artist : r.artist || "", title: e.title != null ? e.title : r.title || ""};
+    location.hash = "make";
+    $("#q").value = r.video && r.video.id && r.video.link ? `https://www.youtube.com/watch?v=${r.video.id}` : (PENDING_IMPORT.artist ? `${PENDING_IMPORT.artist} - ${PENDING_IMPORT.title}` : (r.q || r.input || ""));
+    $("#sform").requestSubmit();
+  });
+  $("#impmake").onclick = async () => {
+    const ticked = impTicked().map(r => { const e = IMP.edits[r.n] || {}; return {n: r.n, artist: (e.artist != null ? e.artist : r.artist || "").trim(), title: (e.title != null ? e.title : r.title || "").trim()}; });
+    const bad = ticked.find(x => !x.artist || !x.title); if (bad) return toast(`Row ${bad.n}: fill in the artist and the title`);
+    $("#impmake").disabled = true;
+    try {
+      const r = await api(`/api/imports/${d.id}/make`, {method: "POST", body: JSON.stringify({rows: ticked, gpu: $("#impgpu") ? $("#impgpu").value : "auto"})});
+      IMP.data = r.import; IMP.edits = {}; keep(); renderImport();
+      toast(`${r.made.length} song${r.made.length === 1 ? "" : "s"} queued: they're on the Songs tab`);
+    } catch (e) { toast(e.message); $("#impmake").disabled = false; }
+  };
+  $("#impcancel").onclick = async () => {
+    if (!d.made && !confirm("Put this import away? Nothing from it gets made.")) return;
+    try { await api(`/api/imports/${d.id}/cancel`, {method: "POST"}); } catch (e) { return toast(e.message); }
+    try { localStorage.removeItem(impKey(d.id)); } catch {}
+    location.hash = "make/import";
+  };
 }
 
 // ---------- jobs ----------
@@ -640,7 +759,7 @@ function jobLine(j) {
   return `<div class="card" data-j="${esc(j.id)}">
     <img src="https://i.ytimg.com/vi/${esc(j.yt)}/mqdefault.jpg" alt="" loading="lazy">
     <div style="flex:1;min-width:0"><div class="t">${esc(j.artist)} – ${esc(j.title)}</div>
-    <div class="status ${esc(j.status)}">${esc(jobState(j))}${j.quick ? ` <span class="tag quick" title="Party auto-make made and published it by itself; nobody has played it through yet">quick make, not reviewed</span>` : ""}${nUp ? ` <span class="tag" title="Made with an older version of the studio; the song's page lists what's better now">↻ ${nUp} improvement${nUp === 1 ? "" : "s"} since</span>` : ""}${confTag(j)}</div>${j.status === "running" || j.status === "queued" ? stepBar(j) : ""}</div>
+    <div class="status ${esc(j.status)}">${esc(jobState(j))}${j.import ? ` <a class="tag" href="#make/import/${esc(j.import.id)}" onclick="event.stopPropagation()" title="Made from an import (Make → Import a list); the import is kept for 24 hours">import · row ${esc(j.import.n)}</a>` : ""}${j.quick ? ` <span class="tag quick" title="Party auto-make made and published it by itself; nobody has played it through yet">quick make, not reviewed</span>` : ""}${nUp ? ` <span class="tag" title="Made with an older version of the studio; the song's page lists what's better now">↻ ${nUp} improvement${nUp === 1 ? "" : "s"} since</span>` : ""}${confTag(j)}</div>${j.status === "running" || j.status === "queued" ? stepBar(j) : ""}</div>
     ${canCancel(j) ? `<button class="ghost danger sm cancelbtn" data-cancel="${esc(j.id)}" title="Stop making this song">✕ Cancel</button>` : ""}</div>`;
 }
 async function cancelJob(id) {

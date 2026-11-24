@@ -9,7 +9,7 @@ plays (optionally deleting the older YouTube lyric version), listed in its catal
 There is no login of its own: put it behind an authenticating reverse proxy, or keep it on 127.0.0.1.
 """
 import argparse, asyncio, hashlib, http.cookiejar, ipaddress, json, math, os, queue, re, shutil, sqlite3, subprocess, sys
-import threading, time
+import threading, time, uuid
 import logging, logging.handlers
 import unicodedata, urllib.error, urllib.parse, urllib.request
 
@@ -38,6 +38,7 @@ import agents  # noqa: E402
 import automake as AM
 import videocheck as VC  # noqa: E402
 import autopick  # noqa: E402
+import songlinks as SL  # noqa: E402
 import wordscore  # noqa: E402
 
 # what the studio did and when: data/logs/studio.log (5 files of 2 MB kept)
@@ -461,9 +462,84 @@ def song_search(artist, title, videos=True):
             **({"lyrics_failed": True} if failed else {})}
 
 
+def confirm_names(artist, title, feats=()):
+    """Names read from a video's title, checked against LRCLIB: an entry with that title (brackets aside) and an artist
+    alike gives its spelling (also with the two the other way round: "Title - Artist" uploads). Featured singers the
+    entry leaves out are kept. Without an artist: split_query finds one in the title. -> (artist, title, source):
+    source "LRCLIB", "the search" (split_query) or None (as read)."""
+    bare = lambda x: loose(re.sub(r"\s*[(\[][^)\]]*[)\]]", "", x or ""))
+    same_t = lambda a, b: bool(loose(a)) and (loose(a) == loose(b) or (bool(bare(a)) and bare(a) == bare(b)))
+    alike = lambda a, b: bool(loose(a)) and bool(loose(b)) and (loose(a) in loose(b) or loose(b) in loose(a))
+    if not artist:
+        got = split_query(title) if title else None
+        return (got[0], got[1], "the search") if got else ("", title, None)
+    try:
+        hits = http_json("https://lrclib.net/api/search?" + urllib.parse.urlencode({"q": f"{artist} {title}"}))[:30]
+    except Exception:
+        hits = []
+    for a, t in ((artist, title), (title, artist)):
+        m = [h for h in hits if same_t(h.get("trackName"), t) and alike(h.get("artistName"), a)]
+        if m:
+            h = max(m, key=lambda h: bool(h.get("syncedLyrics")))   # (the first timed one)
+            la, lt = autopick.tidy_name(h["artistName"]), autopick.tidy_name(h["trackName"])
+            if feats and not all(loose(f) in loose(la) for f in feats):
+                la = a
+            return la or a, lt or t, "LRCLIB"
+    return artist, title, None
+
+
+def names_for_video(title, channel):
+    """A video's song names: read from its title (songlinks.names_from_video), then checked against LRCLIB.
+    -> {"artist", "title", "from", "parsed"} (parsed: an artist was found)."""
+    g = SL.names_from_video(title, channel)
+    a, t, src = confirm_names(g["artist"], g["title"], g["feats"])
+    how = src or {"title": "the video's title", "channel": "the video's title and channel"}.get(g["how"])
+    return {"artist": a, "title": t, "from": how or "the video's title", "parsed": bool(a)}
+
+
+def read_video(vid):
+    """One YouTube video's facts (yt-dlp -J --no-playlist, only for an 11-character id). HTTPException 502 when it
+    can't be read."""
+    try:
+        return yt_json(["-J", "--no-playlist", "--", SL.video_url(vid)], timeout=90)
+    except (RuntimeError, ValueError, subprocess.TimeoutExpired) as e:
+        log.info("reading video %s failed: %s", vid, str(e)[-160:])
+        raise HTTPException(502, "couldn't read that video (private, removed, or not available here)")
+
+
+def link_search(vid):
+    """The search answer for a pasted video link: that video first (marked as the person's link), its names from its
+    title, then the usual videos and lyrics for those names."""
+    info = read_video(vid)
+    names = names_for_video(info.get("title"), info.get("channel") or info.get("uploader"))
+    try:
+        d = song_search(names["artist"], names["title"])
+    except HTTPException:   # YouTube's search failed: the link and the lyrics are still worth showing
+        d = song_search(names["artist"], names["title"], videos=False)
+        d["notes"].append("YouTube's search didn't answer, so only your video is listed")
+    v = video_entry(dict(info, id=vid), names["artist"], names["title"])
+    if not v:
+        raise HTTPException(400, "that video has no length (a live stream?): pick another")
+    v["link"] = True
+    d["videos"] = [v] + [x for x in d["videos"] if x["id"] != vid]
+    d["pinned"] = vid
+    d["link"] = {"id": vid, "names_from": names["from"], "parsed": names["parsed"]}
+    if not names["parsed"]:
+        d["notes"].insert(0, "Couldn't tell the artist from the video's title: type the artist in (the title is the video's, cleaned up)")
+    return d
+
+
 @app.get("/api/search")
 def search(q: str):
     q = q.strip()
+    link = SL.parse_link(q)
+    if link and link["video"]:   # a pasted video link names the song (watch?v=, youtu.be/, shorts/, &list= is ignored)
+        return link_search(link["video"])
+    if link:
+        raise HTTPException(400, "that's a playlist link: use Import a list (under the search box) to make its songs")
+    if SL.is_url(q):
+        raise HTTPException(400, "only YouTube video links can be searched; for a video from another site, make the song "
+                                 "from its YouTube video, then add yours on the song's page (Videos)")
     if not q or len(q) > 200:
         raise HTTPException(400, "type Artist - Title")
     artist, _, title = q.partition(" - ")
@@ -559,13 +635,17 @@ async def create_job(req: Request):
     auto_pub = bool(b.get("auto_publish"))
     if auto_pub:   # published without review when its video check passes (ks make --auto): a publish, so its scope
         _agent_refuse(agents.actor_of(req), "publish", "publishing automatically")
+    ir = b.get("import_row") if isinstance(b.get("import_row"), dict) else {}   # Change… on an import's review
+    ir = {"id": ir["id"], "n": ir["n"]} if IMP_ID.match(str(ir.get("id") or "")) and isinstance(ir.get("n"), int) else None
     jid = new_job({"yt": yt, "lrc_id": lrc_id, "lyrics_source": source, "artist": artist, "title": title,
-                   "video_title": str(b.get("video_title", ""))[:200],
+                   "video_title": str(b.get("video_title", ""))[:200], **({"import": ir} if ir else {}),
                    "gpu_pref": b.get("gpu") if b.get("gpu") in ("local", "remote") else "auto",
                    **({"lyrics_text": pasted} if source == "pasted" else {}),
                    **({"auto_publish": {"by": agents.actor_of(req), "at": time.time()}} if auto_pub else {})}, agents.actor_of(req))
     log.info("queued %s | video %s | lyrics %s:%s | gpu %s%s", jid, yt, source, lrc_id if source != "pasted" else f"{len(pasted)} chars",
              b.get("gpu") or "auto", f" | replaces {b.get('replace')}" if b.get("replace") else "")
+    if ir:
+        import_row_made(ir["id"], ir["n"], jid, artist, title)
     # "Change video or lyrics" on an existing song: the new one takes its place once it has been made (if it fails,
     # the old song is still there). Only the studio's copy is removed; a published file stays in the library until the
     # new song is published over it.
@@ -626,7 +706,8 @@ def summary(job):
 def _summary(job):
     keys = ("id", "artist", "title", "yt", "status", "step", "created", "finished", "error", "offset",
             "published", "published_as", "video_title", "result", "waiting", "edited", "unpublished_changes", "lang", "gpu", "ai_romaji", "video_v", "gpu_pref", "reviewed", "lrc_id", "lyrics_source", "trim", "video_task",
-            "lyrics_display", "cancel_requested", "last_edit", "published_by", "made_by", "quick", "auto_held", "auto_retry", "auto_publish")
+            "lyrics_display", "cancel_requested", "last_edit", "published_by", "made_by", "quick", "auto_held", "auto_retry", "auto_publish",
+            "import")
     out = {k: job.get(k) for k in keys}
     am = job.get("automake")
     out["automake"] = {k: am.get(k) for k in ("player_name", "by", "party", "at")} if am else None
@@ -647,7 +728,7 @@ def list_jobs(brief: int = 0):
 
 
 BRIEF_KEYS = ("id", "artist", "title", "yt", "status", "step", "created", "finished", "error", "published", "waiting",
-              "unpublished_changes", "gpu", "reviewed", "to_check", "cancel_requested", "encore_flags", "published_as")
+              "unpublished_changes", "gpu", "reviewed", "to_check", "cancel_requested", "encore_flags", "published_as", "import")
 
 
 def brief_summary(s):
@@ -3632,19 +3713,22 @@ PICK_WHY = {"video": "no music video found", "lyrics": "no timed lyrics found", 
             "name": "a song with this name is already in the library"}
 
 
-def pick_song(d, max_s, video=None, fallback=("", "")):
+def pick_song(d, max_s, video=None, fallback=("", ""), names=None):
     """Choose a song's video and timed lyrics from a search answer the way the Make page does (autopick.py), and say
     why it can't be made as it is: party auto-make and imports. video: one the person chose (a playlist's own), kept;
     only the lyrics are picked for it. -> {"video", "lyrics", "artist", "title", "names_from", "kind", "why", "have"}:
     kind None (ready to make) or video, lyrics, long (longer than max_s), have, ready, making (match_song: the studio
     has it), name (a file of that name is in the library); why says it in words (long: the caller says it).
-    fallback: the names asked for, when neither the pick nor the search has any."""
+    fallback: the names asked for, when neither the pick nor the search has any. names: {"artist", "title", "from"}
+    that win over the picked lyrics' (a video's own title, checked against LRCLIB)."""
     if video is None:
         p = autopick.choose(d)
     else:
         l = autopick.best_lyrics(d, video)
         n = autopick.auto_names(d, l, video)
         p = {"video": video, "lyrics": l, "artist": n["artist"], "title": n["title"], "names_from": n["from"]}
+    if names and names.get("artist") and names.get("title"):
+        p.update(artist=names["artist"], title=names["title"], names_from=names.get("from") or "the video's title")
     v, l = p["video"], p["lyrics"]
     out = dict(p, artist=p["artist"] or d.get("artist") or fallback[0] or "", title=p["title"] or d.get("title") or fallback[1] or "",
                kind=None, why=None, have=None)
@@ -3920,6 +4004,369 @@ def recover_automake():
             full = load(j["id"])
             if full.get("auto_publish") and not full.get("quick"):
                 threading.Thread(target=batch_finish, args=(j["id"],), daemon=True).start()
+
+
+# ---- imports: a YouTube playlist or a pasted list of songs, looked up one by one, reviewed, then made ----
+# Each import is data/imports/<id>.json (kept 24 hours): its rows fill in as a background thread looks the songs up
+# (one at a time, a pause between them), then the person reviews them on the Make tab (or ks import) and makes the
+# ticked ones. Nothing is made before that. The picks are pick_song's, the same as party auto-make's.
+IMPORTS = os.path.join(C.DATA, "imports")
+IMPORT_KEEP_S = 24 * 3600
+IMPORT_GAP_S = 1.5          # between songs: gentle on LRCLIB and YouTube
+IMP_ID = re.compile(r"^imp-[0-9a-f]{10}$")
+_IMP_LOCK = threading.RLock()
+_IMP_Q = queue.Queue()
+_IMP_T = {"thread": None}
+
+
+def imp_path(iid):
+    if not IMP_ID.match(iid or ""):
+        raise HTTPException(404, "no such import")
+    return os.path.join(IMPORTS, iid + ".json")
+
+
+def imp_load(iid):
+    try:
+        imp = json.load(open(imp_path(iid)))
+    except (OSError, ValueError):
+        raise HTTPException(404, "no such import (imports are kept for 24 hours)")
+    if time.time() - imp["created"] > IMPORT_KEEP_S:
+        raise HTTPException(404, "no such import (imports are kept for 24 hours)")
+    return imp
+
+
+def imp_save(imp):
+    os.makedirs(IMPORTS, exist_ok=True)
+    p = imp_path(imp["id"])
+    with open(p + ".tmp", "w") as f:
+        json.dump(imp, f, indent=1)
+    os.replace(p + ".tmp", p)
+
+
+def imp_all():
+    """The imports kept (newest first); old ones are deleted."""
+    out = []
+    for f in sorted(os.listdir(IMPORTS)) if os.path.isdir(IMPORTS) else []:
+        if not f.endswith(".json"):
+            continue
+        p = os.path.join(IMPORTS, f)
+        try:
+            imp = json.load(open(p))
+        except (OSError, ValueError):
+            continue
+        if time.time() - imp.get("created", 0) > IMPORT_KEEP_S:
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+            continue
+        out.append(imp)
+    return sorted(out, key=lambda i: -i["created"])
+
+
+def can_make_row(r):
+    return bool(r.get("video") and r.get("lyrics") and r["lyrics"].get("timed") and not r.get("job"))
+
+
+def imp_view(imp):
+    rows = imp.get("rows") or []
+    count = lambda st: sum(1 for r in rows if r["status"] == st)
+    return {k: imp.get(k) for k in ("id", "created", "by", "kind", "playlist", "state", "left_out", "error")} | {
+        "expires": imp["created"] + IMPORT_KEEP_S, "total": len(rows), "waiting": count("waiting"), "ready": count("ready"),
+        "skipped": count("skipped"), "made": sum(1 for r in rows if r.get("job")),
+        "rows": [{k: v for k, v in r.items() if k not in ("entry",)} | {"can_make": can_make_row(r)} for r in rows]}
+
+
+def lyr_lang(l):
+    """The lyrics' language or script, in words (for the review)."""
+    sc = l.get("script")
+    if l.get("japanese"):
+        return "Japanese"
+    if sc in ("ko", "zh"):
+        return {"ko": "Korean", "zh": "Chinese"}[sc]
+    if sc and sc != "latin":
+        return sc.capitalize()
+    if l.get("source") == "karamoe":
+        return "romaji (kara.moe)"
+    return "English" if l.get("english") else "Latin letters"
+
+
+def _mmss(s):
+    m, sec = divmod(int(s or 0), 60)
+    return f"{m}:{sec:02d}"
+
+
+def import_row(row, seen):
+    """Look one row up: its video (the playlist's own, or the search's best), timed lyrics and names, and whether it's
+    ready to make or skipped (why). seen: {key: row number} of the rows before it (duplicates)."""
+    notes = []
+    if row["kind"] == "video":
+        info = row.get("entry")
+        if info is None:
+            info = read_video(row["id"])   # (a link pasted in a list; HTTPException: unavailable)
+        if not info.get("title") or info.get("title") in ("[Private video]", "[Deleted video]") or not info.get("duration") \
+                or (info.get("availability") or "public") not in ("public", "unlisted"):
+            return {"status": "skipped", "why": "the video is unavailable (private, deleted or not playable here)",
+                    "video": {"id": row["id"], "title": info.get("title") or "", "channel": "", "duration": None, "flags": [],
+                              "thumb": f"https://i.ytimg.com/vi/{row['id']}/mqdefault.jpg", "link": True}}
+        names = names_for_video(info.get("title"), info.get("channel") or info.get("uploader"))
+        v = video_entry(dict(info, id=row["id"]), names["artist"], names["title"])
+        v["link"] = True
+        d = song_search(names["artist"], names["title"], videos=False)
+        p = pick_song(d, SL.IMPORT_MAX_S, video=v, names=names if names["parsed"] else None)
+        if not names["parsed"]:
+            notes.append("couldn't tell the artist from the video's title")
+        if v["flags"]:
+            notes.append(f"looks like a {', '.join(v['flags'])} video (kept: it's your pick)")
+    else:
+        d = search(row["q"])
+        p = pick_song(d, SL.IMPORT_MAX_S)
+    v, l = p["video"], p["lyrics"]
+    out = {"artist": p["artist"], "title": p["title"], "names_from": p.get("names_from"), "notes": notes,
+           "video": {k: v.get(k) for k in ("id", "title", "channel", "duration", "flags", "thumb", "official_channel", "link")} if v else None,
+           "lyrics": {"source": l["source"], "id": l["id"], "artist": l.get("artist"), "title": l.get("title"), "lines": l.get("lines"),
+                      "duration": l.get("duration"), "timed": bool(l.get("timed")), "lang": lyr_lang(l)} if l else None}
+    if v and l and l.get("duration") and v.get("duration") and l["duration"] > v["duration"] + 12:
+        notes.append(f"the lyrics run {round(l['duration'] - v['duration'])} s longer than the video (a shortened video?)")
+    kind, why = p["kind"], p["why"]
+    if kind == "lyrics" and d.get("lyrics_failed"):
+        why = "couldn't look up the lyrics (LRCLIB didn't answer): try again later"
+    elif kind == "long":
+        why = f"too long ({_mmss(v['duration'])}; an import makes songs up to {SL.IMPORT_MAX_S // 60} min: tick it to make it anyway)"
+    elif kind == "lyrics" and l and not l.get("timed"):
+        why = "no timed lyrics found (only plain ones: Change… to make it by hand)"
+    if not kind and row["kind"] == "text" and v and v.get("flags"):
+        kind, why = "flagged", f"the best video found looks like a {', '.join(v['flags'])} video: Change… to pick another"
+    keys = [k for k in ((v or {}).get("id"), (loose(out["artist"]), loose(out["title"])) if out["title"] else None) if k]
+    dup = next((seen[k] for k in keys if k in seen), None)
+    if dup and kind not in ("video", "lyrics"):
+        kind, why = "dup", f"the same song as row {dup}"
+    for k in keys:
+        seen.setdefault(k, row["n"])
+    out.update(status="skipped" if kind else "ready", why=why, tick=not kind and bool(v and l))
+    return out
+
+
+def import_enqueue(iid):
+    if _IMP_T["thread"] is None or not _IMP_T["thread"].is_alive():
+        _IMP_T["thread"] = threading.Thread(target=_import_worker, daemon=True, name="imports")
+        _IMP_T["thread"].start()
+    _IMP_Q.put(iid)
+
+
+def _import_worker():
+    while True:
+        iid = _IMP_Q.get()
+        try:
+            import_run(iid)
+        except Exception as e:
+            log.exception("import %s", iid)
+            try:
+                with _IMP_LOCK:
+                    imp = imp_load(iid)
+                    imp.update(state="ready", error=f"the Studio hit an error looking them up ({str(e)[:80]})")
+                    for r in imp["rows"]:
+                        if r["status"] == "waiting":
+                            r.update(status="skipped", why="not looked up (the Studio hit an error)", tick=False)
+                    imp_save(imp)
+            except Exception:
+                pass
+
+
+def import_list_playlist(lst):
+    """A playlist's videos (at most MAX_IMPORT) and how many it has: yt-dlp --flat-playlist (one listing, no video
+    pages). -> (title, entries, total)."""
+    d = yt_json(["--flat-playlist", "-J", "--playlist-end", str(SL.MAX_IMPORT), "--", SL.playlist_url(lst)], timeout=120)
+    entries = [e for e in d.get("entries") or [] if e and e.get("id") and SL.VIDEO_ID.fullmatch(str(e["id"]))]
+    return d.get("title") or "", entries[:SL.MAX_IMPORT], max(d.get("playlist_count") or 0, len(entries))
+
+
+def import_run(iid):
+    """Look an import's songs up, one at a time (rows fill in as they're done)."""
+    with _IMP_LOCK:
+        imp = imp_load(iid)
+    if imp["state"] == "listing":
+        try:
+            title, entries, total = import_list_playlist(imp["playlist"]["id"])
+        except (RuntimeError, ValueError, subprocess.TimeoutExpired) as e:
+            log.info("import %s: playlist %s: %s", iid, imp["playlist"]["id"], str(e)[-160:])
+            with _IMP_LOCK:
+                imp = imp_load(iid)
+                imp.update(state="ready", error="couldn't read the playlist (private, removed, or a mix YouTube won't list)")
+                imp_save(imp)
+            return
+        with _IMP_LOCK:
+            imp = imp_load(iid)
+            if imp["state"] != "listing":
+                return
+            imp["playlist"]["title"] = title
+            imp["left_out"] = max(0, total - len(entries))
+            imp["rows"] = [{"n": i + 1, "input": e.get("title") or e["id"], "kind": "video", "id": e["id"], "status": "waiting",
+                            "entry": {k: e.get(k) for k in ("title", "channel", "uploader", "duration", "view_count", "availability",
+                                                            "channel_is_verified")}} for i, e in enumerate(entries)]
+            imp["state"] = "looking"
+            if not entries:
+                imp.update(state="ready", error="the playlist has no videos")
+            imp_save(imp)
+    seen = {}
+    first = True
+    for row in list(imp["rows"]):
+        if row["status"] != "waiting":
+            for k in ((row.get("video") or {}).get("id"), (loose(row.get("artist")), loose(row.get("title"))) if row.get("title") else None):
+                if k:
+                    seen.setdefault(k, row["n"])
+            continue
+        with _IMP_LOCK:
+            if imp_load(iid)["state"] != "looking":
+                return   # cancelled
+        if not first:
+            time.sleep(IMPORT_GAP_S)
+        first = False
+        try:
+            got = import_row(row, seen)
+        except HTTPException as e:
+            got = {"status": "skipped", "why": str(e.detail), "tick": False}
+        except Exception as e:
+            log.exception("import %s row %s", iid, row["n"])
+            got = {"status": "skipped", "why": f"couldn't look it up ({str(e)[:60]})", "tick": False}
+        with _IMP_LOCK:
+            imp = imp_load(iid)
+            if imp["state"] != "looking":
+                return
+            r = next(x for x in imp["rows"] if x["n"] == row["n"])
+            r.update(got)
+            r.pop("entry", None)
+            imp_save(imp)
+    with _IMP_LOCK:
+        imp = imp_load(iid)
+        if imp["state"] == "looking":
+            imp["state"] = "ready"
+            imp_save(imp)
+    log.info("import %s: looked up %s songs, %s ready", iid, len(imp["rows"]), sum(1 for r in imp["rows"] if r["status"] == "ready"))
+
+
+def recover_imports():
+    """At startup: imports still being looked up carry on."""
+    for imp in imp_all():
+        if imp.get("state") in ("listing", "looking"):
+            import_enqueue(imp["id"])
+
+
+@app.post("/api/imports")
+async def import_create(req: Request):
+    """Start an import: {text}: one YouTube playlist link, or lines of "Artist - Title" / video links. Looked up in the
+    background; GET /api/imports/{id} shows the rows as they fill in. Nothing is made until /make."""
+    check_origin(req)
+    b = await req.json()
+    text = str(b.get("text") or "").strip()
+    if not text or len(text) > 20000:
+        raise HTTPException(400, "paste a YouTube playlist link, or songs one per line (Artist - Title, or a video link)")
+    kind, lst = SL.import_kind(text)
+    iid = "imp-" + uuid.uuid4().hex[:10]
+    imp = {"id": iid, "created": time.time(), "by": agents.stamp(agents.actor_of(req)), "kind": kind, "left_out": 0,
+           "state": "listing" if kind == "playlist" else "looking", "rows": [], "error": None}
+    if kind == "playlist":
+        imp["playlist"] = {"id": lst, "title": ""}
+    else:
+        items, left = SL.parse_list(text)
+        if not items:
+            raise HTTPException(400, "no songs in that list: one per line, Artist - Title or a YouTube video link")
+        imp["left_out"] = left
+        imp["rows"] = [{"n": i + 1, "input": x["input"], "kind": x["kind"], **({"q": x["q"]} if x["kind"] == "text" else {}),
+                        **({"id": x["id"]} if x["kind"] == "video" else {}),
+                        **({"status": "skipped", "why": x["why"], "tick": False} if x["kind"] == "bad" else {"status": "waiting"})}
+                       for i, x in enumerate(items)]
+    with _IMP_LOCK:
+        imp_save(imp)
+    log.info("import %s by %s: %s", iid, imp["by"]["by"], f"playlist {lst}" if kind == "playlist" else f"{len(imp['rows'])} lines")
+    import_enqueue(iid)
+    return imp_view(imp)
+
+
+@app.get("/api/imports")
+def import_list():
+    """The imports kept (24 hours), newest first, without their rows."""
+    return {"imports": [{k: v for k, v in imp_view(i).items() if k != "rows"} for i in imp_all()]}
+
+
+@app.get("/api/imports/{iid}")
+def import_get(iid: str):
+    with _IMP_LOCK:
+        return imp_view(imp_load(iid))
+
+
+@app.post("/api/imports/{iid}/cancel")
+async def import_cancel(iid: str, req: Request):
+    """Stop looking up and put the import away (songs already made from it stay)."""
+    check_origin(req)
+    with _IMP_LOCK:
+        imp = imp_load(iid)
+        imp["state"] = "cancelled"
+        imp_save(imp)
+    return imp_view(imp)
+
+
+@app.post("/api/imports/{iid}/make")
+async def import_make(iid: str, req: Request):
+    """Make the ticked rows: {rows: [{n, artist, title}], gpu}. Each becomes a normal song in the queue (in list order,
+    made by whoever pressed it, tagged with the import), with the video and lyrics the lookup chose; a row already made
+    is skipped, so pressing twice doesn't make anything twice."""
+    check_origin(req)
+    b = await req.json()
+    rows = b.get("rows")
+    if not isinstance(rows, list) or not rows or len(rows) > SL.MAX_IMPORT or not all(isinstance(x, dict) and isinstance(x.get("n"), int) for x in rows):
+        raise HTTPException(400, "tick the songs to make")
+    actor = agents.actor_of(req)
+    gpu = b.get("gpu") if b.get("gpu") in ("local", "remote") else "auto"
+    made = []
+    with _IMP_LOCK:
+        imp = imp_load(iid)
+        if imp["state"] in ("listing", "looking"):
+            raise HTTPException(409, "still looking the songs up: wait until it's done")
+        if imp["state"] == "cancelled":
+            raise HTTPException(409, "this import was cancelled")
+        by_n = {r["n"]: r for r in imp["rows"]}
+        todo = []
+        for x in rows:
+            r = by_n.get(x["n"])
+            if not r:
+                raise HTTPException(400, f"there's no row {x['n']}")
+            if r.get("job"):
+                continue
+            if not can_make_row(r):
+                raise HTTPException(400, f"row {r['n']} has no video or timed lyrics to make (Change… finds them by hand)")
+            artist = str(x.get("artist") if x.get("artist") is not None else r.get("artist") or "").strip()[:200]
+            title = str(x.get("title") if x.get("title") is not None else r.get("title") or "").strip()[:200]
+            if not artist or not title:
+                raise HTTPException(400, f"row {r['n']}: give the artist and the title")
+            todo.append((r, artist, title))
+        for r, artist, title in sorted(todo, key=lambda t: t[0]["n"]):
+            v, l = r["video"], r["lyrics"]
+            jid = new_job({"yt": v["id"], "lrc_id": l["id"], "lyrics_source": l["source"], "artist": artist, "title": title,
+                           "video_title": str(v.get("title") or "")[:200], "gpu_pref": gpu,
+                           "import": {"id": iid, "n": r["n"]}}, actor)
+            r.update(job=jid, artist=artist, title=title, status="made", tick=False)
+            made.append({"n": r["n"], "id": jid})
+            log.info("import %s: queued %s (row %s) | video %s | lyrics %s:%s", iid, jid, r["n"], v["id"], l["source"], l["id"])
+        if made:
+            imp["state"] = "made"
+        imp_save(imp)
+    if made:
+        wake.set()
+    return {"made": made, "import": imp_view(imp)}
+
+
+def import_row_made(iid, n, jid, artist, title):
+    """A row made by hand (Change… on the review, then Make on the search): it's done, not made again."""
+    with _IMP_LOCK:
+        try:
+            imp = imp_load(iid)
+        except HTTPException:
+            return
+        r = next((x for x in imp["rows"] if x["n"] == n), None)
+        if r:
+            r.update(job=jid, artist=artist, title=title, status="made", tick=False, how="by hand")
+            imp_save(imp)
 
 
 # ---- flags: the ⚠ marks ----
@@ -5017,6 +5464,7 @@ if __name__ == "__main__":
     a = ap.parse_args()
     recover_jobs()
     recover_automake()
+    recover_imports()
     threading.Thread(target=worker, daemon=True).start()
     if C.ALBUM_LOOKUP:
         threading.Thread(target=album_fill, daemon=True, name="album-fill").start()

@@ -16,9 +16,15 @@ What an agent may do is set by its key (made on the Studio's Agents tab); withou
   ks look SONG --line N | --at T [--span S]    picture: vocals spectrogram + line blocks + heard words (PNG)
   ks frame SONG --line N | --at T         the video at that moment with the lyrics on screen (PNG)
   ks log SONG                             the end of the song's pipeline log
-  ks search "Artist - Title"              videos and lyrics to choose from
+  ks search "Artist - Title" | LINK       videos and lyrics to choose from (a YouTube link: that video first, and the
+                                          song's names read from its title)
   ks make --yt ID --lyrics ID [--source lrclib|karamoe] --artist A --title T [--gpu auto|local|remote] [--auto]
                                           (--auto: published by itself when its video check passes)
+  ks import PLAYLIST-LINK | FILE | - [--make] [--gpu auto|local|remote]
+                                          a YouTube playlist, or songs one per line (Artist - Title, or a video link;
+                                          - reads them from stdin): the Studio picks the video and timed lyrics for
+                                          each (up to 50) and ks prints the review; --make queues the ready ones.
+                                          ks import IMPORT-ID [--make] shows (and makes) an import again
 
   editing (times are video times, as shown: m:ss.cc or seconds; N is the line number from ks show):
   ks move SONG N (+0.8 | -1.2 | --to 1:23.40) [--ripple]   move a line (with --ripple, every later line too)
@@ -524,10 +530,13 @@ def cmd_search(a):
     r = call("/api/search?q=" + urllib.parse.quote(a.query), timeout=300)
     for n in r.get("notes") or []:
         print("note:", n)
+    if r.get("link"):
+        print(f"names from the link ({r['link'].get('names_from')}): {r.get('artist') or '?'} - {r.get('title') or '?'}")
     print("videos:")
     for v in r.get("videos", [])[:10]:
         print(f"  {v['id']} {v['duration'] // 60}:{v['duration'] % 60:02d} {'OC' if v.get('official_channel') else '  '} "
-              f"{v['score']:5.1f} {v['title'][:70]} | {v['channel'][:24]}" + (f"  [{', '.join(v['flags'])}]" if v.get("flags") else ""))
+              f"{v['score']:5.1f} {v['title'][:70]} | {v['channel'][:24]}" + (f"  [{', '.join(v['flags'])}]" if v.get("flags") else "")
+              + ("  (your link)" if v.get("link") else ""))
     print("lyrics:")
     for l in r.get("lyrics", [])[:15]:
         du = int(l.get("duration") or 0)
@@ -540,6 +549,75 @@ def cmd_make(a):
     r = call("/api/jobs", {"yt": a.yt, "lrc_id": lid, "lyrics_source": a.source, "artist": a.artist, "title": a.title,
                            "video_title": a.video_title or "", "gpu": a.gpu, **({"auto_publish": True} if a.auto else {})})
     print(f"queued {r['id']}" + (" (published by itself if its video check passes, otherwise held with the reason)" if a.auto else ""))
+
+
+IMP_RE = re.compile(r"^imp-[0-9a-f]{10}$")
+
+
+def import_table(d):
+    """The review of an import, as text: one row per song (what was chosen, or why it was skipped)."""
+    head = f"playlist: {d['playlist'].get('title') or d['playlist']['id']}" if d.get("kind") == "playlist" else f"{d['total']} lines pasted"
+    print(f"import {d['id']} ({head}): {d['ready']} ready, {d['skipped']} skipped, {d['made']} made")
+    if d.get("left_out"):
+        print(f"  only the first 50 songs were taken; {d['left_out']} more left out")
+    if d.get("error"):
+        print(f"  {d['error']}")
+    for r in d.get("rows") or []:
+        box = "[x]" if r.get("can_make") and r.get("tick") else "[ ]"
+        st = "made" if r.get("job") else r["status"]
+        print(f"{r['n']:>3} {box} {st:<7} {r.get('artist') or '?'} - {r.get('title') or r.get('input') or '?'}")
+        v, l = r.get("video"), r.get("lyrics")
+        if v and v.get("id"):
+            du = int(v.get("duration") or 0)
+            print(f"        video  {v['id']} {du // 60}:{du % 60:02d} {(v.get('title') or '')[:60]} | {(v.get('channel') or '')[:24]}"
+                  + (" (the playlist's / your link)" if v.get("link") else "") + (f"  [{', '.join(v['flags'])}]" if v.get("flags") else ""))
+        if l:
+            du = int(l.get("duration") or 0)
+            print(f"        lyrics {l['source']}:{l['id']} {du // 60}:{du % 60:02d} {'timed' if l.get('timed') else 'plain'} "
+                  f"{l.get('lines')} lines, {l.get('lang')} | {(l.get('artist') or '')[:24]} - {(l.get('title') or '')[:36]}")
+        if r.get("job"):
+            print(f"        song   {r['job']}")
+        elif r.get("why"):
+            print(f"        why    {r['why']}")
+        for n in r.get("notes") or []:
+            print(f"        note   {n}")
+
+
+def cmd_import(a):
+    src = a.source
+    if IMP_RE.match(src):
+        iid = src
+    else:
+        if src == "-":
+            text = sys.stdin.read()
+        elif re.match(r"(?i)^(https?://|(www\.|m\.|music\.)?youtu)", src):
+            text = src
+        elif os.path.isfile(src):
+            text = open(src, encoding="utf-8").read()
+        else:
+            die("give a YouTube playlist link, a file with one song per line, or - (songs on stdin)")
+        iid = call("/api/imports", {"text": text})["id"]
+        print(f"import {iid}: looking the songs up (about 5-10 s a song)", file=sys.stderr)
+    while True:
+        d = call(f"/api/imports/{iid}")
+        if d["state"] not in ("listing", "looking"):
+            break
+        if sys.stderr.isatty():
+            print(f"\r  {d['total'] - d['waiting']} of {d['total']} looked up", end="", file=sys.stderr, flush=True)
+        time.sleep(3)
+    if sys.stderr.isatty():
+        print(file=sys.stderr)
+    import_table(d)
+    if not a.make:
+        if any(r.get("can_make") and r.get("tick") for r in d.get("rows") or []):
+            print(f"nothing made yet: check the picks, then ks import {iid} --make queues the [x] ones")
+        return
+    rows = [{"n": r["n"]} for r in d.get("rows") or [] if r.get("can_make") and r.get("tick")]
+    if not rows:
+        return print("nothing ready to make")
+    r = call(f"/api/imports/{iid}/make", {"rows": rows, "gpu": a.gpu})
+    for m in r["made"]:
+        print(f"queued {m['id']} (row {m['n']})")
 
 
 def lrclib(path):
@@ -1081,6 +1159,9 @@ def main():
     s.add_argument("--title", required=True); s.add_argument("--video-title"); s.add_argument("--gpu", default="auto", choices=["auto", "local", "remote"])
     s.add_argument("--auto", action="store_true", help="publish it when its video check passes (needs the publish scope)")
     s.set_defaults(f=cmd_make)
+    s = sub.add_parser("import"); s.add_argument("source", help="a YouTube playlist link, a file (one song per line), - for stdin, or an import id")
+    s.add_argument("--make", action="store_true", help="queue the ready ones (otherwise only show the review)")
+    s.add_argument("--gpu", default="auto", choices=["auto", "local", "remote"]); s.set_defaults(f=cmd_import)
     s = sub.add_parser("alt-lyrics"); s.add_argument("song"); s.add_argument("--artist"); s.add_argument("--title")
     s.set_defaults(f=cmd_alt_lyrics)
     s = sub.add_parser("change"); s.add_argument("song"); s.add_argument("--yt"); s.add_argument("--lyrics")
