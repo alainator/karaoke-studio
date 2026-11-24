@@ -75,16 +75,18 @@ def playlist_url(lst):
 
 def import_kind(text):
     """What an import's text is: ("playlist", list id) for one playlist link on its own (a watch link from inside a
-    playlist counts: the person pasted the playlist), else ("list", None)."""
+    playlist counts: the person pasted the playlist; not a watch link from a YouTube mix, list=RD…: autoplay adds
+    those), else ("list", None)."""
     lines = [l.strip() for l in (text or "").splitlines() if l.strip()]
     if len(lines) == 1:
         link = parse_link(lines[0])
-        if link and link["list"]:
+        if link and link["list"] and not (link["video"] and link["list"].startswith("RD")):   # (a YouTube mix: the song itself)
             return "playlist", link["list"]
     return "list", None
 
 
-NUMBERING = re.compile(r"^(?:#?\d{1,3}\s*[.):\]]\s*|#?\d{1,3}\s+[-–—]\s+|#\d{1,3}\s+|[-*•·]\s+)")
+NUMBERING = re.compile(r"^(?:#?\d{1,3}\s*[.):\]]\s*|#\d{1,3}\s+|[-*•·]\s+)")
+NUMBER_DASH = re.compile(r"^\d{1,3}\s+[-–—]\s+(?=.+\s[-–—]\s|\S+://|www\.|youtu)")   # "01 - Artist - Title" (not "311 - Title")
 
 
 def parse_list(text, cap=MAX_IMPORT):
@@ -96,7 +98,7 @@ def parse_list(text, cap=MAX_IMPORT):
         line = raw.strip()
         if not line:
             continue
-        line = NUMBERING.sub("", line, count=1).strip()
+        line = NUMBER_DASH.sub("", NUMBERING.sub("", line, count=1), count=1).strip()
         if not line:
             continue
         link = parse_link(line)

@@ -4360,6 +4360,10 @@ async def import_make(iid: str, req: Request):
             r.update(job=jid, artist=artist, title=title, status="made", tick=False)
             made.append({"n": r["n"], "id": jid})
             log.info("import %s: queued %s (row %s) | video %s | lyrics %s:%s", iid, jid, r["n"], v["id"], l["source"], l["id"])
+        sent = {x["n"] for x in rows}
+        for r in imp["rows"]:   # the person's untick stays (a reload shows what's left as they left it)
+            if r["n"] not in sent and not r.get("job"):
+                r["tick"] = False
         if made:
             imp["state"] = "made"
         imp_save(imp)

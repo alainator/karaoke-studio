@@ -40,20 +40,22 @@ class Links(unittest.TestCase):
         self.assertEqual(SL.import_kind("  https://www.youtube.com/playlist?list=PLabcdefghij12345 \n"), ("playlist", "PLabcdefghij12345"))
         self.assertEqual(SL.import_kind("https://www.youtube.com/watch?v=AbCdEfGhI_-&list=PLabcdefghij12345"), ("playlist", "PLabcdefghij12345"))
         self.assertEqual(SL.import_kind("https://youtu.be/AbCdEfGhI_-"), ("list", None))
+        self.assertEqual(SL.import_kind("https://www.youtube.com/watch?v=AbCdEfGhI_-&list=RDAbCdEfGhI_-&start_radio=1"), ("list", None))   # a mix
+        self.assertEqual(SL.import_kind("https://www.youtube.com/playlist?list=RDCLAKabcdefghij"), ("playlist", "RDCLAKabcdefghij"))
         self.assertEqual(SL.import_kind("A - B\nhttps://www.youtube.com/playlist?list=PLabcdefghij12345"), ("list", None))
 
 
 class Lists(unittest.TestCase):
     def test_numbering_blanks_links(self):
         text = ("1. Nova Lane - Paper Lanterns\n\n  02 - Iris Vale - Glass River\n3) Bram - Echo\n- Mika Sol - Neon Harbor\n"
-                "#5 Ada - Kawa\n99 Red Kites - Lowland\nhttps://youtu.be/AbCdEfGhI_-?t=3\n"
+                "#5 Ada - Kawa\n99 Red Kites - Lowland\n311 - Amber Lane\n04 - https://youtu.be/BbCdEfGhI_-\nhttps://youtu.be/AbCdEfGhI_-?t=3\n"
                 "https://www.youtube.com/playlist?list=PLabcdefghij12345\nhttps://vimeo.com/123\nLumen Coast\tTide Line\n")
         items, left = SL.parse_list(text)
         self.assertEqual(left, 0)
         self.assertEqual([i.get("q") for i in items if i["kind"] == "text"],
                          ["Nova Lane - Paper Lanterns", "Iris Vale - Glass River", "Bram - Echo", "Mika Sol - Neon Harbor",
-                          "Ada - Kawa", "99 Red Kites - Lowland", "Lumen Coast - Tide Line"])
-        self.assertEqual([i["id"] for i in items if i["kind"] == "video"], ["AbCdEfGhI_-"])
+                          "Ada - Kawa", "99 Red Kites - Lowland", "311 - Amber Lane", "Lumen Coast - Tide Line"])
+        self.assertEqual([i["id"] for i in items if i["kind"] == "video"], ["BbCdEfGhI_-", "AbCdEfGhI_-"])
         self.assertEqual([i["why"] for i in items if i["kind"] == "bad"],
                          ["a playlist link inside a list: import it on its own", "not a YouTube video link"])
         self.assertEqual(items[0]["input"], "1. Nova Lane - Paper Lanterns")   # what was pasted, for the review
@@ -74,12 +76,12 @@ class Names(unittest.TestCase):
         (("Bram ft. Ada Moon - Echo (Official Video)", "Bram"), ("Bram & Ada Moon", "Echo", "title")),
         (("Echo [with Ada Moon & Kit Rowe] (Official Audio)", "BramVEVO"), ("Bram & Ada Moon & Kit Rowe", "Echo", "channel")),
         (("STELLAR ARC 'Night Drive' M/V", "Some Labels"), ("Stellar Arc", "Night Drive", "title")),   # (SHOUTED: as the Make page)
-        (("TWINE \"Feel Fine\" M/V", "Some Labels"), ("TWINE", "Feel Fine", "title")),
+        (("TWINE \"Fern Lights\" M/V", "Some Labels"), ("TWINE", "Fern Lights", "title")),
         (("STELLAR ARC (스텔라아크) \"Moon Gate\" Official MV", "Some Entertainment"), ("Stellar Arc", "Moon Gate", "title")),
-        (("[MV] HANA(하나) _ Blue Hour", "Some Music"), ("HANA", "Blue Hour", "title")),
+        (("[MV] HANA(하나) _ Blue Lantern Hour", "Some Music"), ("HANA", "Blue Lantern Hour", "title")),
         (("June Arbor『銅の月』Music Video", "June Arbor"), ("June Arbor", "銅の月", "title")),
         (("「夜の窓」Mika Sol", "Mika Sol Official"), ("Mika Sol", "夜の窓", "title")),
-        (("Mika Sol \"神메뉴(God's Plan B)\" M/V", "Some Records"), ("Mika Sol", "God's Plan B (神메뉴)", "title")),
+        (("Mika Sol \"神메뉴(Paper Crane Plan)\" M/V", "Some Records"), ("Mika Sol", "Paper Crane Plan (神메뉴)", "title")),
         (("Nova Lane - Paper Lanterns (Lyric Video)", "Nova Lane"), ("Nova Lane", "Paper Lanterns", "title")),
         (("Paper Lanterns", "Nova Lane - Topic"), ("Nova Lane", "Paper Lanterns", "channel")),
         (("Paper Lanterns (Official Video)", "NovaLaneVEVO"), ("Nova Lane", "Paper Lanterns", "channel")),
@@ -91,7 +93,7 @@ class Names(unittest.TestCase):
         (("Red Kites - Lowland (Kit's Version)", "x"), ("Red Kites", "Lowland (Kit's Version)", "title")),
         (("Lumen x Coast - Tide Line", "x"), ("Lumen & Coast", "Tide Line", "title")),
         (("THE QUIET ARCADE - TWO SMALL RIVERS (Official Video)", "x"), ("The Quiet Arcade", "Two Small Rivers", "title")),
-        (("Guns N' Rosettes - Sweet Child O' Line (Official Music Video)", "x"), ("Guns N' Rosettes", "Sweet Child O' Line", "title")),
+        (("Rock N' Rollers - Callin' O' The Sea (Official Music Video)", "x"), ("Rock N' Rollers", "Callin' O' The Sea", "title")),
     ]
 
     def test_shapes(self):
@@ -103,12 +105,12 @@ class Names(unittest.TestCase):
         # the name is read; the video's flag comes from the search's BAD_WORDS
         self.assertEqual(A.video_flags("Nova Lane - Paper Lanterns (Lyric Video)"), ["lyric"])
         self.assertEqual(A.video_flags("Nova Lane - Paper Lanterns (Official Video)"), [])
-        self.assertEqual(A.video_flags("Red Kites - Wanted Dead Or Alive (Official Video)"), [])     # "live" isn't in "Alive"
+        self.assertEqual(A.video_flags("Red Kites - Alive in Amber (Official Video)"), [])     # "live" isn't in "Alive"
         self.assertEqual(A.video_flags("Red Kites - Discover Me (Live Covers)"), ["live", "cover"])
 
     def test_channels(self):
         self.assertEqual(SL.channel_artist("Universal Music Group"), "")
-        self.assertEqual(SL.channel_artist("Whitesnake TV"), "Whitesnake")
+        self.assertEqual(SL.channel_artist("Red Kites TV"), "Red Kites")
         self.assertEqual(SL.channel_artist("Nova Lane - Topic"), "Nova Lane")
         self.assertEqual(SL.channel_artist(""), "")
 
@@ -402,6 +404,10 @@ class Lookup(Base):
         self.assertEqual(jcall(A.app, "POST", f"/api/imports/{b['id']}/make", {"rows": [{"n": 1}]})[0], 409)
 
 
+def made_tick(r, n):
+    return next(x for x in r["import"]["rows"] if x["n"] == n)["tick"]
+
+
 class MakeTicked(Base):
     def test_only_ticked_rows_in_order_with_the_tag_once(self):
         self.song("Nova Lane", "Paper Lanterns", "NOVAvideo01", lyrics_id=601)
@@ -420,6 +426,7 @@ class MakeTicked(Base):
         self.assertEqual(jobs[1]["title"], "Paper Lanterns (Remix Night)")   # the person's edit
         self.assertEqual({(j["made_by"]["by"], j["made_by"]["kind"], j["gpu_pref"], j["status"]) for j in jobs}, {("Mia", "person", "auto", "queued")})
         self.assertLessEqual(jobs[0]["created"], jobs[1]["created"])
+        self.assertFalse(made_tick(r, 4) or made_tick(r, 3))   # rows not sent stay unticked (a reload shows them so)
         self.assertFalse(any(j.get("auto_publish") or j.get("automake") for j in jobs))
         made = {x["n"]: x for x in r["import"]["rows"]}
         self.assertEqual((made[1]["status"], made[2]["job"], made[3]["status"]), ("made", r["made"][1]["id"], "ready"))
