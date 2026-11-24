@@ -103,6 +103,8 @@ class Names(unittest.TestCase):
         # the name is read; the video's flag comes from the search's BAD_WORDS
         self.assertEqual(A.video_flags("Nova Lane - Paper Lanterns (Lyric Video)"), ["lyric"])
         self.assertEqual(A.video_flags("Nova Lane - Paper Lanterns (Official Video)"), [])
+        self.assertEqual(A.video_flags("Red Kites - Wanted Dead Or Alive (Official Video)"), [])     # "live" isn't in "Alive"
+        self.assertEqual(A.video_flags("Red Kites - Discover Me (Live Covers)"), ["live", "cover"])
 
     def test_channels(self):
         self.assertEqual(SL.channel_artist("Universal Music Group"), "")
@@ -308,7 +310,7 @@ class Lookup(Base):
         studio_song("Red Kites", "Lowland", status="queued")
         self.song("Mika Sol", "Neon Harbor", "MIKAvideo01", lyrics_id=605, flags_title="Mika Sol - Neon Harbor (Lyric Video)",
                   channel="Some Lyrics Channel")
-        self.song("Ada Moon", "Kawa", "ADAvideo001", lyrics_id=606)
+        self.song("Ada Moon", "Kawa", "ADAvideo001", lyrics_id=606, flags_title="Ada Moon - Kawa (2001 Version) (Official Video)")
         self.net.lrc_down.add("Ada Moon Kawa")
         self.net.videos["JUNEarbor01"] = yt("JUNEarbor01", "June Arbor - Copper Moon (Official Video)", "June Arbor", 230)
         self.net.lrc.append(lrc(607, "June Arbor", "Copper Moon", 231))
@@ -330,6 +332,7 @@ class Lookup(Base):
         self.assertIn("looks like a lyric video", why(6))
         self.assertEqual(why(7), "the same song as row 1")
         self.assertIn("LRCLIB didn't answer", why(8))
+        self.assertIn("2001 Version", rows[8]["notes"][0])   # a re-recording? said, not skipped
         self.assertEqual((rows[9]["status"], rows[9]["video"]["id"], rows[9]["artist"], rows[9]["title"]),
                          ("ready", "JUNEarbor01", "June Arbor", "Copper Moon"))
         self.assertIn("couldn't read that video", why(10))

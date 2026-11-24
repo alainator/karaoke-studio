@@ -238,9 +238,10 @@ def yt_json(args, timeout=60):
 
 
 def video_flags(title):
-    """The BAD_WORDS in a video's title ("lyric", "live", "cover"...), without the ones inside another ("dance cover")."""
+    """The BAD_WORDS in a video's title ("lyric", "live", "cover"...), without the ones inside another ("dance cover").
+    A word counts from its start, so "lyrics" and "covers" do and "Alive", "Discover" don't."""
     nt_ = norm(title)
-    bad = [w for w in BAD_WORDS if w in nt_]
+    bad = [w for w in BAD_WORDS if re.search(r"\b" + re.escape(w), nt_)]   # from a word's start: "live" isn't "Alive"
     return [w for w in bad if not any(w != o and w in o for o in bad)]
 
 
@@ -4134,6 +4135,9 @@ def import_row(row, seen):
            "video": {k: v.get(k) for k in ("id", "title", "channel", "duration", "flags", "thumb", "official_channel", "link")} if v else None,
            "lyrics": {"source": l["source"], "id": l["id"], "artist": l.get("artist"), "title": l.get("title"), "lines": l.get("lines"),
                       "duration": l.get("duration"), "timed": bool(l.get("timed")), "lang": lyr_lang(l)} if l else None}
+    other = re.search(r"\b((?:19|20)\d\d\s+version|re-?recorded|new version|short ver(?:sion)?|tv (?:size|ver(?:sion)?))\b", (v or {}).get("title") or "", re.I)
+    if other:   # (the skill's rule: the original, not a re-recording or a short version)
+        notes.append(f"the video's title says \u201c{other.group(1)}\u201d: another version of the song?")
     if v and l and l.get("duration") and v.get("duration") and l["duration"] > v["duration"] + 12:
         notes.append(f"the lyrics run {round(l['duration'] - v['duration'])} s longer than the video (a shortened video?)")
     kind, why = p["kind"], p["why"]

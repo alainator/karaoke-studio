@@ -202,6 +202,8 @@ nav button.on .nbadge { background: var(--on-accent); color: var(--accent); }
 .improw .imptick { width: 20px; height: 20px; margin-top: 4px; flex: none; }
 .improw input[type=text] { padding: 6px 9px; font-size: 15px; font-weight: 700; flex: 1 1 150px; }
 .improw.off { opacity: .72; }
+.improw .impbody { flex: 1; min-width: 0; }
+@media (max-width: 600px) { .improw { flex-wrap: wrap; } .improw .impbody { flex: 1 1 100%; order: 3; } .improw [data-change] { margin-left: auto; } }
 #imptext { width: 100%; min-height: 160px; border-radius: var(--r-s); padding: 10px; font-size: 15px; }
 .impbar { position: sticky; bottom: 0; margin-top: 14px; padding: 12px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .appbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 10px}.appbar:empty{display:none}
@@ -665,7 +667,7 @@ function impRow(r) {
   return `<div class="card improw ${tick && r.can_make ? "" : "off"}" data-n="${r.n}">
     <input type="checkbox" class="imptick" data-n="${r.n}" ${tick && r.can_make ? "checked" : ""} ${r.can_make ? "" : "disabled"} aria-label="Make row ${r.n}">
     ${v && v.id ? `<img src="${esc(v.thumb || `https://i.ytimg.com/vi/${v.id}/mqdefault.jpg`)}" alt="" loading="lazy">` : ""}
-    <div style="flex:1;min-width:0">
+    <div class="impbody">
       ${busy ? `<div class="t">${r.n}. ${esc(r.input || "")}</div>` : `<div class="row"><span class="hint">${r.n}.</span><input type="text" class="impa" data-n="${r.n}" value="${esc(e.artist != null ? e.artist : r.artist || "")}" placeholder="Artist" ${r.job ? "disabled" : ""}><input type="text" class="impt" data-n="${r.n}" value="${esc(e.title != null ? e.title : r.title || "")}" placeholder="Title" ${r.job ? "disabled" : ""}></div>`}
       ${v ? `<div class="m">🎬 ${esc(v.title)} · ${esc(v.channel || "")}${v.duration ? " · " + fmt(v.duration) : ""} ${v.link ? '<span class="tag">your pick</span>' : v.official_channel ? '<span class="tag good">artist channel</span>' : ""}${(v.flags || []).map(f => `<span class="tag warn">${esc(f)}</span>`).join("")}${v.id ? `<a class="tag" href="https://www.youtube.com/watch?v=${esc(v.id)}" target="_blank" rel="noopener">watch ↗</a>` : ""}</div>` : ""}
       ${l ? `<div class="m">📝 ${esc(l.source === "karamoe" ? "kara.moe" : "LRCLIB")}: ${esc(l.artist || "")} – ${esc(l.title || "")} · ${l.timed ? `timed, ${l.lines} lines` : "not timed"} · ${esc(l.lang)}${l.duration ? " · " + fmt(l.duration) : ""}</div>` : ""}
@@ -702,7 +704,7 @@ function renderImport() {
     const r = rows.find(x => x.n === +b.dataset.change), e = IMP.edits[r.n] || {};
     PENDING_IMPORT = {id: d.id, n: r.n, artist: e.artist != null ? e.artist : r.artist || "", title: e.title != null ? e.title : r.title || ""};
     location.hash = "make";
-    $("#q").value = r.video && r.video.id && r.video.link ? `https://www.youtube.com/watch?v=${r.video.id}` : (PENDING_IMPORT.artist ? `${PENDING_IMPORT.artist} - ${PENDING_IMPORT.title}` : (r.q || r.input || ""));
+    $("#q").value = r.video && r.video.id ? `https://www.youtube.com/watch?v=${r.video.id}` : (PENDING_IMPORT.artist ? `${PENDING_IMPORT.artist} - ${PENDING_IMPORT.title}` : (r.q || r.input || ""));
     $("#sform").requestSubmit();
   });
   $("#impmake").onclick = async () => {
