@@ -526,13 +526,14 @@ def similar(a, b):
     return difflib.SequenceMatcher(None, a, b, autojunk=False).ratio() + (0.2 if first else 0.0)
 
 
-def match(A, X):
+def match(A, X, oa=0.0, ox=0.0):
     """For each line A[i], its line in X, or None when it has none (deleted, or joined into a neighbour); X's lines
     no A line matched were added (or split off). Counts may differ. In turn: runs of lines with the same words in the
     same order; a line with the same words nearby (saving keeps lines in time order, so a moved line can pass a
     neighbour); the most alike line nearby (retyped words; of a split line the part with its first word, which carries
     its start; of a joined pair the first); then, between two matched lines, the rest in order when as many are left
-    on both sides."""
+    on both sides. Last, lines with the same words (a chorus) go to the copy nearest in time (oa, ox: the offsets,
+    for video time): deleting or adding one copy mustn't pair the others with the wrong one."""
     import difflib
     ta, tx = [norm(text(l)) for l in A], [norm(text(l)) for l in X]
     m, used = [None] * len(A), set()
@@ -578,6 +579,22 @@ def match(A, X):
             for n, j in enumerate(free):
                 take(i + n, j)
         i = k
+    t_a = lambda i: start(A[i]) + oa
+    t_x = lambda j: start(X[j]) + ox
+    for _ in range(2):
+        for u in range(len(A)):   # an A line left over, its twin nearby matched to a copy nearer to u's time: u's
+            if m[u] is not None:
+                continue
+            for i in range(max(0, u - NEAR), min(len(A), u + NEAR + 1)):
+                if m[i] is not None and ta[i] == ta[u] and abs(t_x(m[i]) - t_a(u)) < abs(t_x(m[i]) - t_a(i)):
+                    m[u], m[i] = m[i], None
+                    break
+        for i in range(len(A)):   # a matched line, an unmatched copy of its words nearer to its time: that one
+            if m[i] is None:
+                continue
+            for j in range(max(0, m[i] - NEAR), min(len(X), m[i] + NEAR + 1)):
+                if j not in used and tx[j] == ta[i] and abs(t_x(j) - t_a(i)) < abs(t_x(m[i]) - t_a(i)):
+                    used.discard(m[i]); used.add(j); m[i] = j
     return m
 
 
@@ -600,7 +617,7 @@ def score_song(truth, now_doc, now_offset):
     r = {"id": truth["id"], "lang": truth.get("lang"), "lines": len(P)}
     c = dict.fromkeys(COUNTS, 0)
     c["lines"] = len(P)
-    mp, mn = match(A, P), match(A, N)
+    mp, mn = match(A, P, ao, po), match(A, N, ao, now_offset)
     pnum = {id(l): k + 1 for k, l in enumerate(truth["person"]["lines"])}   # line numbers as the person's version has them
     anum = {id(l): k + 1 for k, l in enumerate(truth["auto"]["lines"])}
     c["added"] = len(N) - sum(1 for j in mn if j is not None)

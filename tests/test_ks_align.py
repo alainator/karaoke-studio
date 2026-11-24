@@ -273,6 +273,31 @@ class LookRowsTests(unittest.TestCase):
         finally:
             A.pitchmod.frames = real
 
+    def test_looks_at_once_wait_for_one_tracking(self):
+        """An agent's looks at the same time on a song with no pitch file: one tracks it, the others wait for it, and
+        every picture has the melody row."""
+        real, made = A.pitchmod.frames, []
+        jid_ok, d_ok = self.song()
+        jid, d = self.song(pitch=False)
+
+        def fake(job_dir, timeout=900, log=None, device=None):
+            made.append(job_dir)
+            time.sleep(0.3)
+            import numpy as np
+            st = os.stat(f"{job_dir}/vocals.m4a")
+            z = dict(np.load(f"{d_ok}/pitch.f0.npz"))
+            z["stamp"] = np.array(f"{st.st_size}:{int(st.st_mtime)}")
+            np.savez_compressed(f"{job_dir}/pitch.f0.npz", **z)
+        A.pitchmod.frames = fake
+        got = []
+        try:
+            ts = [threading.Thread(target=lambda: got.append(A._look_melody(jid))) for _ in range(3)]
+            [t.start() for t in ts]; [t.join() for t in ts]
+        finally:
+            A.pitchmod.frames = real
+        self.assertEqual(len(made), 1)
+        self.assertEqual(sorted(got), ["made", "ok", "ok"])
+
     def test_busy_aligner_still_draws_the_picture(self):
         jid, _ = self.song()
         A.slots["local"] = "making"

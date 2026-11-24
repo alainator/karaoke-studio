@@ -245,6 +245,17 @@ class ScoreTests(unittest.TestCase):
         self.assertEqual(rows[5]["neighbour_moved"], False)
         self.assertEqual(r["kept_lines"][0]["line"], 3)
 
+    def test_deleting_or_adding_a_chorus_copy_keeps_the_others_paired_by_time(self):
+        ch = ["oh", "la"]
+        auto = [line(10, ["a"]), line(14, ch), line(17, ch), line(30, ["d"])]
+        now = [line(10, ["a"]), line(17, ch), line(30, ["d"])]               # the agent deleted the FIRST copy
+        r = ab.score_song(self.truth(auto, auto), {"lines": now}, 0.0)
+        self.assertEqual((r["kept"], r["kept_broken"], r["kept_deleted"], r["deleted"]), (4, 0, 1, 1))
+        self.assertEqual(r["kept_lines"][0]["auto_line"], 2)
+        now = [line(10, ["a"]), line(12, ch), line(14, ch), line(17, ch), line(30, ["d"])]   # added a copy before
+        r = ab.score_song(self.truth(auto, auto), {"lines": now}, 0.0)
+        self.assertEqual((r["kept_broken"], r["added"], r["deleted"]), (0, 1, 0))
+
     def test_neighbour_of_a_person_move(self):
         auto = [line(10, ["a"]), line(20, ["b"]), line(30, ["c"])]
         person = [line(10, ["a"]), line(19, ["b"]), line(30, ["c"])]

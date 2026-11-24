@@ -5588,9 +5588,11 @@ def _look_melody(jid):
         return "ok"
     if not os.path.exists(job_path(jid, "vocals.m4a")):
         return "no vocals"
-    if not LOOK_PITCH_LOCK.acquire(blocking=False):
+    if not LOOK_PITCH_LOCK.acquire(timeout=300):   # another look is tracking (maybe this song): wait for it
         return "busy"
     try:
+        if _ks().melody(d) is not None:
+            return "ok"
         dev = align_device()
         if dev is None:
             return "busy"
