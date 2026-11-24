@@ -361,8 +361,10 @@ def cmd_start(a):
            "PIKARAOKE_URL": "", "PIKARAOKE_DB": "", "NODE_BIN": ""}
     cmd = ["docker", "run", "-d", "--name", name, "--label", f"{NAME}=1", "--user", f"{os.getuid()}:{os.getgid()}",
            "-p", f"127.0.0.1:{a.port}:{a.port}", "-w", "/studio",
-           "-v", f"{HERE}:/studio:ro", "-v", "/dev/null:/studio/.env:ro",   # this code, never the folder's .env
+           "-v", f"{HERE}:/studio:ro",
            "-v", f"{out}:{out}", "-v", f"{cache}:{cache}" + (":ro" if a.cache else "")]
+    if os.path.exists(os.path.join(HERE, ".env")):   # this code, never the folder's settings (they name real folders)
+        cmd += ["-v", "/dev/null:/studio/.env:ro"]
     if not a.no_gpu:
         cmd += ["--gpus", "all"]
     for k, v in env.items():

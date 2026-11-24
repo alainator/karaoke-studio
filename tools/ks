@@ -548,10 +548,6 @@ def cmd_look(a):
         print("(no aligner row: " + ("the Studio is busy making a song, try again in a moment" if al == "busy" else al or "no answer") + ")")
 
 
-def conf_word(c):
-    return "?" if c is None else "low" if c < 0.2 else "medium" if c < 0.5 else "high"
-
-
 def align_text(r):
     """ks align's answer as text (no lyrics beyond the song's own words, which ks show prints too)."""
     out = [f"aligned {fmt(r['window'][0])}-{fmt(r['window'][1])} together ({r['device']}, {r['seconds']} s):"]
@@ -562,7 +558,7 @@ def align_text(r):
             continue
         d = x["delta"]
         side = "same as now" if abs(d) < 0.1 else f"{abs(d):.1f} s {'earlier' if d < 0 else 'later'} than now"
-        out.append(f"{x['line']:3} aligner {fmt(x['at'])}, {side}, confidence {x['conf']:.2f} ({conf_word(x['conf'])}){tag}")
+        out.append(f"{x['line']:3} aligner {fmt(x['at'])}, {side}, confidence {x['conf']:.2f}{tag}")
         out.append("      " + "  ".join(f"{w['w']}@{fmt(w['at']) if w['at'] is not None else '-'}"
                                         f"({w['conf']:.2f})" if w['conf'] is not None else f"{w['w']}@-" for w in x["words"]))
     t = next((x for x in r["lines"] if x["line"] - 1 == r.get("target")), None)
@@ -574,7 +570,7 @@ def align_text(r):
         else:
             out.extend(boundary_text(t, p))
     return "\n".join(out + ["(evidence, not a fix: on lines people fixed this was right about 1 in 4 times, and it also "
-                             "moves about 1 in 10 good lines; act only when the melody row or the heard words agree)"])
+                             "moves about 1 in 10 good lines, whatever its confidence; act only when the melody row or the heard words agree)"])
 
 
 def boundary_text(t, p):

@@ -5580,7 +5580,7 @@ ALIGN_GPU_MIB = wordscore.GPU_MIB
 
 def align_device():
     """Where an agent's align may run now: never while a song is being made here or waits for the card (None = busy);
-    the GPU when it has room, else the CPU (slower: about 10 s more)."""
+    the GPU when it has room, else the CPU (measured: about 3 s for a line either way, most of it starting the process)."""
     if slots["local"] is not None or any(j["status"] in ("queued", "running") for j in job_index()):
         return None
     try:
