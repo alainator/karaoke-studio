@@ -200,11 +200,58 @@ class ScoreTests(unittest.TestCase):
         r = ab.score_song(self.truth(auto, person, 0.5 - 1.0), {"lines": auto}, -1.0)   # agent: offset -1 s
         self.assertEqual((r["moved"], r["fixed"]), (2, 2))
 
-    def test_line_count_change_is_not_scored(self):
-        auto = [line(10, ["a"]), line(20, ["b"])]
-        r = ab.score_song(self.truth(auto, auto), {"lines": auto[:1]}, 0.0)
-        self.assertFalse(r["scored"])
-        self.assertIn("lead lines", r["why"])
+    def test_deleted_and_added_lines_are_reported_not_skipped(self):
+        auto = [line(t, [w]) for t, w in ((10, "a"), (20, "b"), (30, "c"), (40, "d"))]
+        person = [line(t, [w]) for t, w in ((10, "a"), (18.5, "b"), (30, "c"), (40, "d"))]
+        now = [line(10, ["a"]), line(30, ["c"]), line(35, ["new", "words"]), line(40, ["d"])]   # b deleted, a line added
+        r = ab.score_song(self.truth(auto, person), {"lines": now}, 0.0)
+        self.assertTrue(r["scored"])
+        self.assertEqual((r["added"], r["deleted"]), (1, 1))
+        self.assertEqual((r["moved"], r["moved_deleted"], r["fixed"]), (1, 1, 0))   # still counted: deleting isn't fixing
+        self.assertEqual((r["kept"], r["kept_broken"], r["kept_deleted"]), (3, 0, 0))
+        self.assertEqual(r["moved_lines"][0]["outcome"], "deleted")
+
+    def test_split_and_joined_lines(self):
+        auto = [line(10, ["a", "b", "c", "d"]), line(20, ["e", "f"]), line(22, ["g", "h"]), line(30, ["i"])]
+        person = [line(9.0, ["a", "b", "c", "d"]), line(20, ["e", "f"]), line(22, ["g", "h"]), line(30, ["i"])]
+        now = [line(9.0, ["a", "b"]), line(11.0, ["c", "d"]),               # split: the part with its first word
+               line(19.5, ["e", "f", "g", "h"]), line(30, ["i"])]           # joined: the first of the two
+        r = ab.score_song(self.truth(auto, person), {"lines": now}, 0.0)
+        self.assertEqual((r["moved"], r["fixed"]), (1, 1))
+        self.assertEqual((r["added"], r["deleted"]), (1, 1))
+        self.assertEqual((r["kept"], r["kept_broken"], r["kept_earlier"], r["kept_deleted"]), (3, 1, 1, 1))
+        self.assertEqual((r["words_changed"]), 2)
+
+    def test_retyped_line_is_still_matched(self):
+        auto = [line(10, ["a"]), line(20, ["hello", "there"]), line(30, ["c"])]
+        person = [line(10, ["a"]), line(19, ["hello", "dear"]), line(30, ["c"])]
+        now = [line(10, ["a"]), line(19.1, ["something", "else"]), line(30, ["c"])]   # nothing alike: the gap, in order
+        r = ab.score_song(self.truth(auto, person), {"lines": now}, 0.0)
+        self.assertEqual((r["moved"], r["fixed"], r["added"], r["deleted"]), (1, 1, 0, 0))
+
+    def test_kept_lines_moved_off_by_direction_size_and_repeat_of_a_fix(self):
+        chorus = ["oh", "la", "la"]
+        auto = [line(10, chorus), line(20, ["x"]), line(30, ["y"]), line(40, chorus), line(50, ["z"]), line(60, chorus)]
+        person = [line(9.0, chorus)] + auto[1:]                             # the person fixed the first chorus only
+        now = [line(9.0, chorus), line(20, ["x"]), line(32.5, ["y"]), line(38.9, chorus), line(49.5, ["z"]),
+               line(57.0, chorus)]
+        r = ab.score_song(self.truth(auto, person), {"lines": now}, 0.0)
+        self.assertEqual((r["kept"], r["kept_broken"], r["kept_earlier"], r["kept_later"]), (5, 4, 3, 1))
+        self.assertEqual((r["kept_0.3-1 s"], r["kept_1-2 s"], r["kept_>2 s"]), (1, 1, 2))
+        self.assertEqual(r["kept_repeat_fix"], 1)                           # 40: -1.1 like the person's -1.0; 60: -3 is too far
+        rows = {x["auto_line"]: x for x in r["kept_lines"]}
+        self.assertTrue(rows[4]["repeat_of_fix"]); self.assertFalse(rows[6]["repeat_of_fix"])
+        self.assertEqual((rows[3]["direction"], rows[3]["delta"]), ("later", 2.5))
+        self.assertEqual(rows[5]["neighbour_moved"], False)
+        self.assertEqual(r["kept_lines"][0]["line"], 3)
+
+    def test_neighbour_of_a_person_move(self):
+        auto = [line(10, ["a"]), line(20, ["b"]), line(30, ["c"])]
+        person = [line(10, ["a"]), line(19, ["b"]), line(30, ["c"])]
+        now = [line(9.4, ["a"]), line(19, ["b"]), line(30, ["c"])]
+        r = ab.score_song(self.truth(auto, person), {"lines": now}, 0.0)
+        self.assertEqual(r["kept_lines"][0]["neighbour_moved"], True)
+        self.assertEqual(r["kept_lines"][0]["size"], "0.3-1 s")
 
     def test_backing_lines_are_not_matched(self):
         auto = [line(10, ["a"]), line(12, ["b"], backing=True), line(20, ["c"])]
@@ -212,6 +259,43 @@ class ScoreTests(unittest.TestCase):
         r = ab.score_song(self.truth(auto, person), {"lines": auto}, 0.0)
         self.assertTrue(r["scored"])
         self.assertEqual((r["kept"], r["moved"]), (2, 0))
+
+
+class StopTests(unittest.TestCase):
+    """stop removes only OUT's own container: the one start recorded, or any labelled with OUT; never port 5680 by
+    default, never another OUT's container on the same port."""
+    def setUp(self):
+        self.out = tempfile.mkdtemp(prefix="bench-stop-")
+        self.real = ab.subprocess.run
+        self.labelled = {}
+
+        def fake(cmd, **kw):
+            import types
+            if cmd[:3] == ["docker", "ps", "-a"]:
+                want = cmd[cmd.index("--filter") + 1].split("=", 1)[1]
+                names = [n for n, o in self.labelled.items() if f"{ab.OUT_LABEL}={o}" == want]
+                return types.SimpleNamespace(returncode=0, stdout="\n".join(names), stderr="")
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+        ab.subprocess.run = fake
+
+    def tearDown(self):
+        ab.subprocess.run = self.real
+        shutil.rmtree(self.out, ignore_errors=True)
+
+    def test_nothing_recorded_removes_nothing(self):
+        self.labelled = {"ks-agent-bench-5680": "/somewhere/else"}
+        self.assertEqual(ab.stop_targets(self.out), [])
+
+    def test_the_recorded_container(self):
+        self.labelled = {"ks-agent-bench-5681": self.out, "ks-agent-bench-5680": "/somewhere/else"}
+        write(os.path.join(self.out, ab.SANDBOX), {"container": "ks-agent-bench-5681", "port": 5681})
+        self.assertEqual(ab.stop_targets(self.out), ["ks-agent-bench-5681"])
+
+    def test_a_port_of_another_sandbox_is_left_alone(self):
+        self.labelled = {"ks-agent-bench-5680": "/somewhere/else"}
+        self.assertEqual(ab.stop_targets(self.out, 5680), [])
+        self.labelled = {"ks-agent-bench-5682": self.out}
+        self.assertEqual(ab.stop_targets(self.out), ["ks-agent-bench-5682"])   # labelled with OUT, nothing recorded
 
 
 if __name__ == "__main__":

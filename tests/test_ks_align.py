@@ -230,11 +230,48 @@ class LookRowsTests(unittest.TestCase):
         self.assertEqual(h["x-align"], "ok")
 
     def test_no_melody_without_an_up_to_date_pitch_file(self):
-        for kw in ({"pitch": False}, {"stale": True}):
-            jid, _ = self.song(**kw)
+        real = A.pitchmod.frames
+        A.pitchmod.frames = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no CREPE here"))
+        try:
+            for kw in ({"pitch": False}, {"stale": True}):
+                jid, _ = self.song(**kw)
+                st, h, _ = _asgi.call(A.app, "GET", f"/api/jobs/{jid}/agent/look?t0=12&t1=20&line=4")
+                self.assertEqual(st, 200)
+                self.assertEqual(h["x-rows"], "spectrogram,lines,heard")
+                self.assertEqual(h["x-melody"], "failed")
+        finally:
+            A.pitchmod.frames = real
+
+    def test_a_missing_pitch_file_is_tracked_for_the_look(self):
+        """Songs whose pitch file was never made (published before them, or the publish queue lost to a restart): the
+        look tracks it (and caches it), on the GPU when it has room; never while a song is being made."""
+        real, made = A.pitchmod.frames, []
+        jid_ok, d_ok = self.song()                                  # a song with one: its file, as the fake writes it
+
+        def fake(job_dir, timeout=900, log=None, device=None):
+            made.append((os.path.basename(job_dir), device))
+            st = os.stat(f"{job_dir}/vocals.m4a")
+            import numpy as np
+            z = dict(np.load(f"{d_ok}/pitch.f0.npz"))
+            z["stamp"] = np.array(f"{st.st_size}:{int(st.st_mtime)}")
+            np.savez_compressed(f"{job_dir}/pitch.f0.npz", **z)
+        A.pitchmod.frames = fake
+        try:
+            for kw in ({"pitch": False}, {"stale": True}):
+                jid, _ = self.song(**kw)
+                st, h, _ = _asgi.call(A.app, "GET", f"/api/jobs/{jid}/agent/look?t0=12&t1=20&line=4")
+                self.assertEqual((st, h["x-rows"], h["x-melody"]), (200, "spectrogram,melody,lines,heard", "made"))
+                self.assertEqual(made[-1], (jid, "cuda"))
+                st, h, _ = _asgi.call(A.app, "GET", f"/api/jobs/{jid}/agent/look?t0=12&t1=20&line=4")
+                self.assertEqual(h["x-melody"], "ok")                 # cached: tracked once
+            self.assertEqual(len(made), 2)
+            jid, _ = self.song(pitch=False)
+            A.slots["local"] = "making"
             st, h, _ = _asgi.call(A.app, "GET", f"/api/jobs/{jid}/agent/look?t0=12&t1=20&line=4")
-            self.assertEqual(st, 200)
-            self.assertEqual(h["x-rows"], "spectrogram,lines,heard")
+            self.assertEqual((st, h["x-rows"], h["x-melody"]), (200, "spectrogram,lines,heard", "busy"))
+            self.assertEqual(len(made), 2)
+        finally:
+            A.pitchmod.frames = real
 
     def test_busy_aligner_still_draws_the_picture(self):
         jid, _ = self.song()

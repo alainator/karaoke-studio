@@ -11,7 +11,7 @@ then each song is compared line by line with the person's version.
     #   the fixing agent gets exactly two variables (and no access to OUT itself):
     #   STUDIO_URL=http://127.0.0.1:5680 STUDIO_AGENT_KEY_FILE=OUT/agent.key ks list --fix
     python3 deploy/agent-bench.py score OUT [--json]
-    python3 deploy/agent-bench.py stop OUT
+    python3 deploy/agent-bench.py stop OUT [--port P]
 
 prepare: --jobs is the Studio's jobs folder (default: KARAOKE_JOBS, as the Studio's config reads it). It is only
 read: every file is copied (never linked), so nothing done in the sandbox can reach it. OUT/jobs/<id>/ gets the
@@ -34,13 +34,25 @@ published there anyway: the key can't), no GPU helper, no Ollama, no album looku
 GPU is the machine's: start the sandbox (and run an agent's ks align / look --align) only while the real Studio
 isn't making songs, since the sandbox can't see that. The key allows read, edit and notes only (not clear_marks,
 publish, remake, delete or make); it's written to OUT/agent.key (mode 600) and never printed. --allow-ok also allows
-clear_marks (ks ok).
+clear_marks (ks ok). The container is labelled with OUT and recorded in OUT/sandbox.json; a port whose container
+belongs to another OUT is refused.
 
-score: per song and in total, against the person's version (lines matched by position among lead lines, as in the
-measurements: a song whose lead-line count changed in the sandbox is listed as not scored):
+stop: removes OUT's own container (the one start recorded, or any labelled with OUT; with --port only that port's,
+and only if it is OUT's). Never another sandbox's.
+
+score: per song and in total, against the person's version. Lead lines are matched by their words near their place
+(match(): same words in order, the same words a few lines away, the most alike text nearby, then the rest in order
+between matched lines), so lines the agent added, deleted, split or joined are counted as such and the rest of the song
+is still scored:
   moved lines (the person moved the start more than 0.25 s): fixed (now within 0.3 s of the person's start),
-  improved (closer by more than 0.1 s), made worse (further by more than 0.1 s), untouched, changed (no closer);
-  kept lines (the person left them within 0.05 s): broken (now more than 0.3 s from the person's start);
+  improved (closer by more than 0.1 s), made worse (further by more than 0.1 s), untouched, changed (no closer),
+  deleted (still counted as moved lines: deleting one isn't fixing it);
+  kept lines (the person left them within 0.05 s): moved off (now more than 0.3 s from the person's start), by
+  direction (earlier / later) and size (0.3-1, 1-2, over 2 s), and of those "probably good": moved EARLIER by 0.3-2 s
+  with the same words as a line the person moved earlier by about as much (a chorus line the person fixed once and the
+  agent in every repeat); deleted; each listed (song, the person's line number and start, how far, ⚠, whether the
+  person moved a neighbour, repeat of a person's fix) under the table and in --json (kept_lines; moved_lines too);
+  lines the agent added (or split off) and deleted (or joined);
   the boundary: for each moved line, the line before's end (people cut it in most late-line fixes): how often the
   person changed it, how often it's now within 0.3 s of theirs, and ends the person kept that are now off;
   lines whose words the agent changed (and how many match the person's words); the median start error before
@@ -53,6 +65,8 @@ MOVED, KEPT = 0.25, 0.05      # the measurements' line classes: |person - studio
 FIXED, BETTER = 0.3, 0.1      # fixed: within 0.3 s of the person's start; improved / worse: by more than 0.1 s
 PORT = 5680
 NAME = "ks-agent-bench"
+OUT_LABEL = NAME + ".out"     # each sandbox container is labelled with its OUT, so stop finds exactly its own
+SANDBOX = "sandbox.json"      # in OUT: the container (and port) start made, for stop
 
 # what a sandbox copy may hold: the song's sound and pictures' sources, the automatic lyrics, and these
 COPY = ("vocals.m4a", "out.mp4", "heard.json", "peaks.json", "onsets.json", "spectro.webp", "spectro.png",
@@ -347,6 +361,11 @@ def cmd_start(a):
     if not os.path.isdir(os.path.join(out, "jobs")):
         sys.exit("prepare OUT first")
     name = container(out, a.port)
+    other = subprocess.run(["docker", "inspect", "-f", "{{index .Config.Labels \"%s\"}}" % OUT_LABEL, name],
+                           capture_output=True, text=True)
+    if other.returncode == 0 and other.stdout.strip() not in ("", out):
+        sys.exit(f"container {name} (port {a.port}) belongs to another sandbox ({other.stdout.strip()}): "
+                 f"stop that one or use another --port")
     subprocess.run(["docker", "rm", "-f", name], capture_output=True)
     cache = os.path.abspath(a.cache) if a.cache else os.path.join(out, "cache")
     os.makedirs(cache, exist_ok=True)
@@ -359,7 +378,7 @@ def cmd_start(a):
            "STUDIO_PUBLIC_URL": "", "STUDIO_NAME": "Agent benchmark", "ENCORE_TOKEN": "", "ENCORE_ONLY_NETS": "",
            "AGENT_KEYS_REQUIRED": "1", "USE_LOCAL_GPU": "0" if a.no_gpu else "1", "KARAOKE_WORDS_SCORE": "0",
            "PIKARAOKE_URL": "", "PIKARAOKE_DB": "", "NODE_BIN": ""}
-    cmd = ["docker", "run", "-d", "--name", name, "--label", f"{NAME}=1", "--user", f"{os.getuid()}:{os.getgid()}",
+    cmd = ["docker", "run", "-d", "--name", name, "--label", f"{NAME}=1", "--label", f"{OUT_LABEL}={out}", "--user", f"{os.getuid()}:{os.getgid()}",
            "-p", f"127.0.0.1:{a.port}:{a.port}", "-w", "/studio",
            "-v", f"{HERE}:/studio:ro",
            "-v", f"{out}:{out}", "-v", f"{cache}:{cache}" + (":ro" if a.cache else "")]
@@ -376,6 +395,8 @@ def cmd_start(a):
     if r.returncode:
         sys.exit("docker run failed: " + r.stderr.strip()[-400:])
     url = f"http://127.0.0.1:{a.port}"
+    with open(os.path.join(out, SANDBOX), "w") as fh:   # what stop removes (and nothing else)
+        json.dump({"container": name, "port": a.port, "url": url, "started": time.time()}, fh)
     for _ in range(90):
         try:
             import urllib.request
@@ -442,65 +463,182 @@ def cmd_inside(a):
                 print(f"agent-bench: lyrics for {jid}: {str(e)[:200]}", file=sys.stderr)
 
 
+def stop_targets(out, port=None):
+    """The containers stop removes for OUT: the one start recorded in OUT (or, with --port, that port's, but only if
+    it was started for OUT), plus any other container labelled with OUT. Never a guess: a port's container started
+    for another OUT is left alone."""
+    names = []
+    rec = os.path.join(out, SANDBOX)
+    if port is not None:
+        names.append(container(out, port))
+    elif os.path.exists(rec):
+        try:
+            names.append(json.load(open(rec))["container"])
+        except (OSError, ValueError, KeyError):
+            pass
+    r = subprocess.run(["docker", "ps", "-a", "--filter", f"label={OUT_LABEL}={out}", "--format", "{{.Names}}"],
+                       capture_output=True, text=True)
+    labelled = set(r.stdout.split()) if r.returncode == 0 else set()
+    keep = []
+    for n in names + sorted(labelled - set(names)):
+        if n in labelled and n not in keep:
+            keep.append(n)
+        elif n not in labelled and n not in keep:
+            print(f"{n}: not this sandbox's container (or not running): left alone")
+    return keep
+
+
 def cmd_stop(a):
-    name = container(os.path.abspath(a.out), a.port)
-    r = subprocess.run(["docker", "rm", "-f", name], capture_output=True, text=True)
-    print(f"stopped {name}" if r.returncode == 0 and name in r.stdout else f"no sandbox container {name}")
+    out = os.path.abspath(a.out)
+    names = stop_targets(out, a.port)
+    if not names:
+        print(f"no sandbox container for {out}")
+    for name in names:
+        r = subprocess.run(["docker", "rm", "-f", name], capture_output=True, text=True)
+        print(f"stopped {name}" if r.returncode == 0 else f"couldn't stop {name}: {r.stderr.strip()[-200:]}")
+    rec = os.path.join(out, SANDBOX)
+    try:
+        if json.load(open(rec)).get("container") in names:
+            os.remove(rec)
+    except (OSError, ValueError):
+        pass
 
 
 # ---------------- score ----------------
-NEAR = 3   # a line is looked for this many places either side (saving keeps lines in time order: a moved line can swap)
+NEAR = 3          # a line is looked for this many places either side (saving keeps lines in time order: a moved line can swap)
+SIMILAR = 0.5     # retyped, split or joined lines: text this alike (0-1, plus 0.2 for the same first word) still matches
+SIZES = ((0.3, 1.0), (1.0, 2.0), (2.0, None))   # how far kept lines were moved (s)
+REPEAT = (0.3, 2.0)   # a kept line moved EARLIER by this much (s) ...
+REPEAT_TOL = 0.5      # ... within this (or half the person's move, if more) of how far the person moved the same words earlier
+REPEAT_SIM = 1.0      # "the same words": similar() at least this (the same first word and 80% alike: a repeat sung a bit differently)
+
+
+def norm(t):
+    """A line's words for matching: lower case, letters and digits only."""
+    return " ".join(re.findall(r"\w+", (t or "").lower()))
+
+
+def similar(a, b):
+    import difflib
+    if not a or not b:
+        return 0.0
+    first = a.split()[0] == b.split()[0]
+    return difflib.SequenceMatcher(None, a, b, autojunk=False).ratio() + (0.2 if first else 0.0)
 
 
 def match(A, X):
-    """For each Studio line A[i], its line in X (same count): the nearest one with the same words, else the one at the
-    same place, else the nearest one left; each used once. Lines are kept in time order, so moving a line (or the
-    Studio's own lines starting out of order) can swap neighbours: matching by place alone would compare the wrong
-    lines."""
+    """For each line A[i], its line in X, or None when it has none (deleted, or joined into a neighbour); X's lines
+    no A line matched were added (or split off). Counts may differ. In turn: runs of lines with the same words in the
+    same order; a line with the same words nearby (saving keeps lines in time order, so a moved line can pass a
+    neighbour); the most alike line nearby (retyped words; of a split line the part with its first word, which carries
+    its start; of a joined pair the first); then, between two matched lines, the rest in order when as many are left
+    on both sides."""
+    import difflib
+    ta, tx = [norm(text(l)) for l in A], [norm(text(l)) for l in X]
     m, used = [None] * len(A), set()
-    near = lambda i: sorted((j for j in range(max(0, i - NEAR), min(len(X), i + NEAR + 1)) if j not in used),
-                            key=lambda j: abs(j - i))
-    for i, l in enumerate(A):
-        j = next((j for j in near(i) if text(X[j]) == text(l)), None)
-        if j is not None:
-            m[i] = j; used.add(j)
-    for i in range(len(A)):
-        if m[i] is None and i < len(X) and i not in used:
-            m[i] = i; used.add(i)
+
+    def take(i, j):
+        m[i] = j; used.add(j)
+
+    for blk in difflib.SequenceMatcher(None, ta, tx, autojunk=False).get_matching_blocks():
+        for k in range(blk.size):
+            take(blk.a + k, blk.b + k)
+
+    def expect(i):   # where A[i] should be in X: after the nearest matched line before it
+        p = next((k for k in range(i - 1, -1, -1) if m[k] is not None), None)
+        return i if p is None else m[p] + (i - p)
+
+    def near(i):
+        e = expect(i)
+        return sorted((j for j in range(max(0, e - NEAR), min(len(X), e + NEAR + 1)) if j not in used),
+                      key=lambda j: (abs(j - e), j))
+
     for i in range(len(A)):
         if m[i] is None:
-            j = next(iter(near(i)), None)
+            j = next((j for j in near(i) if tx[j] == ta[i]), None)
             if j is not None:
-                m[i] = j; used.add(j)
+                take(i, j)
+    for i in range(len(A)):
+        if m[i] is None:
+            best = max(near(i), key=lambda j: similar(ta[i], tx[j]), default=None)
+            if best is not None and similar(ta[i], tx[best]) >= SIMILAR:
+                take(i, best)
+    i = 0
+    while i < len(A):   # gaps between matched lines with as many left on both sides: in order (words rewritten)
+        if m[i] is not None:
+            i += 1
+            continue
+        k = i
+        while k < len(A) and m[k] is None:
+            k += 1
+        lo = m[i - 1] + 1 if i else 0
+        hi = m[k] if k < len(A) else len(X)
+        free = [j for j in range(lo, hi) if j not in used]
+        if hi >= lo and len(free) == k - i:
+            for n, j in enumerate(free):
+                take(i + n, j)
+        i = k
     return m
 
 
+def size_of(d):
+    d = abs(d)
+    return next((f"{a:g}-{b:g} s" if b else f">{a:g} s") for a, b in SIZES if d >= a and (b is None or d < b))
+
+
+COUNTS = ("lines", "moved", "fixed", "improved", "worse", "untouched", "changed", "moved_deleted", "kept", "kept_broken",
+          "kept_earlier", "kept_later", "kept_repeat_fix", "kept_deleted", "kept_touched", "small", "added", "deleted",
+          "person_gone", "words_changed", "words_match", "person_words", "person_words_right", "prev_end", "prev_end_cut",
+          "prev_end_fixed", "prev_end_broken") + tuple(f"kept_{size_of(a)}" for a, _ in SIZES)
+
+
 def score_song(truth, now_doc, now_offset):
-    """Compare the sandbox's lines now with the person's (truth) and the Studio's. Returns a dict of counts."""
+    """Compare the sandbox's lines now with the person's (truth) and the Studio's. Returns a dict of counts, plus
+    "moved_lines" and "kept_lines" (each line the person moved; each kept line the agent moved off or deleted)."""
     A, P, N = lead(truth["auto"]["lines"]), lead(truth["person"]["lines"]), lead(now_doc["lines"])
     ao, po = truth["auto"]["offset"], truth["person"]["offset"]
     r = {"id": truth["id"], "lang": truth.get("lang"), "lines": len(P)}
-    if len(A) != len(P):
-        return dict(r, scored=False, why=f"the person's version has {len(P)} lead lines, the Studio's {len(A)}")
-    if len(N) != len(P):
-        return dict(r, scored=False, why=f"the sandbox has {len(N)} lead lines now, the person's {len(P)} "
-                                         f"(lines split, joined, added or deleted)")
-    c = dict.fromkeys(("moved", "fixed", "improved", "worse", "untouched", "changed", "kept", "kept_broken",
-                       "kept_touched", "small", "words_changed", "words_match", "person_words", "person_words_right",
-                       "prev_end", "prev_end_cut", "prev_end_fixed", "prev_end_broken"), 0)
-    err_before, err_after, mv_before, mv_after = [], [], [], []
+    c = dict.fromkeys(COUNTS, 0)
+    c["lines"] = len(P)
     mp, mn = match(A, P), match(A, N)
-    if None in mp or None in mn:
-        return dict(r, scored=False, why="lines couldn't be matched (many lines moved past each other)")
+    pnum = {id(l): k + 1 for k, l in enumerate(truth["person"]["lines"])}   # line numbers as the person's version has them
+    anum = {id(l): k + 1 for k, l in enumerate(truth["auto"]["lines"])}
+    c["added"] = len(N) - sum(1 for j in mn if j is not None)
+    c["deleted"] = sum(1 for j in mn if j is None)
+    pdelta = [(start(P[mp[i]]) + po) - (start(la) + ao) if mp[i] is not None else None for i, la in enumerate(A)]
+    moved_at = {i for i, d in enumerate(pdelta) if d is not None and abs(d) > MOVED}
+    fixes = [(norm(text(A[i])), pdelta[i]) for i in sorted(moved_at) if pdelta[i] < 0]   # the person's earlier moves
+    err_before, err_after, mv_before, mv_after, moved_lines, kept_lines = [], [], [], [], [], []
+    clock = lambda t: f"{int(t // 60)}:{t % 60:05.2f}"
     for i, la in enumerate(A):
-        lp, ln = P[mp[i]], N[mn[i]]
-        a, p, n = start(la) + ao, start(lp) + po, start(ln) + now_offset
+        if mp[i] is None:
+            c["person_gone"] += 1   # the person deleted (or joined) it: nothing to compare with
+            continue
+        lp = P[mp[i]]
+        ln = N[mn[i]] if mn[i] is not None else None
+        a, p = start(la) + ao, start(lp) + po
+        row = {"song": truth["id"], "line": pnum.get(id(lp)), "auto_line": anum.get(id(la)), "at": clock(p),
+               "weak": bool(la.get("weak")), "person_delta": round(p - a, 2)}
+        if text(lp) != text(la):
+            c["person_words"] += 1
+        if ln is None:
+            if i in moved_at:
+                c["moved"] += 1; c["moved_deleted"] += 1
+                moved_lines.append(dict(row, agent_delta=None, outcome="deleted"))
+            elif abs(p - a) < KEPT:
+                c["kept"] += 1; c["kept_deleted"] += 1
+                kept_lines.append(dict(row, delta=None, direction="deleted", size=None, neighbour_moved=bool(
+                    {i - 1, i + 1} & moved_at), repeat_of_fix=False))
+            else:
+                c["small"] += 1
+            continue
+        n = start(ln) + now_offset
         ea, en, touched = abs(a - p), abs(n - p), abs(n - a) > 0.01
         err_before.append(ea); err_after.append(en)
-        if abs(p - a) > MOVED:
+        if i in moved_at:
             c["moved"] += 1
             mv_before.append(ea); mv_after.append(en)
-            if i:   # the boundary: did the line before's end change with it (people cut it in most late-line fixes)?
+            if i and mp[i - 1] is not None and mn[i - 1] is not None:   # the boundary: the line before's end
                 pa, pp, pn = end(A[i - 1]) + ao, end(P[mp[i - 1]]) + po, end(N[mn[i - 1]]) + now_offset
                 c["prev_end"] += 1
                 if abs(pp - pa) > MOVED:
@@ -508,20 +646,24 @@ def score_song(truth, now_doc, now_offset):
                     c["prev_end_fixed"] += abs(pn - pp) <= FIXED
                 else:
                     c["prev_end_broken"] += abs(pn - pp) > FIXED
-            if not touched:
-                c["untouched"] += 1
-            elif en <= FIXED:
-                c["fixed"] += 1
-            elif en < ea - BETTER:
-                c["improved"] += 1
-            elif en > ea + BETTER:
-                c["worse"] += 1
-            else:
-                c["changed"] += 1
+            out = ("untouched" if not touched else "fixed" if en <= FIXED else "improved" if en < ea - BETTER
+                   else "worse" if en > ea + BETTER else "changed")
+            c[out] += 1
+            moved_lines.append(dict(row, agent_delta=round(n - a, 2), outcome=out))
         elif abs(p - a) < KEPT:
             c["kept"] += 1
             if en > FIXED:
+                d = n - p
+                t_ = norm(text(la))   # a repeat of a line the person moved earlier by about as much: the same fix
+                rep = d < 0 and REPEAT[0] <= -d <= REPEAT[1] and any(
+                    (ft == t_ or similar(ft, t_) >= REPEAT_SIM) and abs(d - f) <= max(REPEAT_TOL, abs(f) / 2)
+                    for ft, f in fixes)
                 c["kept_broken"] += 1
+                c["kept_earlier" if d < 0 else "kept_later"] += 1
+                c[f"kept_{size_of(d)}"] += 1
+                c["kept_repeat_fix"] += rep
+                kept_lines.append(dict(row, delta=round(d, 2), direction="earlier" if d < 0 else "later", size=size_of(d),
+                                       neighbour_moved=bool({i - 1, i + 1} & moved_at), repeat_of_fix=rep))
             elif touched:
                 c["kept_touched"] += 1
         else:
@@ -530,12 +672,11 @@ def score_song(truth, now_doc, now_offset):
             c["words_changed"] += 1
             c["words_match"] += text(ln) == text(lp)
         if text(lp) != text(la):
-            c["person_words"] += 1
             c["person_words_right"] += text(ln) == text(lp)
     med = lambda xs: round(statistics.median(xs), 2) if xs else None
     return dict(r, scored=True, **c, median_before=med(err_before), median_after=med(err_after),
-                moved_median_before=med(mv_before), moved_median_after=med(mv_after),
-                _err=(err_before, err_after, mv_before, mv_after))
+                moved_median_before=med(mv_before), moved_median_after=med(mv_after), moved_lines=moved_lines,
+                kept_lines=kept_lines, _err=(err_before, err_after, mv_before, mv_after))
 
 
 def score_all(out):
@@ -553,11 +694,8 @@ def score_all(out):
             res.append({"id": truth["id"], "lang": truth.get("lang"), "scored": False, "why": "the sandbox copy is gone"})
             continue
         res.append(score_song(truth, now, off))
-    keys = ("lines", "moved", "fixed", "improved", "worse", "untouched", "changed", "kept", "kept_broken", "kept_touched",
-            "small", "words_changed", "words_match", "person_words", "person_words_right", "prev_end", "prev_end_cut",
-            "prev_end_fixed", "prev_end_broken")
     ok = [r for r in res if r.get("scored")]
-    tot = {k: sum(r[k] for r in ok) for k in keys}
+    tot = {k: sum(r[k] for r in ok) for k in COUNTS}
     eb = [x for r in ok for x in r["_err"][0]]; ea = [x for r in ok for x in r["_err"][1]]
     mb = [x for r in ok for x in r["_err"][2]]; ma = [x for r in ok for x in r["_err"][3]]
     med = lambda xs: round(statistics.median(xs), 2) if xs else None
@@ -574,21 +712,29 @@ def cmd_score(a):
     if a.json:
         print(json.dumps({"songs": res, "total": tot}, indent=1, ensure_ascii=False))
         return
-    print(f"{'song':44} lang  moved: fixed better worse untouched changed | kept: broken | words: changed (=person's) | median error before->after s")
+    print(f"{'song':44} lang  moved: fixed better worse untouched changed deleted | kept: broken (earlier) deleted | "
+          f"lines added deleted | words: changed (=person's) | median error before->after s")
     for r in res:
         if not r.get("scored"):
             print(f"{r['id'][:44]:44} {r.get('lang') or '?':4}  NOT SCORED: {r['why']}")
             continue
         print(f"{r['id'][:44]:44} {r.get('lang') or '?':4}  {r['moved']:3}: {r['fixed']:3} {r['improved']:4} {r['worse']:4} "
-              f"{r['untouched']:6} {r['changed']:7} | {r['kept']:3}: {r['kept_broken']:3}    | {r['words_changed']:3} "
-              f"({r['words_match']})           | {r['median_before']} -> {r['median_after']}"
+              f"{r['untouched']:6} {r['changed']:7} {r['moved_deleted']:5} | {r['kept']:3}: {r['kept_broken']:3} "
+              f"({r['kept_earlier']:2}) {r['kept_deleted']:5} | {r['added']:5} {r['deleted']:5} | {r['words_changed']:3} "
+              f"({r['words_match']})  | {r['median_before']} -> {r['median_after']}"
               f" (moved lines {r['moved_median_before']} -> {r['moved_median_after']})")
     t = tot
     print(f"\ntotal: {t['scored']} of {t['songs']} songs scored, {t['lines']} lead lines")
     print(f"  lines the person moved: {t['moved']}: fixed {t['fixed']}, improved {t['improved']}, made worse "
-          f"{t['worse']}, untouched {t['untouched']}, changed but no closer {t['changed']}")
-    print(f"  lines the person kept: {t['kept']}: broken {t['kept_broken']} (now >{FIXED} s from the person's start), "
+          f"{t['worse']}, untouched {t['untouched']}, changed but no closer {t['changed']}, deleted {t['moved_deleted']}")
+    sizes = ", ".join(f"{size_of(a_)} {t[f'kept_{size_of(a_)}']}" for a_, _ in SIZES)
+    print(f"  lines the person kept: {t['kept']}: moved off by the agent {t['kept_broken']} (now >{FIXED} s from the "
+          f"person's start: {t['kept_earlier']} earlier, {t['kept_later']} later; {sizes}), deleted {t['kept_deleted']}, "
           f"moved a little but still fine {t['kept_touched']}; small person moves (0.05-0.25 s): {t['small']}")
+    print(f"    of those moved off, probably good (a repeat of a line the person moved earlier by about as much): "
+          f"{t['kept_repeat_fix']}; the rest: {t['kept_broken'] - t['kept_repeat_fix']}")
+    print(f"  lines the agent added (or split off): {t['added']}; deleted (or joined): {t['deleted']}; lines the person "
+          f"deleted or joined (not compared): {t['person_gone']}")
     print(f"  the line before each moved line ({t['prev_end']}): the person changed its end on {t['prev_end_cut']}, now "
           f"within {FIXED} s of the person's on {t['prev_end_fixed']} of those; ends the person kept but now more than "
           f"{FIXED} s off: {t['prev_end_broken']}")
@@ -596,6 +742,14 @@ def cmd_score(a):
           f"changed {t['person_words']} ({t['person_words_right']} matched by the agent)")
     print(f"  median start error, Studio -> now: all lines {t['median_before']} -> {t['median_after']} s; moved lines "
           f"{t['moved_median_before']} -> {t['moved_median_after']} s")
+    kl = [x for r in res for x in r.get("kept_lines") or []]
+    if kl:
+        print(f"\nkept lines the agent moved off or deleted ({len(kl)}; line = the person's numbering, at = the person's start):")
+        print(f"  {'song':40} line  at        delta   ⚠  neighbour moved by the person  repeat of a person's fix")
+        for x in kl:
+            dl = "deleted" if x["delta"] is None else f"{x['delta']:+.2f}"
+            print(f"  {x['song'][:40]:40} {x['line'] or '?':>4}  {x['at']:8}  {dl:>7}  {'⚠' if x['weak'] else ' '}  "
+                  f"{'yes' if x['neighbour_moved'] else '-':29}  {'yes' if x['repeat_of_fix'] else '-'}")
     skipped = [r for r in res if not r.get("scored")]
     if skipped:
         print(f"  NOT SCORED: {len(skipped)} songs (see above)")
@@ -617,7 +771,9 @@ def main():
     s.add_argument("--allow-ok", action="store_true", help="the key may also clear ⚠ marks (ks ok)")
     s.set_defaults(f=cmd_start)
     s = sub.add_parser("_inside"); s.add_argument("out"); s.add_argument("--allow-ok", action="store_true"); s.set_defaults(f=cmd_inside)
-    s = sub.add_parser("stop"); s.add_argument("out"); s.add_argument("--port", type=int, default=PORT); s.set_defaults(f=cmd_stop)
+    s = sub.add_parser("stop"); s.add_argument("out")
+    s.add_argument("--port", type=int, help="only that port's container, if it is OUT's (default: what start recorded)")
+    s.set_defaults(f=cmd_stop)
     s = sub.add_parser("score"); s.add_argument("out"); s.add_argument("--json", action="store_true"); s.set_defaults(f=cmd_score)
     a = ap.parse_args()
     if a.cmd == "prepare" and not a.jobs:

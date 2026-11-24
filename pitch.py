@@ -72,7 +72,7 @@ def extract(job_dir, device="cpu"):
                                      batch_size=batch, device=device, return_periodicity=True)
     f0 = f0[0].float().cpu().numpy()
     per = per[0].float().cpu().numpy()
-    tmp = os.path.join(job_dir, ".pitch.f0.tmp.npz")
+    tmp = os.path.join(job_dir, f".pitch.f0.{os.getpid()}.tmp.npz")   # (a publish and a look may track at once)
     np.savez_compressed(tmp, f0=f0.astype(np.float32), per=per.astype(np.float16), hop=np.float32(HOP),
                         stamp=np.array(stamp), model=np.array(model))
     os.replace(tmp, os.path.join(job_dir, CACHE))

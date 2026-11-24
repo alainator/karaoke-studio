@@ -5540,8 +5540,8 @@ async def agent_check(jid: str):
 
 @app.get("/api/jobs/{jid}/agent/look")
 async def agent_look(jid: str, t0: float, t1: float, line: int = 0, align: int = 0):
-    """A picture (PNG) of [t0, t1] (video time): the vocals' spectrogram, the melody (pitch.f0.npz, when the song has
-    one), the line blocks (orange = ⚠; line = the 1-based line drawn in white), with align=1 where the aligner puts
+    """A picture (PNG) of [t0, t1] (video time): the vocals' spectrogram, the melody (pitch.f0.npz, tracked now when
+    the song has none: _look_melody; X-Melody says which), the line blocks (orange = ⚠; line = the 1-based line drawn in white), with align=1 where the aligner puts
     that line's words (heard together with the line before: agent/align), and the words heard. X-Rows: the rows drawn."""
     import tempfile
     job = _done(jid)
@@ -5550,6 +5550,7 @@ async def agent_look(jid: str, t0: float, t1: float, line: int = 0, align: int =
     cache, png = job_path(jid, "spectro.webp"), job_path(jid, "spectro.png")
     if not os.path.exists(cache) and not os.path.exists(png):
         await asyncio.to_thread(_make_spectro, jid, cache)
+    melody = await asyncio.to_thread(_look_melody, jid)
     aligned, note = None, ""
     if align and line > 0:
         try:
@@ -5570,7 +5571,36 @@ async def agent_look(jid: str, t0: float, t1: float, line: int = 0, align: int =
         os.remove(out)
     return Response(data, media_type="image/png", headers={
         "Cache-Control": "no-store", "X-Lines": ",".join(map(str, r["lines"])), "X-Rows": ",".join(r.get("rows") or []),
-        "X-Align": note.encode("ascii", "replace").decode() if note else ("ok" if aligned else "")})
+        "X-Align": note.encode("ascii", "replace").decode() if note else ("ok" if aligned else ""),
+        "X-Melody": melody.encode("ascii", "replace").decode()})
+
+
+LOOK_PITCH_LOCK = threading.Lock()   # one melody tracked for a look at a time
+
+
+def _look_melody(jid):
+    """The melody row's pitch file (pitch.f0.npz) for a look: "ok" when the song has an up-to-date one; else it's
+    tracked now (CREPE in its own process: a few seconds on the GPU when it has room, about 20 s on the CPU) and cached
+    for every later look and for publishing: "made". Songs published before pitch files existed, or whose publish
+    queue was lost to a restart, have none. Never while a song is being made ("busy": the picture comes without it)."""
+    d = job_path(jid)
+    if _ks().melody(d) is not None:
+        return "ok"
+    if not os.path.exists(job_path(jid, "vocals.m4a")):
+        return "no vocals"
+    if not LOOK_PITCH_LOCK.acquire(blocking=False):
+        return "busy"
+    try:
+        dev = align_device()
+        if dev is None:
+            return "busy"
+        pitchmod.frames(d, timeout=240, log=log, device=dev)
+        return "made" if _ks().melody(d) is not None else "failed"
+    except Exception as e:
+        log.warning("look: no melody for %s (%s)", jid, str(e)[:200])
+        return "failed"
+    finally:
+        LOOK_PITCH_LOCK.release()
 
 
 # ---- agent/align: one line heard together with the line before it (tools/ks_helper.py align_plan, align) ----
