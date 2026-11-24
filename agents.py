@@ -21,7 +21,7 @@ SCOPES = [
     ("notes", "Leave notes on lines and flag lines for you to check", True),
     ("make", "Make new songs (search, queue, cancel)", True),
     ("clear_marks", "Clear ⚠ marks, mark songs \"checked by you\", dismiss player flags", False),
-    ("publish", "Publish songs (and rename published ones)", False),
+    ("publish", "Publish songs (and rename published ones), remove songs from the library, refresh its catalog", False),
     ("remake", "Remake, change video or lyrics, retry, trim, custom videos, reset to the automatic version", False),
     ("delete", "Delete songs, remove old versions from the library", False),
 ]
@@ -77,6 +77,8 @@ ROUTES = [
     (("DELETE",), J + r"/videos/[^/]+", "remake"),
     (("DELETE",), J, "delete"),
     (("POST",), r"/api/library/remove-old", "delete"),
+    (("POST",), r"/api/library/remove", "publish"),           # (deleting the studio song too: delete as well)
+    (("POST",), r"/api/library/refresh", "publish"),
     (("POST",), J + r"/agent/alt-lyrics", "read"),          # (scores lyrics against the song; nothing saved)
     (("POST",), r"/api/agent/romaji", "read"),              # (romanizes text; nothing saved)
 ]

@@ -24,6 +24,7 @@ Type `Artist - Title` (or paste a YouTube link). The studio finds the music vide
 - **Works with an agent, or without.** An AI agent (Claude Code, a local model, anything that can run a command) can do the first pass of checking and fixing through `ks`, with only the permissions you give it; every edit is signed and undoable. Or do it all by hand.
 - **Uses a second GPU.** A PC on your network can take songs when the main GPU is busy, or you can choose which GPU makes each song.
 - **Party auto-make.** With your OK (per linked player), a party's request for a missing song is found, made and published by the studio in a few minutes, picked the way the Make page picks; songs below a quality floor wait for a look, and quick makes are marked until someone checks them.
+- **Keeps the library tidy.** *Remove from the library…* (a song's page, or any song in the Library tab) deletes exactly that song's files, its versions' too, and keeps the studio copy to publish again; *Refresh library* rebuilds the players' catalog after files were added or removed by hand and says what changed (`ks remove-from-library`, `ks refresh-library`).
 - **Made for Encore.** Link the Encore party app (or any player that speaks [the contract](contract/ENCORE-STUDIO.md)): guests' song requests land in a Requests list, lyric flags from the party mark the lines to fix, and what was sung counts in the Library. Each published song also gets its sung melody (`.pitch.json`, with the instrumental's loudness) for singing scores and its separated vocals (`.vocals.m4a`) for guide vocals; the studio can also score whether a singer sang the words, and the Library shows each song's best grade.
 
 ## Languages
@@ -139,6 +140,17 @@ Make tab with the search filled in, and the request then follows that song (bein
 it* and *Decline* answer it. Lyric flags ("the words light up late here") put a ⚠ on that line with a note like
 "Encore: late (Sam, Friday at Ken's)" and show as *Flagged in Encore* on the song's page and in *Needs fixing*; they
 never change timing or words. Plays count in the Library's *Sung* column and in `catalog.json`.
+
+**Removing a song.** *Remove from the library…* asks first, listing the files that go: every file the catalog names
+for the song (video, lyrics and their display modes, words, melody, guide vocals, cover, and the same for its
+versions), nothing else. It leaves `catalog.json` at once, so an Encore reading the library folder drops it right away;
+a linked Encore deletes its copy on its next library sync (every 10 minutes, or *Sync now* on that Encore). The studio
+copy stays, marked "removed from the library" (Publish puts it back; its versions are published again one by one),
+unless *Delete the Studio copy too* is ticked. A library file the catalog doesn't list (an old YouTube download, a
+video put there by hand) goes with its side files of the same name. Same permission as publishing; players can't.
+*Refresh library* (or `ks refresh-library`) rebuilds `catalog.json` from the library folder and the studio's songs and
+lists the songs added, removed and changed; nothing changed: the file isn't touched. A video put in *Music Videos* by
+hand with no studio song behind it can't be listed (the catalog needs its timed words): the refresh names those.
 
 **Party auto-make.** Off by default. On the **Players** tab: *Party auto-make* (with limits: songs per hour and per
 day, the longest song, only if a graphics card is free within N minutes, the quality floor) and, per linked player,

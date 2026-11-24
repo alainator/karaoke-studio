@@ -53,8 +53,14 @@ What an agent may do is set by its key (made on the Studio's Agents tab); withou
   ks alt-lyrics SONG [--artist A --title T]   every LRCLIB copy, scored against what's heard in this video
   ks change SONG [--yt ID] [--lyrics ID] [--source lrclib|karamoe]   remake with another video and/or lyrics; the new
                                           version replaces this one once it's made
-  publish, reviewed, reset, remake, undo-remake, retry, delete, change, trim, video: only when the person asks; the
-  Studio refuses them unless the key allows them.
+  ks remove-from-library SONG|BASE [--delete-job] [--yes]   delete a published song's files from the library (its
+                                          versions' too; players drop it); the studio copy stays unless --delete-job.
+                                          Lists the files and asks first unless --yes. BASE: a library song with no
+                                          studio copy, by its file name without .mp4
+  ks refresh-library                      rebuild the players' catalog from the library folder (files added or removed
+                                          by hand) and say what changed
+  publish, remove-from-library, refresh-library, reviewed, reset, remake, undo-remake, retry, delete, change, trim,
+  video: only when the person asks; the Studio refuses them unless the key allows them.
 
 Where the Studio is: STUDIO_URL, else the file `url` in the config folder (ks setup), else http://127.0.0.1:5570.
 The agent key: STUDIO_AGENT_KEY, else the file `agent-key` in the config folder (~/.config/karaoke-studio/, or
@@ -1125,6 +1131,58 @@ def cmd_publish(a):
     print(f"published as '{r['name']}'" + (f", removed {len(r['removed'])} old version(s)" if r.get("removed") else "") + f" ({r['message']})")
 
 
+def library_song(q):
+    """remove-from-library's song: a studio song (its id, or a piece of a published one's name or library name) or,
+    when no studio song matches, a library song by its catalog name (base)."""
+    js = jobs()
+    if any(j["id"] == q for j in js):
+        return {"job": q}
+    ql = q.lower()
+    hits = [j for j in js if j.get("published") and (ql in f"{j['artist']} - {j['title']}".lower() or ql == (j.get("published_as") or "").lower())]
+    exact = [j for j in hits if ql in (j["title"].lower(), f"{j['artist']} - {j['title']}".lower(), (j.get("published_as") or "").lower())]
+    hits = exact if len(exact) == 1 else hits
+    if len(hits) == 1:
+        return {"job": hits[0]["id"]}
+    if len(hits) > 1:
+        die(f"'{q}' matches {len(hits)} published songs; use more of the name or the id:\n"
+            + "\n".join(f"  {j['id']}  {j['artist']} - {j['title']}" for j in hits[:15]))
+    return {"base": q[:-4] if q.lower().endswith(".mp4") else q}
+
+
+def cmd_remove_from_library(a):
+    q = library_song(a.song)
+    t = call("/api/library/remove-preview?" + urllib.parse.urlencode(q))
+    print(f"remove from the library: {t['song']}" + (f" (and its versions: {', '.join(t['versions'])})" if t["versions"] else ""))
+    for f in t["files"]:
+        print("  " + f)
+    if not t["files"]:
+        print("  (its files are already gone from the library folder)")
+    if a.delete_job:
+        if not t.get("job"):
+            die("this song has no studio copy to delete (leave out --delete-job)")
+        print(f"and delete the studio copy too: {t['job']}")
+    elif t.get("studio"):
+        print("the studio copy stays (ks publish puts it back)")
+    if not a.yes:
+        if not sys.stdin.isatty():
+            die("nothing removed: add --yes to remove without asking")
+        if input("Remove? [y/N] ").strip().lower() not in ("y", "yes"):
+            die("nothing removed")
+    r = call("/api/library/remove", dict(q, delete_job=bool(a.delete_job)), timeout=300)
+    print(r["message"])
+
+
+def cmd_refresh_library(a):
+    r = call("/api/library/refresh", {}, timeout=300)
+    print(r["message"])
+    for k in ("added", "removed", "changed"):
+        if r[k]:
+            print(f"{k} ({len(r[k])}): " + "; ".join(r[k]))
+    if r.get("unlisted"):
+        print(f"in Music Videos but not in the catalog ({len(r['unlisted'])}: no studio song published them, players don't "
+              "get them): " + "; ".join(r["unlisted"]))
+
+
 def cmd_simple(path, body=None, label=""):
     def run(a):
         job = resolve(a.song)
@@ -1199,6 +1257,9 @@ def main():
     s.add_argument("--orig", help="the original title in its own script (逆光); \"\" removes it; no file changes"); s.set_defaults(f=cmd_rename)
     s = sub.add_parser("singers"); s.add_argument("song"); s.set_defaults(f=cmd_singers)
     s = sub.add_parser("publish"); s.add_argument("song"); s.add_argument("--remove-old", action="store_true"); s.set_defaults(f=cmd_publish)
+    s = sub.add_parser("remove-from-library"); s.add_argument("song"); s.add_argument("--delete-job", action="store_true")
+    s.add_argument("--yes", action="store_true", help="don't ask"); s.set_defaults(f=cmd_remove_from_library)
+    s = sub.add_parser("refresh-library"); s.set_defaults(f=cmd_refresh_library)
     s = sub.add_parser("reviewed"); s.add_argument("song"); s.add_argument("--off", action="store_true")
     s.set_defaults(f=lambda a: (call(f"/api/jobs/{resolve(a.song)['id']}/reviewed", {"on": not a.off}), print("checked by you: " + ("off" if a.off else "on"))))
     for name, path, label in (("reset", "lines/reset", "all edits undone (back to the automatic version)"),

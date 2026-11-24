@@ -40,9 +40,9 @@ actions stay off.
 | notes | on | notes on lines, flag a line for the person (`ks note … --mark`) |
 | make | on | queue new songs, import a list or playlist (`ks import`), cancel a make |
 | clear_marks | off | clear ⚠ marks (`ks ok`), "checked by you", dismiss player flags |
-| publish | off | publish, rename a published song |
+| publish | off | publish, rename a published song, remove a song from the library (`ks remove-from-library`), refresh the library's catalog (`ks refresh-library`) |
 | remake | off | remake, change video or lyrics, retry, trim, custom videos, reset to the automatic version |
-| delete | off | delete songs, remove old versions from the library |
+| delete | off | delete songs, remove old versions from the library (with publish: `ks remove-from-library --delete-job`) |
 
 The Studio checks the scope on every call and answers 403 with the scope it needed. Key management, linked players
 and requests are for people only. A mark that goes because its line was moved or reworded is an edit (the web editor
@@ -52,7 +52,9 @@ does the same); clearing a mark without changing the line needs clear_marks.
 
 - **Never clear ⚠ marks or publish unless the key allows it and the person asked you to.** The marks are the
   person's review list. If a marked line is fine, say so with a note and leave the mark.
-- Publishing, remakes, resets, trims, custom videos and deletes change what players get or redo work: only when asked.
+- Publishing, removing from the library, remakes, resets, trims, custom videos and deletes change what players get
+  or redo work: only when asked. `ks remove-from-library` lists the files and asks; use `--yes` only when the person
+  asked for that exact song to go.
 - Don't quote song lyrics in chat or reports (they're copyrighted): refer to line numbers and times ("line 14, 0:36").
 - Don't edit a song the person is editing in the web app at the same moment. ks refuses to save when the song changed
   since it read it; if that happens, ask.

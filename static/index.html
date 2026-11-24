@@ -71,6 +71,18 @@ td.n { text-align: right; font-variant-numeric: tabular-nums; }
 .toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); padding: 12px 18px; max-width: 90vw; z-index: 20; display: none; }
 .empty { padding: 30px; text-align: center; }
 .pub { margin-top: 12px; }
+dialog.ask { background: var(--surface); color: var(--text); border: var(--bw) solid var(--line); border-radius: var(--r-l); padding: 18px 20px;
+  width: min(560px, calc(100vw - 32px)); box-shadow: var(--shadow); }
+dialog.ask::backdrop { background: var(--scrim); }
+dialog.ask h3 { margin: 0 0 8px; font-size: var(--fs-l); overflow-wrap: anywhere; }
+dialog.ask p { margin: 8px 0; }
+dialog.ask ul.files { max-height: 180px; overflow: auto; margin: 6px 0; padding-left: 18px; font-size: var(--fs-s); color: var(--muted); overflow-wrap: anywhere; }
+dialog.ask label.chk { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
+dialog.ask .row { justify-content: flex-end; margin-top: 14px; }
+.lrep { background: var(--surface); border: var(--bw) solid var(--line); border-radius: var(--r-l); padding: 12px 14px; margin: 0 0 12px; }
+.lrep div { margin-top: 4px; overflow-wrap: anywhere; }
+.libbar { justify-content: space-between; margin: 0 0 10px; }
+.libbar .hint { flex: 1 1 260px; margin: 0; }
 .pub label.chk { display: flex; gap: 8px; align-items: center; justify-content: flex-start; font-size: 14px; margin: 8px 0 0; color: var(--text); flex-wrap: wrap; }
 .lyr .t { font-size: 14px; }
 .spinner { display: inline-block; width: 14px; height: 14px; border-width: 2px; border-style: solid; border-radius: 50%; vertical-align: -2px; }
@@ -262,7 +274,9 @@ nav button.on .nbadge { background: var(--on-accent); color: var(--accent); }
       <div class="fcount" id="lcount"></div>
       <div class="azbar" id="laz"></div>
     </div>
-    <p class="hint">Everything in the library. "Make MV version" starts a search for songs that only have an old YouTube karaoke video or an anime TV version; songs already made in the studio link to their page instead.</p>
+    <div class="row libbar"><p class="hint">Everything in the library. "Make MV version" starts a search for songs that only have an old YouTube karaoke video or an anime TV version; songs already made in the studio link to their page instead. <b>Remove…</b> deletes a song's files from the library.</p>
+      <button class="ghost sm" id="lrefresh" title="Rebuild the players' catalog from the library folder (picks up files added or removed by hand on the server) and show what changed">↻ Refresh library</button></div>
+    <div id="lrep"></div>
     <div id="lib"></div>
     <button class="ghost more" id="lmore" style="display:none"></button>
   </section>
@@ -284,6 +298,7 @@ nav button.on .nbadge { background: var(--on-accent); color: var(--accent); }
   </section>
 </main>
 <div class="toast" id="toast"></div>
+<dialog class="ask" id="askrm" aria-labelledby="askrm-h"></dialog>
 
 <script src="/static/octopus/subtitles-octopus.js"></script>
 <script>
@@ -754,7 +769,7 @@ function confTagOwn(j) {
 function jobState(j) {
   if (j.status === "running") return j.cancel_requested ? "Stopping…" : (STEP_NAMES[j.step] || j.step) + (j.gpu ? ` · ${j.gpu}` : "");
   if (j.status === "queued") return j.waiting || "Waiting";
-  return {failed: "Failed", cancelled: "Cancelled"}[j.status] || (j.published ? "Published" : "Ready to preview");
+  return {failed: "Failed", cancelled: "Cancelled"}[j.status] || (j.published ? "Published" : j.library_removed ? "Removed from the library" : "Ready to preview");
 }
 const canCancel = j => (j.status === "queued" || j.status === "running") && !j.cancel_requested;
 function jobLine(j) {
@@ -1757,8 +1772,8 @@ async function renderPublish(id, j) {
   $("#pub").innerHTML = `
     <div class="row" style="justify-content:space-between">
       <div><b>${j.published ? "Published" : "Publish to the library"}</b>${j.published && j.unpublished_changes ? ' <span class="tag warn">changes not published yet</span>' : ""} as <span class="hint">Music Videos/${esc(info.name)}</span>${info.exists && !j.published ? ' <span class="tag warn">replaces the existing one</span>' : ""}</div>
-      <div class="row"><button class="primary" id="pubbtn">${j.published ? "Publish again" : "Publish"}</button><button class="ghost danger" id="del">Delete</button></div>
-    </div>${olds}${videoCheckBox(j)}`;
+      <div class="row"><button class="primary" id="pubbtn">${j.published ? "Publish again" : "Publish"}</button>${j.published ? `<button class="ghost danger" id="rmlib" title="Delete this song's files from the library (players drop it); the studio copy can stay">Remove from the library…</button>` : ""}<button class="ghost danger" id="del">Delete</button></div>
+    </div>${!j.published && j.library_removed ? `<div class="hint" style="margin-top:6px">Removed from the library ${esc(new Date(j.library_removed.at * 1000).toLocaleString(undefined, {day: "numeric", month: "short", hour: "2-digit", minute: "2-digit"}))} by ${esc(j.library_removed.by)}. Publish puts it back.</div>` : ""}${olds}${videoCheckBox(j)}`;
   $("#pubbtn").onclick = async () => {
     $("#pubbtn").disabled = true;
     const remove = [...document.querySelectorAll(".old:checked")].map(c => c.value);
@@ -1767,6 +1782,37 @@ async function renderPublish(id, j) {
     catch (e) { toast(e.message); $("#pubbtn").disabled = false; }
   };
   $("#del").onclick = () => delJob(id, j.published);
+  if ($("#rmlib")) $("#rmlib").onclick = async () => {
+    const r = await removeFromLibrary({job: id});
+    if (!r) return;
+    loadJobs();
+    if (r.job_deleted) { location.hash = "jobs"; return; }
+    try { const jj = await api("/api/jobs/" + id); if (currentJob === id) { renderPublish(id, jj); renderVideos(id, jj); if (ed) ed.j = {...ed.j, published: null}; } } catch {}
+  };
+}
+// ---- remove a song from the library (the song page, the Library tab): asks first, naming the song and its files ----
+async function removeFromLibrary(q) {   // q: {job} | {base} | {file}; the answer, or null if cancelled
+  let t; try { t = await api("/api/library/remove-preview?" + new URLSearchParams(q)); } catch (e) { toast(e.message); return null; }
+  const d = $("#askrm"), n = t.files.length, s = n === 1 ? "" : "s";
+  d.innerHTML = `<h3 id="askrm-h">Remove “${esc(t.song)}” from the library?</h3>
+    <p>${n ? `${n === 1 ? "This file is" : `These ${n} files are`} deleted from the library folder${t.versions.length ? ` (the song and its version${t.versions.length === 1 ? "" : "s"}: ${esc(t.versions.join(", "))})` : ""}:` : "Its files are already gone from the library folder; the studio stops calling it published."}</p>
+    ${n ? `<ul class="files">${t.files.map(f => `<li>${esc(f)}</li>`).join("")}</ul>` : ""}
+    <p class="hint">${t.kind === "catalog" ? "It leaves the players' catalog: an Encore reading this library drops it at once, linked Encores delete their copy on their next library sync (within 10 minutes, or Sync now on the Encore). " : "Players that list this folder stop showing it. "}${t.studio ? "The studio copy stays, marked “removed from the library”: Publish puts it back." : "There's no studio copy of it: it can't be published again from here."}</p>
+    ${t.job ? `<label class="chk"><input type="checkbox" id="askrm-del"> Delete the Studio copy too (then it can't be published again)</label>` : ""}
+    <div class="row"><button class="ghost" id="askrm-no">Cancel</button><button class="primary danger" id="askrm-yes">Remove${n ? ` ${n} file${s}` : ""}</button></div>`;
+  return new Promise(res => {
+    let answered = false;
+    const done = v => { if (answered) return; answered = true; if (d.open) d.close(); res(v); };
+    d.onclose = () => done(null);
+    $("#askrm-no").onclick = () => done(null);
+    $("#askrm-yes").onclick = async () => {
+      $("#askrm-yes").disabled = $("#askrm-no").disabled = true;
+      const del = !!($("#askrm-del") && $("#askrm-del").checked);
+      try { const r = await api("/api/library/remove", {method: "POST", body: JSON.stringify({...q, delete_job: del})}); toast(r.message, 9000); done(r); }
+      catch (e) { toast(e.message); $("#askrm-yes").disabled = $("#askrm-no").disabled = false; }
+    };
+    d.showModal(); $("#askrm-no").focus();
+  });
 }
 async function delJob(id, published) {
   if (!confirm(published ? "Delete the studio copy? The published song stays in the library." : "Delete this song from the studio?")) return;
@@ -1964,12 +2010,13 @@ function renderLib(jumpTo) {
       <tr id="lr-${i}"><td>${esc(x.title)}<div class="libmeta"><span class="tag ${x.folder === "Music Videos" ? "good" : ""}">${esc(libKind(x))}</span>${x.plays ? ` sung ${x.plays}×` : ""}</div></td>
       <td class="c-kind"><span class="tag ${x.folder === "Music Videos" ? "good" : ""}">${esc(libKind(x))}</span></td>
       <td class="n c-sung">${x.plays || ""}${x.grade ? ` <span class="tag" title="Best singing score in Encore">${esc(x.grade)}</span>` : ""}</td>
-      <td>${libAction(x)}</td></tr>`).join("")}</tbody></table>`;
+      <td>${libAction(x)}${x.removable ? "" : ` <button class="ghost danger sm" data-rmlib="${esc(x.file)}" title="Remove from the library…: delete this song's files (players drop it)">Remove…</button>`}</td></tr>`).join("")}</tbody></table>`;
   const left = list.length - LF_N;
   $("#lmore").style.display = left > 0 ? "" : "none";
   $("#lmore").textContent = `Show ${Math.min(PAGE, left)} more (${left} not shown)`;
   document.querySelectorAll("#lib [data-q]").forEach(b => b.onclick = () => { $("#q").value = b.dataset.q; location.hash = "make"; $("#sform").requestSubmit(); });
   document.querySelectorAll("#lib [data-rm]").forEach(b => b.onclick = () => removeOld(b.dataset.rm, b.dataset.mv));
+  document.querySelectorAll("#lib [data-rmlib]").forEach(b => b.onclick = async () => { if (await removeFromLibrary({file: b.dataset.rmlib})) { loadLib(); loadJobs(); } });
   document.querySelectorAll("#lchips [data-f]").forEach(b => b.onclick = () => { LF.f = b.dataset.f; libChanged(); });
   document.querySelectorAll("#laz [data-az]").forEach(b => b.onclick = () => renderLib(list.findIndex(x => libLetter(x) === b.dataset.az)));
   const clr = $("#lib [data-clear]"); if (clr) clr.onclick = () => { LF.q = ""; LF.f = "all"; $("#lq").value = ""; libChanged(); };
@@ -1989,6 +2036,21 @@ async function removeOld(file, mv) {
   try { const r = await api("/api/library/remove-old", {method: "POST", body: JSON.stringify({file})}); toast("Removed. " + r.message, 7000); }
   catch (e) { toast(e.message); }
   loadLib();
+}
+$("#lrefresh").onclick = async () => {
+  const b = $("#lrefresh"); b.disabled = true; b.textContent = "Refreshing…";
+  try { const r = await api("/api/library/refresh", {method: "POST"}); showRefresh(r); toast(r.message, 7000); loadLib(); }
+  catch (e) { toast(e.message); }
+  b.disabled = false; b.textContent = "↻ Refresh library";
+};
+function showRefresh(r) {   // what the refresh found: counts and names
+  const names = (k, label) => r[k].length ? `<div><b>${r[k].length} ${label}:</b> ${esc(r[k].slice(0, 40).join(" · "))}${r[k].length > 40 ? ` … and ${r[k].length - 40} more` : ""}</div>` : "";
+  const un = r.unlisted || [];
+  $("#lrep").innerHTML = `<div class="lrep" role="status"><div class="row" style="justify-content:space-between"><b>${r.written ? "Library refreshed" : "Nothing changed"}</b><button class="ghost sm" id="lrep-x" aria-label="Close">✕</button></div>
+    <div class="hint">${r.songs} song${r.songs === 1 ? "" : "s"} in the players' catalog.${r.players ? " " + esc(r.players) + "." : ""}</div>
+    ${names("added", "added")}${names("removed", "removed")}${names("changed", "changed")}
+    ${un.length ? `<div class="hint">${un.length} video${un.length === 1 ? "" : "s"} in Music Videos ${un.length === 1 ? "isn't" : "aren't"} in the catalog (no studio song published ${un.length === 1 ? "it" : "them"}; players don't get ${un.length === 1 ? "it" : "them"}): ${esc(un.slice(0, 12).join(" · "))}${un.length > 12 ? " …" : ""}</div>` : ""}</div>`;
+  $("#lrep-x").onclick = () => $("#lrep").innerHTML = "";
 }
 async function loadLib() {
   if (!LIB_ALL) $("#lib").innerHTML = `<p class="hint"><span class="spinner"></span></p>`;

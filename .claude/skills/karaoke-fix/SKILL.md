@@ -88,7 +88,7 @@ or a unique piece of "Artist - Title". `ks whoami` says what your key allows.
   line that is actually off, never just to clear its mark.
 - If the person may be editing the same song in the web app right now, don't: ks refuses to save if the song changed
   since it read it; if that happens, ask.
-- Publishing, "checked by you", remakes, resets, trims, custom videos and deletes change what players get or redo
+- Publishing, removing from the library, "checked by you", remakes, resets, trims, custom videos and deletes change what players get or redo
   work: only when the person asks, and only if your key allows it (the Studio refuses otherwise).
 - A song Whisper couldn't follow ("couldn't follow by ear", or heard 0/N) can't be fixed from the heard words:
   use the spectrogram (each line's syllables against the stripes) and say how sure you are.

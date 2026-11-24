@@ -404,6 +404,58 @@ def files_of(song):
     return out
 
 
+VOLATILE = ("plays", "last_played")   # entry fields that change without the song changing (as in Encore's library sync)
+
+
+def _still(e):
+    return {k: v for k, v in e.items() if k not in VOLATILE} if isinstance(e, dict) else e
+
+
+def song_name(e):
+    return f"{e.get('artist') or ''} - {e.get('title') or ''}".strip(" -") or e.get("base") or "?"
+
+
+def diff(old_songs, new_songs):
+    """What changed between two catalogs' songs, by song id: {"added", "removed", "changed"}: names (Artist - Title),
+    sorted. A play count changing is no change."""
+    def keyed(songs):
+        return {e.get("id") or e.get("base"): e for e in songs or [] if isinstance(e, dict)}
+    a, b = keyed(old_songs), keyed(new_songs)
+    names = lambda ks, d: sorted((song_name(d[k]) for k in ks), key=str.casefold)
+    return {"added": names(b.keys() - a.keys(), b), "removed": names(a.keys() - b.keys(), a),
+            "changed": names([k for k in a.keys() & b.keys() if _still(a[k]) != _still(b[k])], b)}
+
+
+def unlisted(lib_dir, mv_dir, songs):
+    """Videos in the music video folder that no catalog song names (put there by hand, or left by a song whose entry
+    is gone): players never get them. File names, sorted."""
+    named = set()
+    for e in songs:
+        named |= files_of(e)
+    rel = os.path.relpath(mv_dir, lib_dir).replace(os.sep, "/")
+    try:
+        fs = os.listdir(mv_dir)
+    except OSError:
+        return []
+    return sorted((f for f in fs if f.lower().endswith(".mp4") and not f.startswith(".") and f"{rel}/{f}" not in named),
+                  key=str.casefold)
+
+
+def refresh_report(jobs_dir, lib_dir, mv_dir, log=None, now=None):
+    """Rebuild catalog.json from the jobs and the library folder (picks up files added or removed by hand) and say
+    what changed. Written only when a song changed (plays alone don't count), so doing it again changes nothing, not
+    even the file's ETag. Raises OSError when it can't be written."""
+    with _lock:
+        old = read_catalog(lib_dir)
+        songs = build(jobs_dir, lib_dir, mv_dir, old, log)
+        d = diff((old or {}).get("songs"), songs)
+        write = old is None or [_still(e) for e in old.get("songs") or []] != [_still(e) for e in songs]
+        if write:
+            _put_json(os.path.join(lib_dir, CATALOG), {"version": VERSION, "generated": round(time.time() if now is None else now, 1),
+                                                       "songs": songs})
+    return dict(d, written=write, songs=len(songs), unlisted=unlisted(lib_dir, mv_dir, songs))
+
+
 def refresh(jobs_dir, lib_dir, mv_dir, log=None, words=None):
     """Rewrite catalog.json (and first, if given, words files: [(job_dir, job, base), ...]). Never raises."""
     ok = True

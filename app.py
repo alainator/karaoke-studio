@@ -716,7 +716,7 @@ def _summary(job):
     keys = ("id", "artist", "title", "yt", "status", "step", "created", "finished", "error", "offset",
             "published", "published_as", "video_title", "result", "waiting", "edited", "unpublished_changes", "lang", "gpu", "ai_romaji", "video_v", "gpu_pref", "reviewed", "lrc_id", "lyrics_source", "trim", "video_task",
             "lyrics_display", "cancel_requested", "last_edit", "published_by", "made_by", "quick", "auto_held", "auto_retry", "auto_publish",
-            "import")
+            "import", "library_removed")
     out = {k: job.get(k) for k in keys}
     am = job.get("automake")
     out["automake"] = {k: am.get(k) for k in ("player_name", "by", "party", "at")} if am else None
@@ -737,7 +737,8 @@ def list_jobs(brief: int = 0):
 
 
 BRIEF_KEYS = ("id", "artist", "title", "yt", "status", "step", "created", "finished", "error", "published", "waiting",
-              "unpublished_changes", "gpu", "reviewed", "to_check", "cancel_requested", "encore_flags", "published_as", "import")
+              "unpublished_changes", "gpu", "reviewed", "to_check", "cancel_requested", "encore_flags", "published_as", "import",
+              "library_removed")
 
 
 def brief_summary(s):
@@ -3044,6 +3045,7 @@ def do_publish(jid, remove, actor):
                 videoswap.save_meta(videoswap.version_dir(job_path(jid), m["slug"]), m)
         # the guide vocals (base.vocals.m4a), the song's and its versions' (the same sound); never stops a publish
         guidevocals.write(job_path(jid), MV_DIR, [base] + vbases, log)
+        job.pop("library_removed", None)   # (removed from the library earlier: back in it now)
         job.update(status="done", published=time.time(), published_as=base, unpublished_changes=False,
                    published_by=agents.stamp(actor))
         log.info("published %s as %s (by %s)", jid, base, job["published_by"]["by"])
@@ -3183,6 +3185,181 @@ async def remove_old(req: Request):
             raise HTTPException(404, "it's gone already")
     log.info("library: removed old version %s (the music video %s stays)", name, s.get("mv_title"))
     return {"ok": True, "message": "The library is up to date"}
+
+
+# ---- remove a song from the library; refresh the catalog (README: "Library") ----
+# A catalog song goes with exactly the files catalog.files_of names for it (its video, lyrics, words, pitch, vocals,
+# cover, and its versions'); nothing else in the folder is touched. Its studio song stays (shown as removed from the
+# library; Publish puts it back) unless the person deletes that too. A library file the catalog doesn't list (an old
+# YouTube download, a video put there by hand) goes with its side files of exactly the same name. Players aren't
+# told directly: an Encore reading this folder sees catalog.json change at once; a linked one drops the song on its
+# next library sync (every 10 minutes, or Sync now on that Encore).
+SIDE_EXTS = (".ass", ".ASS", ".cdg", ".CDG") + tuple(e for e in LIB_EXTS if e not in (".mp4", ".ass"))
+PLAYERS_NOTE = "Linked Encores drop it on their next library sync (within 10 minutes, or Sync now on the Encore)"
+REFRESH_NOTE = "Linked Encores get the changes on their next library sync (within 10 minutes, or Sync now on the Encore)"
+
+
+def _refuse_players(req):
+    """Players (Encore) never change the library: a call carrying a player's token is refused, whatever the network
+    or the proxy let through (their own API, /api/encore/, has nothing that removes)."""
+    auth = req.headers.get("authorization") or ""
+    if auth[:7].lower() == "bearer " and STORE.auth(auth[7:].strip()):
+        raise HTTPException(403, "players can't change the library")
+
+
+def _lib_path(rel):
+    """A library path ('/'-separated, relative to the library root, as the catalog names files) as a path inside
+    the library, or None (absolute, '..', dot names, or a folder that leads outside)."""
+    rel = str(rel or "")
+    parts = rel.split("/")
+    if not rel or "\\" in rel or "\x00" in rel or any(not p or p.startswith(".") for p in parts):
+        return None
+    p = os.path.join(LIB, *parts)
+    root = os.path.realpath(LIB)
+    return p if os.path.commonpath([os.path.realpath(os.path.dirname(p)), root]) == root else None
+
+
+def removal_target(job=None, base=None, file=None):
+    """What removing a song would delete, without deleting anything: {"song", "kind": "catalog" | "file", "base",
+    "bases", "files": library paths that exist, "versions": names, "jobs": studio songs published there, "job": the
+    studio song asked about (or the catalog song's own), "studio": does it have a studio song}."""
+    cv = catalog_view()
+    entry, j = None, None
+    if job:
+        j = load(job)
+        b = j.get("published_as")
+        if not j.get("published") or not b:
+            raise HTTPException(400, "this song isn't in the library")
+        hit = cv["by_base"].get(b)
+        if not hit:   # published, but its video is gone from the library (by hand): only the studio's state changes
+            return {"song": f"{j.get('artist')} - {j.get('title')}", "kind": "catalog", "base": b, "bases": [b], "files": [],
+                    "versions": [], "jobs": [j["id"]], "job": j["id"], "studio": True}
+        entry = hit[0]
+    elif base and not cv["by_base"].get(str(base)) and "/" not in str(base) and os.path.isfile(os.path.join(MV_DIR, f"{base}.mp4")):
+        return removal_target(file=os.path.relpath(os.path.join(MV_DIR, f"{base}.mp4"), LIB).replace(os.sep, "/"))
+    elif base:   # (a music video put there by hand, not in the catalog: as its file, above)
+        hit = cv["by_base"].get(str(base))
+        if not hit:
+            raise HTTPException(404, "no song of that name in the library")
+        entry = hit[0]
+    elif file:
+        rel = str(file)
+        p = _lib_path(rel)
+        if not p or not os.path.isfile(p):
+            raise HTTPException(404, "no such file in the library")
+        entry = next((e for e in cv["songs"] if rel in catalog.files_of(e)), None)
+        if entry is None:   # not a catalog song: that file and its side files of the same name
+            stem, ext = os.path.splitext(rel)
+            if ext.lower() not in LIB_EXTS_MEDIA:
+                raise HTTPException(400, "pick the song's video")
+            files = [rel] + [stem + x for x in SIDE_EXTS if stem + x not in cv["files"] and os.path.isfile(_lib_path(stem + x) or "")]
+            return {"song": os.path.basename(stem), "kind": "file", "base": None, "bases": [], "files": sorted(set(files)),
+                    "versions": [], "jobs": [], "job": None, "studio": False}
+    else:
+        raise HTTPException(400, "say which song: job, base or file")
+    bases = [entry["base"]] + [v["base"] for v in entry.get("versions") or [] if v.get("base")]
+    files = sorted(f for f in catalog.files_of(entry) if _lib_path(f) and os.path.lexists(_lib_path(f)))
+    own = entry["id"] if ID_RE.match(entry.get("id") or "") and os.path.isfile(os.path.join(JOBS, entry["id"], "job.json")) else None
+    jobs = {x["id"] for x in job_index() if x.get("published") and x.get("published_as") in bases}
+    jobs |= {x for x in (own, j and j["id"]) if x}
+    return {"song": catalog.song_name(entry), "kind": "catalog", "base": entry["base"], "bases": bases, "files": files,
+            "versions": [v.get("name") or v.get("base") for v in entry.get("versions") or []], "jobs": sorted(jobs),
+            "job": j["id"] if j else own, "studio": bool(j or own)}
+
+
+def remove_from_library(t, actor, delete_job=False):
+    """(under the lock) Delete a removal_target's files, mark its studio songs "removed from the library" (they can be
+    published again), optionally delete the studio song too, then rewrite the catalog. Everything that can refuse
+    refuses before anything is deleted."""
+    if delete_job and not t["job"]:
+        raise HTTPException(400, "this song has no studio copy to delete")
+    for jid in t["jobs"]:
+        jj = load(jid)
+        if jj.get("status") == "running":
+            raise HTTPException(409, f"“{jj.get('artist')} - {jj.get('title')}” is being made right now; wait for it to finish")
+        if video_busy(jj):
+            raise HTTPException(409, VIDEO_BUSY)
+    gone = []
+    for rel in t["files"]:
+        p = _lib_path(rel)
+        if p and os.path.lexists(p) and not os.path.isdir(p):
+            os.remove(p)
+            gone.append(rel)
+    who = agents.stamp(actor)
+    bases = set(t["bases"])
+    for jid in t["jobs"]:
+        jj = load(jid)
+        for m in videoswap.entries(job_path(jid)):   # its published versions went too
+            if m.get("mode") == "version" and m.get("published_as") in bases:
+                for k in ("published", "published_as", "lyrics_published", "published_by", "unpublished_changes"):
+                    m.pop(k, None)
+                videoswap.save_meta(videoswap.version_dir(job_path(jid), m["slug"]), m)
+        was = jj.get("published_as")
+        jj.update(published=None, published_as=None, unpublished_changes=False,
+                  library_removed=dict(who, base=was, files=len(gone)))
+        jj.setdefault("log", []).append(f"removed from the library by {who['by']} ('{was}', {len(gone)} files)")
+        save(jid, jj)
+    deleted = None
+    if delete_job:
+        shutil.rmtree(job_path(t["job"]))
+        deleted = t["job"]
+    update_catalog()
+    log.info("library: %s removed %s (%s) by %s (%s): %s%s", "song" if t["kind"] == "catalog" else "file", t["song"],
+             ", ".join(t["jobs"]) or "no studio song", who["by"], who["kind"], ", ".join(gone) or "no files",
+             f"; deleted the studio song {deleted}" if deleted else "")
+    return {"ok": True, "song": t["song"], "removed": gone, "jobs": t["jobs"], "job_deleted": deleted,
+            "message": f"Removed “{t['song']}” from the library ({len(gone)} file{'s' if len(gone) != 1 else ''})"
+                       + ("; its studio copy is deleted too" if deleted else "; its studio copy stays (Publish puts it back)" if t["jobs"] else "")
+                       + (". " + PLAYERS_NOTE + "." if t["kind"] == "catalog" else "."),
+            "players": PLAYERS_NOTE}
+
+
+@app.get("/api/library/remove-preview")
+def remove_preview(job: str = "", base: str = "", file: str = ""):
+    """What "Remove from the library" would delete (nothing is changed)."""
+    t = removal_target(job or None, base or None, file or None)
+    return {k: t[k] for k in ("song", "kind", "base", "files", "versions", "jobs", "job", "studio")}
+
+
+@app.post("/api/library/remove")
+async def remove_song(req: Request):
+    """{"job": id} | {"base": catalog base} | {"file": library path}, "delete_job": bool. Same permission as publishing
+    (agents: the publish scope; deleting the studio song too: delete as well). Players never."""
+    check_origin(req)
+    _refuse_players(req)
+    b = await req.json()
+    actor = agents.actor_of(req)
+    delete_job = bool(b.get("delete_job"))
+    if delete_job and not agents.can(actor, "delete"):
+        raise HTTPException(403, f"this agent key ({actor['name']}) doesn't allow: {agents.scope_label('delete')} (scope 'delete')")
+
+    def work():
+        with lock:
+            t = removal_target(str(b.get("job") or "") or None, str(b.get("base") or "") or None, str(b.get("file") or "") or None)
+            return remove_from_library(t, actor, delete_job)
+    return await asyncio.to_thread(work)
+
+
+@app.post("/api/library/refresh")
+def refresh_library(req: Request):
+    """Rebuild catalog.json from the library folder and the studio's songs (files added or removed by hand) and say
+    what changed. Nothing changed: the file is left as it is. Same permission as publishing."""
+    check_origin(req)
+    _refuse_players(req)
+    actor = agents.actor_of(req)
+    with lock:   # never in the middle of a publish or a removal
+        try:
+            r = catalog.refresh_report(JOBS, LIB, MV_DIR, log)
+        except OSError as e:
+            log.exception("library: refresh couldn't write %s", catalog.CATALOG)
+            raise HTTPException(500, f"couldn't write {catalog.CATALOG}: {e.strerror or e}")
+    log.info("library: refreshed by %s: %d added, %d removed, %d changed%s", agents.stamp(actor)["by"], len(r["added"]),
+             len(r["removed"]), len(r["changed"]), "" if r["written"] else " (catalog unchanged)")
+    said = ", ".join(f"{len(r[k])} {k}" for k in ("added", "removed", "changed") if r[k])
+    r["players"] = REFRESH_NOTE if r["written"] else None
+    r["message"] = (f"Library refreshed: {said or 'catalog rewritten'} ({r['songs']} songs). {REFRESH_NOTE}." if r["written"]
+                    else f"Nothing changed: {r['songs']} songs in the catalog")
+    return r
 
 
 @app.get("/api/status")
