@@ -1,7 +1,7 @@
 """Library: "Remove from the library" (exactly the song's files, every version's; the catalog; the studio copy kept
 and publishable again, or deleted too; songs with no studio copy; who may do it) and "Refresh library" (what changed,
 nothing when nothing changed, never in the middle of a publish). Calls go through the whole ASGI app."""
-import json, os, shutil, threading, unittest, urllib.parse
+import json, os, shutil, threading, time, unittest, urllib.parse
 
 from tests import _env  # noqa: F401  (must come first: throwaway folders)
 import app as A  # noqa: E402
@@ -115,6 +115,32 @@ class RemoveFromLibrary(unittest.TestCase):
         self.assertFalse(os.path.exists(mv(base + ".mp4")))
         self.assertIsNone(entry(jid))
         self.assertIsNone(entry(base=base))                            # not kept as a "job deleted" song either
+
+    def test_two_studio_songs_on_the_same_files_and_files_already_gone(self):
+        a = make_song("Remo Vale", "Same Files")
+        time.sleep(0.01)
+        b = make_song("Remo Vale", "Same Files")                     # made twice: the catalog lists the last one
+        base = A.load(a)["published_as"]
+        self.assertEqual(A.load(b)["published_as"], base)
+        self.assertEqual(entry(base=base)["id"], b)
+        st, _, r = remove({"job": a})
+        self.assertEqual(st, 200, r)
+        self.assertEqual(sorted(r["jobs"]), sorted([a, b]))              # both pointed at those files: both marked
+        for j in (a, b):
+            self.assertIsNone(A.load(j)["published"])
+            self.assertEqual(A.load(j)["library_removed"]["base"], base)
+        self.assertFalse(os.path.exists(mv(base + ".mp4")))
+        c = make_song("Remo Vale", "Files Gone")                     # its files were deleted by hand on the server
+        cb = A.load(c)["published_as"]
+        for f in os.listdir(A.MV_DIR):
+            if f.startswith(cb + "."):
+                os.remove(mv(f))
+        A.update_catalog()
+        before = lib_files()
+        st, _, r = remove({"job": c})
+        self.assertEqual((st, r["removed"], r["jobs"]), (200, [], [c]))
+        self.assertEqual(lib_files(), before)
+        self.assertIsNone(A.load(c)["published"])
 
     def test_a_song_with_no_studio_copy(self):
         jid = make_song("Remo Vale", "Orphan Song")

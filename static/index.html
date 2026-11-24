@@ -1801,15 +1801,16 @@ async function removeFromLibrary(q) {   // q: {job} | {base} | {file}; the answe
     ${t.job ? `<label class="chk"><input type="checkbox" id="askrm-del"> Delete the Studio copy too (then it can't be published again)</label>` : ""}
     <div class="row"><button class="ghost" id="askrm-no">Cancel</button><button class="primary danger" id="askrm-yes">Remove${n ? ` ${n} file${s}` : ""}</button></div>`;
   return new Promise(res => {
-    let answered = false;
+    let answered = false, busy = false;
     const done = v => { if (answered) return; answered = true; if (d.open) d.close(); res(v); };
+    d.oncancel = e => { if (busy) e.preventDefault(); };   // (Escape while it's removing: wait for the answer)
     d.onclose = () => done(null);
     $("#askrm-no").onclick = () => done(null);
     $("#askrm-yes").onclick = async () => {
-      $("#askrm-yes").disabled = $("#askrm-no").disabled = true;
+      busy = true; $("#askrm-yes").disabled = $("#askrm-no").disabled = true;
       const del = !!($("#askrm-del") && $("#askrm-del").checked);
-      try { const r = await api("/api/library/remove", {method: "POST", body: JSON.stringify({...q, delete_job: del})}); toast(r.message, 9000); done(r); }
-      catch (e) { toast(e.message); $("#askrm-yes").disabled = $("#askrm-no").disabled = false; }
+      try { const r = await api("/api/library/remove", {method: "POST", body: JSON.stringify({...q, delete_job: del})}); toast(r.message, 9000); busy = false; done(r); }
+      catch (e) { toast(e.message); busy = false; $("#askrm-yes").disabled = $("#askrm-no").disabled = false; }
     };
     d.showModal(); $("#askrm-no").focus();
   });
