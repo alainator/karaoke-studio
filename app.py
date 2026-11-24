@@ -226,39 +226,59 @@ BAD_WORDS = ("lyric", "karaoke", "live", "cover", "reaction", "remix", "instrume
              "behind", "fancam", "focus cam", "choreography", "relay dance", "dance cover", "skzoo ver", "shorts")
 
 
+def yt_json(args, timeout=60):
+    """yt-dlp's JSON answer for args (a search, one video, a playlist). Tests swap this for made-up answers.
+    RuntimeError with yt-dlp's last words when it fails."""
+    r = subprocess.run([f"{BIN}/yt-dlp", "--js-runtimes", "node", *args], capture_output=True, text=True, timeout=timeout,
+                       env=C.tool_env())
+    if r.returncode:
+        raise RuntimeError(r.stderr.strip()[-200:])
+    return json.loads(r.stdout)
+
+
+def video_flags(title):
+    """The BAD_WORDS in a video's title ("lyric", "live", "cover"...), without the ones inside another ("dance cover")."""
+    nt_ = norm(title)
+    bad = [w for w in BAD_WORDS if w in nt_]
+    return [w for w in bad if not any(w != o and w in o for o in bad)]
+
+
+def video_entry(e, artist, title):
+    """One YouTube result (yt-dlp's entry) as the search lists it, scored for the song artist/title; None without an id
+    or a length."""
+    if not e or not e.get("id") or not e.get("duration"):
+        return None
+    na, nt = norm(artist), norm(title)
+    t, ch = (e.get("title") or ""), (e.get("channel") or "")
+    nt_, nch = norm(t), norm(ch)
+    score = 0.0
+    # the artist's own channel (or their VEVO); a result without a channel name proves nothing
+    if na and nch and (na in nch or nch.replace(" ", "") in (na.replace(" ", "") + "vevo") or nch.endswith("vevo") and na.replace(" ", "") in nch.replace(" ", "")):
+        score += 5
+    if e.get("channel_is_verified"):
+        score += 1.5
+    if "official" in nt_ and "unofficial" not in nt_:
+        score += 2
+    if re.search(r"\bm v\b|\bmv\b|music video", nt_):  # "M/V" (K-pop labels), "MV", "Music Video"
+        score += 2
+    if nt and nt in nt_:
+        score += 1
+    bad = video_flags(t)
+    score -= 4 * len(bad)
+    score += math.log10((e.get("view_count") or 0) + 1) / 3
+    return {"id": e["id"], "title": t, "channel": ch, "duration": int(e["duration"]),
+            "views": e.get("view_count"), "verified": bool(e.get("channel_is_verified")),
+            "official_channel": score >= 5 and bool(nch), "flags": bad, "score": round(score, 2),
+            "thumb": f"https://i.ytimg.com/vi/{e['id']}/mqdefault.jpg"}
+
+
 def yt_search(artist, title):
     q = f"ytsearch10:{artist} {title} official music video"
-    env = C.tool_env()
-    r = subprocess.run([f"{BIN}/yt-dlp", "--js-runtimes", "node", "--flat-playlist", "-J", "--", q],
-                       capture_output=True, text=True, timeout=60, env=env)
-    if r.returncode:
-        raise HTTPException(502, "YouTube search failed: " + r.stderr.strip()[-200:])
-    out, na, nt = [], norm(artist), norm(title)
-    for e in json.loads(r.stdout).get("entries") or []:
-        if not e or not e.get("id") or not e.get("duration"):
-            continue
-        t, ch = (e.get("title") or ""), (e.get("channel") or "")
-        nt_, nch = norm(t), norm(ch)
-        score = 0.0
-        # the artist's own channel (or their VEVO); a result without a channel name proves nothing
-        if na and nch and (na in nch or nch.replace(" ", "") in (na.replace(" ", "") + "vevo") or nch.endswith("vevo") and na.replace(" ", "") in nch.replace(" ", "")):
-            score += 5
-        if e.get("channel_is_verified"):
-            score += 1.5
-        if "official" in nt_ and "unofficial" not in nt_:
-            score += 2
-        if re.search(r"\bm v\b|\bmv\b|music video", nt_):  # "M/V" (K-pop labels), "MV", "Music Video"
-            score += 2
-        if nt and nt in nt_:
-            score += 1
-        bad = [w for w in BAD_WORDS if w in nt_]
-        bad = [w for w in bad if not any(w != o and w in o for o in bad)]
-        score -= 4 * len(bad)
-        score += math.log10((e.get("view_count") or 0) + 1) / 3
-        out.append({"id": e["id"], "title": t, "channel": ch, "duration": int(e["duration"]),
-                    "views": e.get("view_count"), "verified": bool(e.get("channel_is_verified")),
-                    "official_channel": score >= 5 and bool(nch), "flags": bad, "score": round(score, 2),
-                    "thumb": f"https://i.ytimg.com/vi/{e['id']}/mqdefault.jpg"})
+    try:
+        d = yt_json(["--flat-playlist", "-J", "--", q])
+    except RuntimeError as e:
+        raise HTTPException(502, "YouTube search failed: " + str(e))
+    out = [v for v in (video_entry(e, artist, title) for e in d.get("entries") or []) if v]
     out.sort(key=lambda x: -x["score"])
     return out
 
@@ -410,18 +430,9 @@ def split_query(q):
     return None
 
 
-@app.get("/api/search")
-def search(q: str):
-    q = q.strip()
-    if not q or len(q) > 200:
-        raise HTTPException(400, "type Artist - Title")
-    artist, _, title = q.partition(" - ")
-    if not title:
-        artist, title = "", q
-        guess = split_query(q)  # typed without ' - ': work out which part is the artist
-        if guess:
-            artist, title = guess
-    videos = yt_search(artist, title)
+def find_lyrics(artist, title):
+    """The lyrics half of a search: kara.moe and LRCLIB entries (romaji checked against the Japanese original).
+    -> (lyrics, notes, failed): failed when LRCLIB didn't answer (so "nothing found" isn't believed)."""
     notes = []
     km, jp_titles = km_search(title.strip(), artist.strip())
     try:
@@ -435,10 +446,33 @@ def search(q: str):
         check_romaji_entries(lyrics)
         for l in lyrics:
             l.pop("_sample", None)
+        failed = False
     except Exception as e:
-        lyrics = km
+        lyrics, failed = km, True
         notes.append(f"LRCLIB didn't answer ({str(e)[:60]}); search again in a moment")
-    return {"artist": artist.strip(), "title": title.strip(), "videos": videos, "lyrics": lyrics, "notes": notes}
+    return lyrics, notes, failed
+
+
+def song_search(artist, title, videos=True):
+    """The search answer for a song whose names are known: videos (unless videos=False) and lyrics."""
+    vids = yt_search(artist, title) if videos else []
+    lyrics, notes, failed = find_lyrics(artist, title)
+    return {"artist": artist.strip(), "title": title.strip(), "videos": vids, "lyrics": lyrics, "notes": notes,
+            **({"lyrics_failed": True} if failed else {})}
+
+
+@app.get("/api/search")
+def search(q: str):
+    q = q.strip()
+    if not q or len(q) > 200:
+        raise HTTPException(400, "type Artist - Title")
+    artist, _, title = q.partition(" - ")
+    if not title:
+        artist, title = "", q
+        guess = split_query(q)  # typed without ' - ': work out which part is the artist
+        if guess:
+            artist, title = guess
+    return song_search(artist, title)
 
 
 # ---------------- jobs ----------------
@@ -3593,6 +3627,45 @@ def _automake_worker():
                 pass
 
 
+PICK_WHY = {"video": "no music video found", "lyrics": "no timed lyrics found", "have": "already in the library",
+            "ready": "already made (on the Songs tab, not published yet)", "making": "already in the make queue",
+            "name": "a song with this name is already in the library"}
+
+
+def pick_song(d, max_s, video=None, fallback=("", "")):
+    """Choose a song's video and timed lyrics from a search answer the way the Make page does (autopick.py), and say
+    why it can't be made as it is: party auto-make and imports. video: one the person chose (a playlist's own), kept;
+    only the lyrics are picked for it. -> {"video", "lyrics", "artist", "title", "names_from", "kind", "why", "have"}:
+    kind None (ready to make) or video, lyrics, long (longer than max_s), have, ready, making (match_song: the studio
+    has it), name (a file of that name is in the library); why says it in words (long: the caller says it).
+    fallback: the names asked for, when neither the pick nor the search has any."""
+    if video is None:
+        p = autopick.choose(d)
+    else:
+        l = autopick.best_lyrics(d, video)
+        n = autopick.auto_names(d, l, video)
+        p = {"video": video, "lyrics": l, "artist": n["artist"], "title": n["title"], "names_from": n["from"]}
+    v, l = p["video"], p["lyrics"]
+    out = dict(p, artist=p["artist"] or d.get("artist") or fallback[0] or "", title=p["title"] or d.get("title") or fallback[1] or "",
+               kind=None, why=None, have=None)
+    if not v:
+        out["kind"] = "video"
+    elif not l or not l.get("timed"):
+        out["kind"] = "lyrics"
+    elif (v.get("duration") or 0) > max_s:
+        out["kind"] = "long"
+    else:
+        have = match_song(out["artist"], out["title"])  # it may be here under the names the lyrics give it
+        out["have"] = have
+        if have[0] in ("have", "ready", "making"):
+            out["kind"] = {"have": "have", "ready": "ready", "making": "making"}[have[0]]
+        elif os.path.exists(f"{MV_DIR}/{final_base(out)}.mp4"):
+            out["kind"] = "name"
+    if out["kind"] and out["kind"] != "long":
+        out["why"] = PICK_WHY[out["kind"]]
+    return out
+
+
 def _auto_fail(rid, why):
     STORE.set_request(rid, status="failed", reason=why, stage=None, eta=None)
     log.info("auto-make: request %s… not made: %s", rid[:8], why)
@@ -3611,32 +3684,27 @@ def automake_run(rid):
     except Exception as e:
         log.warning("auto-make: search for %s… failed: %s", rid[:8], str(getattr(e, "detail", e))[:120])
         return _auto_fail(rid, "couldn't search for it (YouTube or the lyrics sites didn't answer)")
-    p = autopick.choose(d)
-    v, l = p["video"], p["lyrics"]
-    if not v:
-        return _auto_fail(rid, "no music video found")
-    if not l or not l.get("timed"):
-        return _auto_fail(rid, "no timed lyrics found")
-    if (v.get("duration") or 0) > cfg["max_minutes"] * 60:
+    p = pick_song(d, cfg["max_minutes"] * 60, fallback=(r["artist"], r["title"]))
+    v, l, artist, title = p["video"], p["lyrics"], p["artist"], p["title"]
+    if p["kind"] == "long":
         m, sec = divmod(int(v["duration"]), 60)
         return _auto_fail(rid, f"too long for a quick make ({m}:{sec:02d}; the limit is {cfg['max_minutes']} min)")
-    artist = p["artist"] or d.get("artist") or r["artist"]
-    title = p["title"] or d.get("title") or r["title"]
-    have = match_song(artist, title)  # it may be here under the names the lyrics give it
-    if have[0] == "have":
+    if p["kind"] == "have":
+        have = p["have"]
         STORE.set_request(rid, status="have", job=have[1], song_id=have[2], base=have[3], stage=None, eta=None)
         return
-    if have[0] in ("ready", "making"):  # someone's song: the request follows it (no auto-publish)
-        link_request(have[1], rid)
+    if p["kind"] in ("ready", "making"):  # someone's song: the request follows it (no auto-publish)
+        link_request(p["have"][1], rid)
         refresh_requests()
         return
-    base = final_base({"artist": artist, "title": title})
-    if os.path.exists(f"{MV_DIR}/{base}.mp4"):  # never replaced by a quick make
+    if p["kind"] == "name":  # never replaced by a quick make
+        base = final_base({"artist": artist, "title": title})
         hit = catalog_view()["by_base"].get(base)
         if hit:
             STORE.set_request(rid, status="have", song_id=hit[0]["id"], base=base, stage=None, eta=None)
             return
-        return _auto_fail(rid, "a song with this name is already in the library")
+    if p["kind"]:
+        return _auto_fail(rid, p["why"])
     pname = STORE.player_names().get(r["player"]) or ("the preset player" if r["player"] == encore.PRESET else "a player")
     jid = new_job({"yt": v["id"], "lrc_id": l["id"], "lyrics_source": l["source"], "artist": artist, "title": title,
                    "video_title": str(v.get("title") or "")[:200], "gpu_pref": "auto", "encore_rids": [rid],
