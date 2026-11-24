@@ -3,7 +3,7 @@ lines of a pasted list, a song's names from a video's title; then the link searc
 made-up yt-dlp and LRCLIB answers (no network): ready rows and each skip reason, a playlist keeping its own
 videos, duplicates, songs the studio has, the review kept on disk, Make ticked, and who may use it.
 Made-up artists and titles; the "lyrics" are la-la lines."""
-import ipaddress, json, os, time, unittest, urllib.parse
+import ipaddress, json, os, re, time, unittest, urllib.parse
 
 from tests import _env  # noqa: F401  (must come first: throwaway folders)
 from tests._asgi import jcall  # noqa: E402
@@ -142,7 +142,7 @@ class Net:
                     if A.loose(q["track_name"]) and A.loose(q["track_name"]) in A.loose(h["trackName"]) \
                             and (not q.get("artist_name") or A.loose(q["artist_name"]) in A.loose(h["artistName"])):
                         out.append(h)
-                elif A.loose(h["trackName"]) in text:
+                elif A.loose(re.sub(r"\s*[(\[][^)\]]*[)\]]", "", h["trackName"])) in text:   # (LRCLIB ignores "[1984]")
                     out.append(h)
             return out
         if "lrclib.net/api/get/" in url:
@@ -274,6 +274,27 @@ class LinkSearch(Base):
         url = "https://www.youtube.com/watch?v=NOVAlane001&" + "&".join(f"x{i}=yyyyyyyyyy" for i in range(30))
         self.assertGreater(len(url), 200)
         self.assertEqual(self.q(url)[0], 200)
+
+
+class ConfirmNames(Base):
+    def test_lrclib_spelling_wins(self):
+        self.net.lrc += [lrc(1, "Nova lane", "Paper Lanterns"), lrc(2, "Nova Lane", "Paper Lanterns"), lrc(3, "Nova Lane", "Paper lanterns")]
+        self.assertEqual(A.confirm_names("NOVA LANE", "paper lanterns"), ("Nova Lane", "Paper Lanterns", "LRCLIB"))   # most uploads agree
+        self.assertEqual(A.confirm_names("Paper Lanterns", "Nova Lane"), ("Nova Lane", "Paper Lanterns", "LRCLIB"))   # "Title - Artist"
+
+    def test_brackets_collaborators_and_feats(self):
+        self.net.lrc += [lrc(4, "Iris Vale", "Glass River [1984]"), lrc(5, "Red Kites", "Lowland"), lrc(6, "Red Kites", "Lowland"),
+                         lrc(7, "Red Kites & Ada Moon", "Lowland"), lrc(8, "Bram", "Echo")]
+        self.assertEqual(A.confirm_names("Iris Vale", "Glass River"), ("Iris Vale", "Glass River", "LRCLIB"))
+        self.assertEqual(A.confirm_names("Red Kites and Ada Moon", "Lowland"), ("Red Kites & Ada Moon", "Lowland", "LRCLIB"))
+        self.assertEqual(A.confirm_names("Red Kites", "Lowland"), ("Red Kites", "Lowland", "LRCLIB"))
+        self.assertEqual(A.confirm_names("Bram & Ada Moon", "Echo", ["Ada Moon"]), ("Bram & Ada Moon", "Echo", "LRCLIB"))
+
+    def test_nothing_known_or_no_artist(self):
+        self.assertEqual(A.confirm_names("Kit Rowe", "Unknown Song"), ("Kit Rowe", "Unknown Song", None))
+        self.net.lrc.append(lrc(9, "Nova Lane", "Paper Lanterns"))
+        self.assertEqual(A.confirm_names("", "Nova Lane Paper Lanterns"), ("Nova Lane", "Paper Lanterns", "the search"))
+        self.assertEqual(A.confirm_names("", "Untitled Jam"), ("", "Untitled Jam", None))
 
 
 class Lookup(Base):

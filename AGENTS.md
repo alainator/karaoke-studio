@@ -38,7 +38,7 @@ actions stay off.
 | read | on | songs, lines, what was heard, pictures, logs, search |
 | edit | on | move, stretch, retype, split, join, add and delete lines; offset; reading; rename an unpublished song; undo |
 | notes | on | notes on lines, flag a line for the person (`ks note … --mark`) |
-| make | on | queue new songs, cancel a make |
+| make | on | queue new songs, import a list or playlist (`ks import`), cancel a make |
 | clear_marks | off | clear ⚠ marks (`ks ok`), "checked by you", dismiss player flags |
 | publish | off | publish, rename a published song |
 | remake | off | remake, change video or lyrics, retry, trim, custom videos, reset to the automatic version |

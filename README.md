@@ -8,11 +8,12 @@ Turn an official music video into a karaoke video, with the vocals removed and t
 
 Karaoke Studio makes the songs for [Encore](https://github.com/alainator/encore), the karaoke party app, and the two connect to each other: guests' requests at the party reach the studio, and the songs it publishes come back to the party, with what Encore's singing score, guide vocals and duets need. The videos themselves are plain files (an `.mp4` with `.ass` lyrics), so other karaoke apps that play videos with subtitles may play them too.
 
-Type `Artist - Title`. The studio finds the music video on YouTube and the lyrics on [LRCLIB](https://lrclib.net), removes the vocals on your GPU, and times every word to the singing. You preview it in the browser, fix anything you want, and publish.
+Type `Artist - Title` (or paste a YouTube link). The studio finds the music video on YouTube and the lyrics on [LRCLIB](https://lrclib.net), removes the vocals on your GPU, and times every word to the singing. You preview it in the browser, fix anything you want, and publish.
 
 ## What it does
 
 - **Finds the right video and lyrics.** Official music videos are preferred over lyric videos, live versions, covers and dance practices. Each suggestion can be opened first: watch the video, read the lyrics. No lyrics online? Paste them from any site; if LRCLIB has a timed version, your words get its timing.
+- **Takes a link or a whole list.** Paste a YouTube link and that video is used, the song named from its title (checked against LRCLIB). *Import a list* takes a YouTube playlist (its own videos) or up to 50 songs pasted one per line, finds timed lyrics (and a video) for each the way party auto-make picks, and shows a review to change, untick or rename before anything is made (`ks import` for agents).
 - **Times the lyrics by listening.** It finds the album recording and matches it against the video's music, so skits, scenes in the middle and cuts are found exactly. Talking keeps its sound; only the singing is removed. Backing vocals in brackets get their own line, so they can overlap the lead.
 - **Fixes lyric mistakes.** An optional local AI (via [Ollama](https://ollama.com)) catches dropped or swapped words and wrong Japanese readings, and keeps a change only if it fits the singing better.
 - **Lets you edit easily.** A waveform or spectrogram of the vocals with a block per line: drag, stretch, or tap **S** as each line is sung, and starts snap to where notes begin. Slow playback to 0.5×, loop a line, split or join lines.

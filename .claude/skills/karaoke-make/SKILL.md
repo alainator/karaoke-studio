@@ -9,6 +9,8 @@ description: Make new karaoke songs in Karaoke Studio - search for the music vid
    score, title, channel, flags) and lyrics (source:id, length, timed or plain, name match, script, artist - title).
    If the lyrics part is empty with a note that LRCLIB didn't answer (429), wait a minute and search again.
    Searches for non-English songs often work better with the original-script title, or the other way round.
+   Given a YouTube link, `ks search LINK` lists that video first (marked "your link") with the song's names read from
+   its title; check the names (they come from an uploader's title, then LRCLIB) and the video like any other.
 2. Pick the video. Check the title and channel, not just the score:
    - The official music video of the original: not a lyric video (lyrics burned in would show twice), not a
      cover, remix, re-recording ("2020 version"), "short ver.", fan cut, or a version in another language
@@ -26,6 +28,16 @@ description: Make new karaoke songs in Karaoke Studio - search for the music vid
 6. When it's done (`ks list --q`), check it like any song (karaoke-fix skill). Don't publish unless asked.
    When the person asked for a batch to go out unreviewed, queue with `--auto` (needs the "publish" scope): each
    song is published by itself if its video check passes, otherwise it waits with the reason (`ks show SONG`).
+
+Given a list or a YouTube playlist: `ks import PLAYLIST-LINK` (or `ks import FILE`, one song per line: Artist - Title
+or a video link; `-` reads stdin; up to 50) makes the Studio pick the video and timed lyrics for each the way party
+auto-make picks (a playlist keeps its own videos), and prints a review: `[x]` ready rows, skipped rows with the reason
+(no timed lyrics, too long, already in the library or the queue, a duplicate, an unavailable video, a lyric/live/cover
+video found for a typed line). Nothing is made yet. Its picks are automatic: check every `[x]` row against the rules
+above (right song and version, the official video, lyrics of the same length and language) before
+`ks import IMPORT-ID --make` queues them (all at once, in list order: do that when the person asked for the whole
+list made; otherwise follow the pacing below); for a row that's wrong, make that song by hand (steps 1-4) instead.
+The person can do the same review on the Make tab (Import a list), with Change… per row.
 
 For many songs, don't queue them all at once while the person may be making their own: the studio makes one song
 at a time per GPU, first come first served. Queue one, wait until `ks status` says nothing is being made, then the

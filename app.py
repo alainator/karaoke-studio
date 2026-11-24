@@ -469,7 +469,8 @@ def confirm_names(artist, title, feats=()):
     source "LRCLIB", "the search" (split_query) or None (as read)."""
     bare = lambda x: loose(re.sub(r"\s*[(\[][^)\]]*[)\]]", "", x or ""))
     same_t = lambda a, b: bool(loose(a)) and (loose(a) == loose(b) or (bool(bare(a)) and bare(a) == bare(b)))
-    alike = lambda a, b: bool(loose(a)) and bool(loose(b)) and (loose(a) in loose(b) or loose(b) in loose(a))
+    na = lambda x: loose(re.sub(r"\band\b|&|,", " ", x or "", flags=re.I))   # "Queen and David Bowie" = "Queen & David Bowie"
+    alike = lambda a, b: bool(na(a)) and bool(na(b)) and (na(a) in na(b) or na(b) in na(a))
     if not artist:
         got = split_query(title) if title else None
         return (got[0], got[1], "the search") if got else ("", title, None)
@@ -477,11 +478,18 @@ def confirm_names(artist, title, feats=()):
         hits = http_json("https://lrclib.net/api/search?" + urllib.parse.urlencode({"q": f"{artist} {title}"}))[:30]
     except Exception:
         hits = []
+    from collections import Counter
     for a, t in ((artist, title), (title, artist)):
         m = [h for h in hits if same_t(h.get("trackName"), t) and alike(h.get("artistName"), a)]
         if m:
-            h = max(m, key=lambda h: bool(h.get("syncedLyrics")))   # (the first timed one)
-            la, lt = autopick.tidy_name(h["artistName"]), autopick.tidy_name(h["trackName"])
+            exact = [h for h in m if loose(h.get("trackName")) == loose(t)] or m
+            common = lambda xs: Counter(xs).most_common(1)[0][0]   # the spelling most uploads agree on (ties: first)
+            same_a = [h for h in m if na(h["artistName"]) == na(a)]   # all the singers the video names, when LRCLIB has them
+            names_ = Counter(h["artistName"] for h in same_a or m)   # (with "&" first, the library's way: "Queen & David Bowie")
+            la = autopick.tidy_name(max(names_, key=lambda x: (" & " in x, names_[x])))
+            lt = autopick.tidy_name(common(h["trackName"] for h in exact))
+            if loose(lt) != loose(t) and not re.search(r"[(\[]", t):   # "Title [1984]" on LRCLIB, "Title" in the video
+                lt = re.sub(r"\s*[(\[][^)\]]*[)\]]", "", lt).strip() or lt
             if feats and not all(loose(f) in loose(la) for f in feats):
                 la = a
             return la or a, lt or t, "LRCLIB"
