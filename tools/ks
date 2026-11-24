@@ -541,8 +541,12 @@ def cmd_look(a):
     rows = [r for r in (hd.get("X-Rows") or "spectrogram,lines,heard").split(",") if r in LOOK_ROWS]
     print(out)
     print("(" + "; ".join(LOOK_ROWS[r] for r in rows) + f"; {t1 - t0:.0f} s shown)")
+    mel = hd.get("X-Melody") or ""
     if "melody" not in rows:
-        print("(no melody row: this song has no pitch file yet; deploy/write-pitch.py on the Studio's machine makes them)")
+        print("(no melody row: " + ("the Studio is busy making a song, try again in a moment" if mel == "busy" else
+                                    "its pitch couldn't be tracked" if mel == "failed" else
+                                    "this song has no pitch file; deploy/write-pitch.py on the Studio's machine makes them")
+              + ")")
     al = hd.get("X-Align") or ""
     if a.align and al != "ok":
         print("(no aligner row: " + ("the Studio is busy making a song, try again in a moment" if al == "busy" else al or "no answer") + ")")
@@ -569,8 +573,10 @@ def align_text(r):
                        f"where it is now, or the singing there doesn't match the words); trust this less, look first")
         else:
             out.extend(boundary_text(t, p))
-    return "\n".join(out + ["(evidence, not a fix: on lines people fixed this was right about 1 in 4 times, and it also "
-                             "moves about 1 in 10 good lines, whatever its confidence; act only when the melody row or the heard words agree)"])
+    return "\n".join(out + ["(evidence, not a fix: a second opinion. On lines people fixed it was right about 1 in 4 times "
+                             "and it moves about 1 in 10 good lines, whatever its confidence. Trust it when the heard words "
+                             "agree; ignore it on a chorus opener right after a held note, a duet reply, or a line whose "
+                             "words repeat nearby (it often lands on the wrong copy))"])
 
 
 def boundary_text(t, p):

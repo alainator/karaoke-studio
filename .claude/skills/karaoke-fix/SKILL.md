@@ -16,6 +16,10 @@ or a unique piece of "Artist - Title". `ks whoami` says what your key allows.
   early is within the studio's tolerance. The next line may already show while the current one is sung.
 - A line should stay up long enough to sing along (its last word ends where the singing of it ends).
 - Perfect word-by-word timing isn't the goal: up a little early and up long enough so people can sing along.
+- So the two directions aren't alike. **Be bold moving a line (or a boundary) EARLIER** by up to about 2 s when the
+  heard words or the picture (stripes, melody row) show its singing starts earlier: one clear signal is enough, and if
+  you're a bit off it's still harmless. **Be cautious moving a line LATER, or by more than about 2 s** either way: do
+  it only when two signals agree (heard words, picture, `ks align`), and leave a note otherwise.
 - The person does the final touches; your job is to get it close and to say what you weren't sure about.
 
 ## Workflow
@@ -39,8 +43,9 @@ or a unique piece of "Artist - Title". `ks whoami` says what your key allows.
      line N when it hears it together with the line before (see below).
    - `ks align SONG N`: that alignment as numbers: each word's place and confidence, the line's start vs now, the
      boundary with the line before, and the pair edit to try. `ks align SONG --window 2:25 2:45` does every line in
-     a stretch (a line far from where it's sung). It's evidence, not a fix: alone it is right about 1 in 4 times on
-     late lines and would move 1 in 10 good lines.
+     a stretch (a line far from where it's sung). It's a second opinion, not a gate: trust it when it agrees with the
+     heard words; ignore it on a chorus opener right after a held note (it pulls the line onto that note), a duet
+     reply, and lines whose words repeat nearby (it often lands on the wrong copy).
    - `ks frame SONG --line N` (or `--at T`), then open the PNG: what's on screen then, as players show it.
 4. Fix with the smallest change that makes it right:
    - Whole line in the wrong place: `ks move SONG N +1.2`, or `ks move SONG N --to 1:23.40` (its start).
@@ -71,11 +76,14 @@ or a unique piece of "Artist - Title". `ks whoami` says what your key allows.
 - **A line that starts late, sung straight on from the line before** (the most common fix people make: 0.5-2 s
   late, often marked ⚠ but not always). There's no dark gap to see, and the crowd's timing shares the late start, so
   `ks alt-lyrics` won't help. It is a late **boundary**: the line before's held last note was stretched over this
-  line's singing. Check three things: where the melody row starts this line's first note, where its first words are
-  heard (`ks heard`), and `ks align SONG N`. When two of the three agree, fix both sides of the boundary, the line
-  before's end first, then this line's start (`ks align` prints the pair: `ks stretch SONG N-1 --end T-0.05;
-  ks stretch SONG N --start T`). When they disagree, leave it and note it (`ks note SONG N "check: ..."`). If
-  `ks align` says the line before moves too, its window is off: trust the picture instead.
+  line's singing. Look where its first words are heard (`ks heard`) and where the melody row starts its first note
+  after the held one (a white tick, a pitch jump). If either shows it starts earlier (by up to about 2 s), move the
+  boundary there: the line before's end first, then this line's start (`ks stretch SONG N-1 --end T-0.05;
+  ks stretch SONG N --start T`). `ks align SONG N` can confirm, but don't wait for it (see above for when to ignore
+  it). If nothing shows where it starts, leave it and note it (`ks note SONG N "check: ..."`).
+- **A repeated chorus**: when a chorus (or any repeated) line was late, find the same line in every repeat
+  (`ks show SONG`) and check each one the same way; they are usually late alike, so fix them all alike, each at
+  its own heard start.
 - **A held last note** ending after the block: stretch the end to where the singing stops.
 - **Lyrics with careless timing**: many lines squeezed together, or whole sections misplaced. Line by line is
   slow: `ks alt-lyrics SONG` scores every LRCLIB copy against what's heard; a copy that fits clearly better (for

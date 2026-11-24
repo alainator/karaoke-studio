@@ -121,11 +121,15 @@ You can't listen, but the Studio can, and it can draw what it hears:
 - `ks align SONG N`: the forced aligner (the one that timed the song) hears line N together with the line before
   it, from the previous line's start to the next line's start: each word's place and confidence, the start vs now,
   the boundary, and the pair edit to try (`--window START END`: every line in a stretch; `--json` for scripts).
-  It uses the Studio's GPU for a few seconds and answers "busy" while a song is being made.
+  It uses the Studio's GPU for a few seconds and answers "busy" while a song is being made. (A song with no pitch
+  file yet gets one on its first `ks look`: a few seconds more.)
 - Lines sung straight on from the previous one are the commonest late lines (0.5-2 s): no dark gap shows, the
   crowd's lyric timing shares the late start (`ks alt-lyrics` won't help), and the line before's end usually runs
-  into them. Fix the boundary (the line before's end, then the line's start) when two of the melody row, the heard
-  words and `ks align` agree; when they don't, leave a `check:` note.
+  into them. Fix the boundary (the line before's end, then the line's start) when the heard words or the melody row
+  show the singing starts earlier (by up to about 2 s: one clear signal is enough; early is harmless, late is the
+  error). Moving a line later, or by more than about 2 s, needs two signals; otherwise leave a `check:` note. A late
+  chorus line: check and fix every repeat alike. `ks align` is a second opinion: not on chorus openers after a held
+  note, duet replies or repeated lines.
 - `ks frame SONG --line N`: the video frame with the lyrics as players show them.
 - After editing, run `ks check` again. If the Studio couldn't follow the song by ear (few or no heard words), judge
   each line by its stripes and say how sure you are.
