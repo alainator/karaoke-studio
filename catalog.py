@@ -14,7 +14,9 @@ Name.words.json next to each published song.
               versions of one song share it), "words": "<base>.words.json" or null, "lines": n, "first": seconds,
               "job_deleted": true (only on songs whose studio job was deleted while the files stayed),
               "album", "year" (int), "genre": the song's album (albummeta.py; null when unknown), "cover":
-              "<base>.cover.jpg" (its cover art next to the video) or null,
+              "<base>.cover.jpg" (its cover art next to the video) or null, "loudness" (song and versions): {"v": 1,
+              "lufs", "peak_db", "mix_lufs", "mix_peak_db"} or null (the sound's loudness, to even out song volumes:
+              loudness.py),
               version 2 adds: "pitch": "<base>.pitch.json" or null (the sung melody, pitch.py), "plays": n and
               "last_played": unix time or null (plays of the song and its versions that count, from every player
               that reports them: Encore), "vocals": "<base>.vocals.m4a" or null (the
@@ -33,6 +35,8 @@ Only songs whose files exist in the library are listed; their lyric modes are th
 atomic (a temporary file then rename) and never raises out of refresh(): a failure is logged, publishing goes on.
 """
 import json, os, shutil, re, threading, time, unicodedata
+
+import loudness
 
 from assgen import MEMBER_RGB, MODES, SINGER_FILL, TOGETHER_FILL, load_cast, load_lines
 
@@ -278,6 +282,7 @@ def entry_for(job_dir, job, lib_dir, mv_dir):
         n = len(lines)
         if lines:
             first = round(min(w[0] for w in lines[0]["words"]) + float(job.get("offset") or 0.0), 2)
+    loud = loudness.current(job_dir, mv_dir, base)   # (versions play over the song's own sound: the same)
     versions = []
     try:
         import videoswap
@@ -285,7 +290,7 @@ def entry_for(job_dir, job, lib_dir, mv_dir):
             pa = m.get("published_as")
             if m.get("mode") == "version" and pa and os.path.isfile(os.path.join(mv_dir, pa + ".mp4")):
                 versions.append({"name": m.get("name") or m.get("slug"), "base": pa, "published": m.get("published"),
-                                 "pitch": _pitch(mv_dir, pa), "vocals": _vocals(mv_dir, pa)})
+                                 "pitch": _pitch(mv_dir, pa), "vocals": _vocals(mv_dir, pa), "loudness": loud})
     except Exception:
         pass
     title = job.get("title") or ""
@@ -302,7 +307,7 @@ def entry_for(job_dir, job, lib_dir, mv_dir):
             "group": group_key(job.get("artist"), title),
             "words": base + WORDS_EXT if os.path.isfile(os.path.join(mv_dir, base + WORDS_EXT)) else None,
             "lines": n, "first": first, "pitch": _pitch(mv_dir, base), "plays": 0, "last_played": None,
-            "vocals": _vocals(mv_dir, base), **album_fields(job_dir, job, mv_dir, base)}
+            "vocals": _vocals(mv_dir, base), "loudness": loud, **album_fields(job_dir, job, mv_dir, base)}
 
 
 def build(jobs_dir, lib_dir, mv_dir, old=None, log=None, plays=None):
@@ -337,7 +342,7 @@ def build(jobs_dir, lib_dir, mv_dir, old=None, log=None, plays=None):
         for v in (o or {}).get("versions", []):
             if v.get("base") not in bases and os.path.isfile(os.path.join(lib_dir, e["folder"], v["base"] + ".mp4")):
                 vd = os.path.join(lib_dir, e["folder"])
-                e["versions"].append(dict(v, pitch=_pitch(vd, v["base"]), vocals=_vocals(vd, v["base"])))
+                e["versions"].append(dict(v, pitch=_pitch(vd, v["base"]), vocals=_vocals(vd, v["base"]), loudness=e.get("loudness")))
                 bases.add(v["base"])
     for o in (old or {}).get("songs", []):
         if not isinstance(o, dict) or o.get("id") in ids or o.get("base") in bases:

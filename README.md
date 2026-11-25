@@ -177,6 +177,11 @@ play it quietly under the karaoke for singers who want a little help. A trim or 
 published copy follows on the next publish. For songs published before: `python -I deploy/write-vocals.py --dry`,
 then without `--dry` (a plain copy, no GPU; songs changed since they were published are skipped: publish them again).
 
+**Loudness.** Publishing also measures the song's loudness (EBU R128 LUFS and true peak of the video's sound, and of it
+with the vocals; ffmpeg, about 2 s on the CPU) into the catalog (`loudness`), so players can even out song volumes
+without the files changing. For songs published before: `python -I deploy/write-loudness.py --dry`, then without
+`--dry` (measured songs are skipped; it stops while a song is being made).
+
 **Networking (Docker).** Encore reaches the studio over a private network that only the two containers join:
 ```yaml
 # in both compose files
