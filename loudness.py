@@ -86,12 +86,14 @@ def _size(p):
 def measure(mv_dir, base):
     """The job-side record for the published <base>.mp4 (and its vocals), or None when its sound can't be measured."""
     video, vocals = os.path.join(mv_dir, base + ".mp4"), os.path.join(mv_dir, base + VOCALS_EXT)
+    size, vsize = _size(video), _size(vocals)
     m = measure_file(video)
     if not m:
         return None
-    vsize = _size(vocals)
     mix = measure_mix(video, vocals) if vsize else None
-    return {"v": V, "base": base, "size": _size(video), "vocals_size": vsize if mix else None,
+    if (size, vsize) != (_size(video), _size(vocals)):   # published again meanwhile: this reading is the old file's
+        return None
+    return {"v": V, "base": base, "size": size, "vocals_size": vsize if mix else None,
             "lufs": m[0], "peak_db": m[1], "mix_lufs": mix[0] if mix else None, "mix_peak_db": mix[1] if mix else None,
             "at": round(time.time())}
 
