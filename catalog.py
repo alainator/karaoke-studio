@@ -28,7 +28,10 @@ Name.words.json next to each published song.
     Name.words.json  {"version": 1, "job", "base", "duration", "parts": [...as above], "together_color",
                       "lines": [{"i", "start", "end", "words": [[start, end, "word"], ...], "parts": [keys],
                                  "word_parts": [[keys] per word] (only lines shared word by word),
-                                 "orig": "original-script row" (optional), "backing": true (optional)}]}
+                                 "orig": "original-script row" (optional), "backing": true (optional),
+                                 "syl": [null or [[start, end, "piece"], ...] per word] (optional: words sung in
+                                 syllable pieces, shown joined; the pieces' texts joined are the word, their span is
+                                 the word's; syllables.py)}]}
       times are VIDEO times (the job's timing offset applied), like the published .ass. "parts" [] = not assigned
       (everyone sings it).
 
@@ -163,6 +166,8 @@ def words_doc(job_dir, job, base):
     for i, l in enumerate(lines):
         ws = [[r2(a), r2(b), w] for a, b, w in l["words"]]
         x = {"i": i + 1, "start": min(w[0] for w in ws), "end": max(w[1] for w in ws), "words": ws, "parts": _line_parts(l)}
+        if l.get("syl"):
+            x["syl"] = [[[r2(a), r2(b), t] for a, b, t in p] if p else None for p in l["syl"]]
         if l.get("wwho"):
             lp = x["parts"]
             x["word_parts"] = [(_who_parts(w) or lp) for w in l["wwho"]]

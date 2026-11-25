@@ -50,6 +50,7 @@ ROUTES = [
     (("POST",), J + r"/cancel", "make"),
     (("POST",), J + r"/lines", "edit"),                     # (clearing marks or ok needs clear_marks; see app.put_lines)
     (("POST",), J + r"/lines/undo", "edit"),
+    (("POST",), J + r"/syllables", "edit"),                # (split words into syllables from the melody)
     (("POST",), J + r"/offset", "edit"),
     (("POST",), J + r"/display", "edit"),
     (("POST",), J + r"/hanzi", "edit"),
@@ -382,4 +383,7 @@ def describe(old, new):
         return f"editor: {ch} line{'s' if ch != 1 else ''} changed, {len(old) - len(new)} removed"
     if ch:
         return f"editor: {ch} line{'s' if ch != 1 else ''} changed"
+    sy = len({json.dumps(l.get("syl")) + _wkey(l) for l in new} - {json.dumps(l.get("syl")) + _wkey(l) for l in old})
+    if sy:
+        return f"editor: syllables in {sy} line{'s' if sy != 1 else ''}"
     return "editor: marks, singers or notes"

@@ -642,7 +642,7 @@ if _WM:
 _WM.clear(); gc.collect(); gpu.empty_cache(DEV)
 # Pitch (CREPE): which 10 ms frames of the vocals hold a sung note. A held last word ends where its note does, which
 # loudness alone can't tell from a breath, a backing voice or separation leftovers in the gap after it.
-VOICED = None
+VOICED = MELODY = None
 
 
 def _voiced():
@@ -652,14 +652,20 @@ def _voiced():
     _f0, _per = torchcrepe.predict(_a, SR, hop_length=SR // 100, fmin=65, fmax=1100, model="tiny", batch_size=4096,
                                    device=DEV, return_periodicity=True)
     v_ = (torchcrepe.filter.median(_per, 5)[0].float().cpu().numpy() > 0.45)
+    f_ = _f0[0].float().cpu().numpy().astype(np.float16)    # the melody itself (f0, periodicity), for syllables below
+    p_ = _per[0].float().cpu().numpy().astype(np.float16)
     del _a, _f0, _per; gpu.empty_cache(DEV)
     peak("pitch")
-    return np.packbits(v_).tobytes().hex() + f":{len(v_)}"   # (kept as text: 1 bit a frame)
+    # kept as text for resuming: the voiced frames (1 bit a frame), then f0 and periodicity (float16)
+    return np.packbits(v_).tobytes().hex() + f":{len(v_)}:" + f_.tobytes().hex() + ":" + p_.tobytes().hex()
 
 
 try:
-    _vh, _, _vn = MEMO.get("pitch", AUDIO_ID, _voiced).partition(":")
-    VOICED = np.unpackbits(np.frombuffer(bytes.fromhex(_vh), dtype=np.uint8))[:int(_vn)].astype(bool)
+    _vp = MEMO.get("pitch", AUDIO_ID, _voiced).split(":")
+    VOICED = np.unpackbits(np.frombuffer(bytes.fromhex(_vp[0]), dtype=np.uint8))[:int(_vp[1])].astype(bool)
+    if len(_vp) >= 4:   # (a cache kept before the melody was: no automatic syllables for this make)
+        MELODY = (np.frombuffer(bytes.fromhex(_vp[2]), dtype=np.float16).astype(np.float32),
+                  np.frombuffer(bytes.fromhex(_vp[3]), dtype=np.float16).astype(np.float32))
 except Exception as e:
     no_oom(e)
     say("info", f"couldn't track the pitch ({str(e)[:60]}); held notes end by loudness")
@@ -1591,6 +1597,17 @@ if CONF["check"]:
                 + (f"; {CONF['sure']} of {CONF['lines']} heard right where they sit" if CONF["sure"] is not None else ""))
 elif CONF["sure"] is not None:
     say("info", f"{CONF['sure']} of {CONF['lines']} lines heard right where they sit; none marked to check")
+# Syllables: a word sung over several separate notes (a held or stretched syllable) lights up piece by piece
+# (syllables.py: Latin-script lines only, and only where the notes and the word's syllables agree)
+if MELODY is not None:
+    try:
+        import pitch as _pitch, syllables as _syl
+        _notes, _ = _pitch.notes(MELODY[0], MELODY[1], [(w[0], w[1]) for l in out_lines for w in l["words"]], hop=0.01)
+        _nsyl = _syl.auto(out_lines, _notes, 0.0, lang)
+        if _nsyl:
+            say("info", f"{_nsyl} word{'s' if _nsyl != 1 else ''} timed by syllable from the melody (held or stretched)")
+    except Exception as e:
+        say("info", f"couldn't time syllables ({str(e)[:60]})")
 save_lines(f"{job_dir}/words.json", out_lines)
 vw, vh = (int(x) for x in vinfo.split(",")[1:3])
 write_lyrics(job_dir, dict(job, result=dict(job.get("result") or {}, width=vw, height=vh, lang=lang)), lines=out_lines)

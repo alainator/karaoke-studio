@@ -19,7 +19,8 @@ is taken, no code):
 - A word the melody track has no note for is freestyle ("F": shown and sung, not scored), so nobody loses points on
   a word the Studio couldn't hear the melody of.
 - "- beat" between lyric lines; "E" at the end. Backing-vocal lines are left out (the singer isn't scored on them).
-Limits: one singer track (duets are exported as one); notes are per word, not per syllable.
+- A word sung in syllables (words.json "syl") gets its notes per piece, each piece's text on its first note.
+Limits: one singer track (duets are exported as one); other words' notes are per word, not per syllable.
 """
 import json, os, re, shutil, subprocess
 
@@ -39,19 +40,22 @@ def _clean(s):
     return re.sub(r"[\r\n]+", " ", str(s or "")).strip()
 
 
-def notes_for(words, notes):
-    """[[start_beat, length, pitch or None, text]] for one line: each word's melody pieces (None: freestyle). Not yet
-    in order with its neighbours (in_order() does that for the whole song)."""
+def notes_for(words, notes, syl=None):
+    """[[start_beat, length, pitch or None, text]] for one line: each word's melody pieces (None: freestyle); a word
+    sung in syllables (syl: words.json's list, null per unsplit word), per syllable. Not yet in order with its
+    neighbours (in_order() does that for the whole song)."""
     out = []
-    for ws, we, text in words:
-        pieces = [(max(ws, a), min(we, b), m) for a, b, m in notes if b > ws and a < we and min(we, b) - max(ws, a) > 0.02]
-        if not pieces:
-            pieces = [(ws, we, None)]
-        for k, (a, b, m) in enumerate(pieces):
-            t = text if k == 0 else "~"
-            if k == len(pieces) - 1:
-                t += " "
-            out.append([_beat(a), max(1, _beat(b) - _beat(a)), None if m is None else int(round(m)) - 60, t])
+    for j, (ws, we, text) in enumerate(words):
+        parts = (syl[j] if syl and j < len(syl) and syl[j] else None) or [[ws, we, text]]
+        for q, (ps, pe, ptext) in enumerate(parts):
+            pieces = [(max(ps, a), min(pe, b), m) for a, b, m in notes if b > ps and a < pe and min(pe, b) - max(ps, a) > 0.02]
+            if not pieces:
+                pieces = [(ps, pe, None)]
+            for k, (a, b, m) in enumerate(pieces):
+                t = ptext if k == 0 else "~"
+                if q == len(parts) - 1 and k == len(pieces) - 1:
+                    t += " "
+                out.append([_beat(a), max(1, _beat(b) - _beat(a)), None if m is None else int(round(m)) - 60, t])
     return out
 
 
@@ -81,7 +85,7 @@ def song_txt(entry, lines, notes, media):
     out = [f"#{k}:{_clean(v)}" for k, v in head.items() if v]
     flat = []   # [line number, note]
     for i, l in enumerate(x for x in lines if not x.get("backing") and x.get("words")):
-        flat += [[i, n] for n in notes_for(l["words"], notes)]
+        flat += [[i, n] for n in notes_for(l["words"], notes, l.get("syl"))]
     in_order([n for _, n in flat])
     for k, (i, (b, n, p, t)) in enumerate(flat):
         if k and i != flat[k - 1][0]:

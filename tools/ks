@@ -33,8 +33,13 @@ What an agent may do is set by its key (made on the Studio's Agents tab); withou
   editing (times are video times, as shown: m:ss.cc or seconds; N is the line number from ks show):
   ks move SONG N (+0.8 | -1.2 | --to 1:23.40) [--ripple]   move a line (with --ripple, every later line too)
   ks stretch SONG N [--start T] [--end T]  new start and/or end; the words keep their proportions
-  ks word SONG N W [--start T] [--end T]  one word's timing (e.g. a held last note), the rest of the line as is
-  ks text SONG N "new words"              same number of words keeps their timing, otherwise spread evenly
+  ks word SONG N W [--start T] [--end T]  one word's timing (e.g. a held last note), the rest of the line as is;
+                                          W.P: piece P of a word sung in syllables (3.2 = word 3's second piece)
+  ks syllables SONG N W "tra|ge|dies"     sing word W in pieces: they show joined, each lit at its own time (then
+                                          time them with ks word SONG N W.P); "tragedies" (no |) joins it again
+  ks syllables SONG --auto [--dry]        split the words the melody clearly holds or stretches over several notes
+  ks text SONG N "new words"              same number of words keeps their timing, otherwise spread evenly; a |
+                                          inside a word splits it into syllables (tra|ge|dies)
   ks split SONG N W                       split before word W (1-based); join SONG N joins N and N+1
   ks add SONG --start T [--end T] "words" | ks delete-line SONG N
   ks trim SONG --start T [--end T]   cut ads or an intro off the video (times in the original video; --start 0 undoes it)
@@ -203,6 +208,53 @@ def text_of(l):
     return " ".join(w[2] for w in l["words"])
 
 
+# ---- syllables: a word sung in pieces, "syl" in the line (the Studio's syllables.py; null per unsplit word) ----
+PIECE_MIN = 0.06
+
+
+def syl_of(l):
+    s = l.get("syl")
+    return list(s) if isinstance(s, list) and len(s) == len(l["words"]) else [None] * len(l["words"])
+
+
+def marked_text(l):
+    """The line's text with its split words marked: tra|ge|dies."""
+    return " ".join("|".join(p[2] for p in s) if s else w[2] for w, s in zip(l["words"], syl_of(l)))
+
+
+def even_pieces(a, b, texts):
+    w = [max(1, len(t)) for t in texts]
+    t, out = a, []
+    for k, (x, wi) in enumerate(zip(texts, w)):
+        e = b if k == len(texts) - 1 else t + (b - a) * wi / sum(w)
+        out.append([round(t, 3), round(e, 3), x])
+        t = e
+    return out
+
+
+def set_pieces(l, j, texts):
+    """Word j sung in these pieces (evenly timed, unless they're already its pieces), or whole again (None)."""
+    syl, w = syl_of(l), l["words"][j]
+    if texts and len(texts) >= 2:
+        if "".join(texts) != w[2]:
+            die(f"the pieces make {''.join(texts)!r} but the word is {w[2]!r} (change the word with ks text)")
+        if not (syl[j] and [p[2] for p in syl[j]] == list(texts)):
+            syl[j] = even_pieces(w[0], w[1], list(texts))
+    else:
+        syl[j] = None
+    l["syl"] = syl if any(syl) else None
+
+
+def typed_words(text):
+    """Words as typed: [(word, pieces or None)]; a | inside a word splits it."""
+    out = []
+    for tok in text.split():
+        parts = [p for p in tok.split("|") if p]
+        if parts:
+            out.append(("".join(parts), parts if len(parts) >= 2 else None))
+    return out
+
+
 def span(l):
     return l["words"][0][0], l["words"][-1][1]
 
@@ -366,7 +418,7 @@ def cmd_show(a):
         a0, b0 = span(l)
         mark = "⚠" if l.get("weak") else ("✓" if l.get("ok") else " ")
         who = f" s{l['singer']}" if l.get("singer") else (f" m{','.join(map(str, l['members']))}" if l.get("members") else "")
-        print(f"{i + 1:3} {mark} {fmt(a0 + off)}-{fmt(b0 + off)}{' (backing)' if l.get('backing') else ''}{who}  {text_of(l)}")
+        print(f"{i + 1:3} {mark} {fmt(a0 + off)}-{fmt(b0 + off)}{' (backing)' if l.get('backing') else ''}{who}  {marked_text(l)}")
         if l.get("orig"):
             print(f"      {l['orig']}")
         if l.get("weak") and l.get("why"):
@@ -842,16 +894,49 @@ def cmd_word(a):
 
     def ch(lines, off):
         i = line_no(lines, a.n)
-        ws = lines[i]["words"]
-        k = int(a.w) - 1
+        l = lines[i]
+        ws = l["words"]
+        m = re.fullmatch(r"(\d+)(?:\.(\d+))?", a.w)
+        if not m:
+            die("W is a word number (3) or a word's piece (3.2)")
+        k = int(m.group(1)) - 1
         if not 0 <= k < len(ws):
             die(f"line {a.n} has words 1-{len(ws)}")
+        syl = syl_of(l)
+        pcs = syl[k]
+        if m.group(2):  # one piece of a word sung in syllables
+            if not pcs:
+                die(f'word {k + 1} isn\'t split: ks syllables SONG {a.n} {k + 1} "tra|ge|dies" first')
+            p = int(m.group(2)) - 1
+            if not 0 <= p < len(pcs):
+                die(f"word {k + 1} has pieces {k + 1}.1-{k + 1}.{len(pcs)}")
+            s0 = parse_t(a.start) - off if a.start is not None else pcs[p][0]
+            e0 = parse_t(a.end) - off if a.end is not None else pcs[p][1]
+            lo = pcs[p - 1][0] + PIECE_MIN if p > 0 else (ws[k - 1][1] if k > 0 else 0.0)
+            hi = pcs[p + 1][1] - PIECE_MIN if p + 1 < len(pcs) else (ws[k + 1][0] if k + 1 < len(ws) else 1e9)
+            if not (lo - 0.001 <= s0 and e0 <= hi + 0.001 and e0 - s0 >= PIECE_MIN - 1e-6):
+                die(f"piece {a.w} has to stay between {fmt(lo + off)} and {fmt(hi + off) if hi < 1e9 else 'the end'}, "
+                    f"at least {PIECE_MIN} s long")
+            if p > 0:      # the boundary it shares with the piece before moves for both
+                pcs[p - 1][1] = round(s0, 3) if abs(pcs[p - 1][1] - pcs[p][0]) < 0.001 else round(min(pcs[p - 1][1], s0), 3)
+            if p + 1 < len(pcs):
+                pcs[p + 1][0] = round(e0, 3) if abs(pcs[p + 1][0] - pcs[p][1]) < 0.001 else round(max(pcs[p + 1][0], e0), 3)
+            pcs[p] = [round(s0, 3), round(e0, 3), pcs[p][2]]
+            ws[k] = [pcs[0][0], pcs[-1][1], ws[k][2]]
+            l["syl"] = syl   # (a ⚠ mark stays: the line's words didn't move)
+            return f"line {a.n} word {k + 1} piece {p + 1} ({pcs[p][2]}) now {fmt(s0 + off)}-{fmt(e0 + off)}"
         s0 = parse_t(a.start) - off if a.start is not None else ws[k][0]
         e0 = parse_t(a.end) - off if a.end is not None else ws[k][1]
         lo = ws[k - 1][1] if k > 0 else 0.0
         hi = ws[k + 1][0] if k + 1 < len(ws) else 1e9
         if not lo - 0.001 <= s0 < e0 <= hi + 0.001:
             die(f"word {a.w} has to stay between {fmt(lo + off)} and {fmt(hi + off) if hi < 1e9 else 'the end'}, start before end")
+        if pcs:  # a split word: only its first piece's start and last piece's end move (a held last syllable)
+            if not (s0 < pcs[0][1] - PIECE_MIN + 1e-6 and e0 > pcs[-1][0] + PIECE_MIN - 1e-6):
+                die(f"word {a.w} is sung in pieces: its start has to stay before {fmt(pcs[0][1] + off)} and its end "
+                    f"after {fmt(pcs[-1][0] + off)} (or time the pieces with ks word SONG N {k + 1}.P)")
+            pcs[0][0], pcs[-1][1] = round(s0, 3), round(e0, 3)
+            l["syl"] = syl
         ws[k] = [round(s0, 3), round(e0, 3), ws[k][2]]
         lines[i]["weak"] = False
         return f"line {a.n} word {a.w} now {fmt(s0 + off)}-{fmt(e0 + off)}"
@@ -864,17 +949,23 @@ def cmd_text(a):
     def ch(lines, off):
         i = line_no(lines, a.n)
         l = lines[i]
-        words = a.words.split()
+        typed = typed_words(a.words)
+        words = [w for w, _ in typed]
         if not words:
             die("give the words (to remove a line: ks delete-line)")
+        old = syl_of(l)
         if len(words) == len(l["words"]):
             l["words"] = [[w[0], w[1], t] for w, t in zip(l["words"], words)]
+            l["syl"] = [o if o and "".join(p[2] for p in o) == w[2] else None for o, w in zip(old, l["words"])]
         else:
             a0, b0 = span(l)
             l["words"] = spread(words, a0, b0)
+            l["syl"] = None
             if l.get("wwho"):
                 l["wwho"] = None
                 print("(its words changed: per-word singers were cleared, as in the web app)")
+        for j, (_, pieces) in enumerate(typed):
+            set_pieces(l, j, pieces)
         return f"line {a.n} text changed ({len(words)} words)"
     edit(job, ch, f"text of line {a.n}")
 
@@ -887,8 +978,11 @@ def cmd_split(a):
         l, j = lines[i], int(a.w) - 1
         if not 1 <= j < len(l["words"]):
             die(f"split before word 2-{len(l['words'])}")
-        second = dict(l, words=l["words"][j:], wwho=l["wwho"][j:] if l.get("wwho") else None, weak=False)
+        sy = syl_of(l)
+        second = dict(l, words=l["words"][j:], wwho=l["wwho"][j:] if l.get("wwho") else None, weak=False,
+                      syl=sy[j:] if any(sy[j:]) else None)
         l["words"], l["wwho"], l["weak"] = l["words"][:j], (l["wwho"][:j] if l.get("wwho") else None), False
+        l["syl"] = sy[:j] if any(sy[:j]) else None
         lines.insert(i + 1, second)
         return f"line {a.n} split before word {a.w}"
     edit(job, ch, f"split line {a.n}")
@@ -903,11 +997,46 @@ def cmd_join(a):
             die("that's the last line")
         l, nx = lines[i], lines[i + 1]
         ww = (l.get("wwho") or [None] * len(l["words"])) + (nx.get("wwho") or [None] * len(nx["words"])) if (l.get("wwho") or nx.get("wwho")) else None
-        both = sorted(zip(l["words"] + nx["words"], ww or [None] * (len(l["words"]) + len(nx["words"]))), key=lambda x: x[0][0])
+        both = sorted(zip(l["words"] + nx["words"], ww or [None] * (len(l["words"]) + len(nx["words"])), syl_of(l) + syl_of(nx)),
+                      key=lambda x: x[0][0])
         l["words"], l["wwho"], l["weak"] = [x[0] for x in both], ([x[1] for x in both] if ww else None), False
+        l["syl"] = [x[2] for x in both] if any(x[2] for x in both) else None
         del lines[i + 1]
         return f"lines {a.n} and {int(a.n) + 1} joined"
     edit(job, ch, f"join line {a.n}")
+
+
+def cmd_syllables(a):
+    """Sing a word in pieces (tra|ge|dies), or join it again; --auto: the words the melody clearly holds or
+    stretches over several notes, split and timed by the Studio."""
+    job = resolve(a.song)
+    if a.auto:
+        r = call(f"/api/jobs/{job['id']}/syllables", {"dry": bool(a.dry)}, timeout=600)
+        if r.get("why"):
+            print(r["why"])
+        for x in r.get("words") or []:
+            print(f"  line {x['line']} word {x['w']}: {x['word']}")
+        n = r.get("split", 0)
+        print(("would split" if a.dry else "split") + f" {n} word{'s' if n != 1 else ''}"
+              + ("; ks undo SONG takes it back" if r.get("saved") else ""))
+        return
+    if a.n is None or a.w is None or a.text is None:
+        die('usage: ks syllables SONG N W "tra|ge|dies"  |  ks syllables SONG --auto [--dry]')
+
+    def ch(lines, off):
+        i = line_no(lines, a.n)
+        l = lines[i]
+        k = int(a.w) - 1
+        if not 0 <= k < len(l["words"]):
+            die(f"line {a.n} has words 1-{len(l['words'])}")
+        typed = typed_words(a.text)
+        if len(typed) != 1:
+            die('give the one word with | between its pieces: "tra|ge|dies"')
+        set_pieces(l, k, typed[0][1])
+        s = syl_of(l)[k]
+        return (f"line {a.n} word {a.w} sung in pieces: " + " | ".join(f"{p[2]} {fmt(p[0] + off)}" for p in s)
+                + f" (time them: ks word SONG {a.n} {a.w}.P --start T --end T)") if s else f"line {a.n} word {a.w} is whole again"
+    edit(job, ch, f"syllables of word {a.w} of line {a.n}")
 
 
 def cmd_add(a):
@@ -915,9 +1044,15 @@ def cmd_add(a):
 
     def ch(lines, off):
         s = parse_t(a.start) - off
-        words = a.words.split()
+        typed = typed_words(a.words)
+        words = [w for w, _ in typed]
+        if not words:
+            die("give the words")
         e = parse_t(a.end) - off if a.end is not None else s + min(6.0, 0.45 * len(words) + 0.8)
-        lines.append({"words": spread(words, s, e), "orig": None})
+        new = {"words": spread(words, s, e), "orig": None}
+        for j, (_, pieces) in enumerate(typed):
+            set_pieces(new, j, pieces)
+        lines.append(new)
         lines.sort(key=lambda l: l["words"][0][0])
         return f"added a line at {fmt(s + off)}"
     edit(job, ch, "add a line")
@@ -1350,6 +1485,9 @@ def main():
     s = sub.add_parser("word"); s.add_argument("song"); s.add_argument("n"); s.add_argument("w"); s.add_argument("--start"); s.add_argument("--end")
     s.set_defaults(f=cmd_word)
     s = sub.add_parser("text"); s.add_argument("song"); s.add_argument("n"); s.add_argument("words"); s.set_defaults(f=cmd_text)
+    s = sub.add_parser("syllables"); s.add_argument("song"); s.add_argument("n", nargs="?"); s.add_argument("w", nargs="?")
+    s.add_argument("text", nargs="?"); s.add_argument("--auto", action="store_true"); s.add_argument("--dry", action="store_true")
+    s.set_defaults(f=cmd_syllables)
     s = sub.add_parser("split"); s.add_argument("song"); s.add_argument("n"); s.add_argument("w"); s.set_defaults(f=cmd_split)
     s = sub.add_parser("join"); s.add_argument("song"); s.add_argument("n"); s.set_defaults(f=cmd_join)
     s = sub.add_parser("add"); s.add_argument("song"); s.add_argument("--start", required=True); s.add_argument("--end")
