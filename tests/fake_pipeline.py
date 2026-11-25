@@ -3,7 +3,8 @@
 (or "fake:<mode>" at the end of the title, for the helper PC, which gets only the song's fields)
 slow (default): starts a child (like yt-dlp/ffmpeg) and both wait 10 minutes; stubborn: the same, but the child
 ignores SIGTERM; ok: writes a finished song's files and exits 0; media: the same with real (tiny) media, lines and
-heard words; oom: says it ran out of GPU memory and fails; conf: a finished song with its by-ear confidence (job fields
+heard words; oom: says it ran out of GPU memory and fails; pause: no room on the card for a step ("@pause", exit 75);
+resumable: a GPU step's result kept for a resume, then holds the card until it's stopped (resumed: finishes); conf: a finished song with its by-ear confidence (job fields
 fake_lines, fake_sure (null: couldn't follow), fake_squeezed: lines crammed into too little time, fake_listen /
 fake_written: the language listened in and the lyrics' language, for the video check); baddl: the video
 can't be downloaded (YouTube's bot check)."""
@@ -63,6 +64,38 @@ if mode == "conf":
 if mode == "oom":
     print("torch.OutOfMemoryError: CUDA out of memory", flush=True)
     sys.exit(1)
+if mode == "pause":   # no room on the card for a step (pipeline.py's gpuwatch.gate)
+    print("@step separate", flush=True)
+    print("@pause the GPU has 2 GB free and removing the vocals needs 5", flush=True)
+    sys.exit(75)
+if mode == "resumable":
+    # like pipeline.py: a GPU step's result kept by gpuwatch.Memo; the first run holds the card ("@gpu") and waits
+    # (to be paused); a resumed run (job["resume"]) takes the kept result instead of working it out again
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    import config as C  # noqa: E402
+    import gpuwatch  # noqa: E402
+    memo = gpuwatch.Memo(gpuwatch.resume_dir(C.WORK, d), job.get("resume"), salt=["fake"])
+
+    def work():
+        with open(os.path.join(d, "computed.txt"), "a") as f:
+            f.write("whisper\n")
+        return [[1.0, 1.5, "la"]]
+    print("@step align", flush=True)
+    heard = memo.get("whisper", [job["yt"]], work)
+    if not job.get("resume"):
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])
+        with open(os.path.join(d, "pids.txt"), "w") as f:
+            f.write(f"{os.getpid()} {child.pid}\n")
+        while True:
+            print("@gpu 4000", flush=True)
+            time.sleep(0.1)
+    for f in ("out.mp4", "vocals.m4a", "lyrics.ass"):
+        open(os.path.join(d, f), "wb").write(b"x")
+    json.dump({"lines": []}, open(os.path.join(d, "words.json"), "w"))
+    json.dump({"offset": 0, "lines": 0, "resumed": memo.used, "heard": heard}, open(os.path.join(d, "result.json"), "w"))
+    memo.clear()
+    print("@step done", flush=True)
+    sys.exit(0)
 ready = os.path.join(d, "child-ready")
 code = f"import time; open({ready!r}, 'w').close(); time.sleep(600)"
 if mode == "stubborn":  # (it says it's ready only once SIGTERM is ignored, so a quick cancel can't beat it)

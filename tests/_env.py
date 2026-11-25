@@ -22,6 +22,8 @@ for k, v in {
     "ENCORE_TOKEN": "preset-token-" + "p" * 30, "ENCORE_ONLY_NETS": "", "ENCORE_STUDIO_ADDRESS": "http://studio.test:5570",
     "KARAOKE_LYRICS_FONT": "classic", "AGENT_KEYS_REQUIRED": "0", "STUDIO_PERSON_HEADER": "X-authentik-username", "ALBUM_LOOKUP": "0",
     "KARAOKE_DEVICE": "",
+    # sharing the GPU (gpuwatch.py): off unless a test turns it on, so a real card's load can't hold the tests' songs
+    "GPU_BUSY_PCT": "0", "GPU_PREEMPT_MIB": "0", "GPU_RESUME_S": "0",
 }.items():
     os.environ[k] = v
 for d in ("jobs", "work", "models", "logs", "fonts", "data", "library/Music Videos"):

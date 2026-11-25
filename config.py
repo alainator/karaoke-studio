@@ -39,6 +39,31 @@ ORIGINS = {o.strip().rstrip("/") for o in env("STUDIO_ORIGINS", "").split(",") i
 NODE_BIN = env("NODE_BIN", "")
 # don't start a job unless this much GPU memory is free (MiB)
 MIN_GPU_FREE_MIB = int(env("MIN_GPU_FREE_MIB", "9000"))
+# ---- sharing the GPU with other programs (Ollama, ComfyUI, games; gpuwatch.py) ----
+# A song starts only when the card has MIN_GPU_FREE_MIB free and isn't busier than GPU_BUSY_PCT % (another program
+# computing on it: a game, an image being drawn; 0 = don't look). Before each step that loads a model, pipeline.py
+# checks the card has that step's room (GPU_STEP_MIB) and otherwise pauses the song. While a song is made, other
+# programs taking GPU_PREEMPT_MIB more than they had, for GPU_PREEMPT_GRACE_S seconds, pause it too (0 = never for
+# that). A paused song (or one that ran out of GPU memory) goes back to the front of its queue and carries on once
+# the card has had room for GPU_RESUME_S seconds, reusing the steps it had done.
+GPU_BUSY_PCT = int(env("GPU_BUSY_PCT", "60"))
+GPU_PREEMPT_MIB = int(env("GPU_PREEMPT_MIB", "3072"))
+GPU_PREEMPT_GRACE_S = float(env("GPU_PREEMPT_GRACE_S", "20"))
+GPU_RESUME_S = float(env("GPU_RESUME_S", "20"))
+# each model step's room (MiB). Estimates from what was seen: Whisper large-v3 held 7.1 GB when an align ran out of
+# memory; the karaoke (backing) model with CREPE about 4 GB, the word aligner 1.7 GB (both measured for pitch.py and
+# wordscore.py). Each song's log and result.json have the real peaks ("gpu peak"): tune with
+# GPU_STEP_MIB="separate=5000,whisper=8000".
+GPU_STEP_MIB = {"separate": 5000, "backing": 5000, "whisper": 7500, "pitch": 2000, "words": 2500, "talk": 2000}
+for _kv in env("GPU_STEP_MIB", "").split(","):
+    _k, _, _v = _kv.partition("=")
+    if _k.strip() in GPU_STEP_MIB and _v.strip().isdigit():
+        GPU_STEP_MIB[_k.strip()] = int(_v)
+# the GPU context (CUDA's own memory) on top of what PyTorch counts for a process (about 0.65 GB seen)
+GPU_CONTEXT_MIB = int(env("GPU_CONTEXT_MIB", "800"))
+# a song that runs out of GPU memory this many times in a row (each time after waiting for room) fails: a guard
+# against one that can never fit on this card
+GPU_OOM_MAX = int(env("GPU_OOM_MAX", "8"))
 # optional: a local Ollama server to proofread automatic romaji ("Check romaji with AI"); leave empty to hide it
 OLLAMA_URL = env("OLLAMA_URL", "").rstrip("/")
 OLLAMA_MODEL = env("OLLAMA_MODEL", "gemma4:26b")
@@ -109,7 +134,7 @@ VENC = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-g", "48", "-pi
 
 # the modules that make songs (pipeline.py imports these), and the helper itself: a helper on different code is asked to
 # update (git pull) before it gets songs, so a change to helper.py reaches the helper PC once it's pushed
-CODE_FILES = ("pipeline.py", "assgen.py", "config.py", "romanize.py", "versions.py", "albumsync.py", "fonts.py", "earcheck.py", "linecheck.py", "karamoe.py", "lyricmap.py", "hanzi.py", "helper.py", "gpu.py", "videocheck.py")
+CODE_FILES = ("pipeline.py", "assgen.py", "config.py", "romanize.py", "versions.py", "albumsync.py", "fonts.py", "earcheck.py", "linecheck.py", "karamoe.py", "lyricmap.py", "hanzi.py", "helper.py", "gpu.py", "videocheck.py", "gpuwatch.py")
 
 
 def code_version():

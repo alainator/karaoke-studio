@@ -10,7 +10,7 @@ Tested on NVIDIA only (see CONTRIBUTING.md, "Hardware"). Other backends are seam
 The memory and name queries run command-line tools and never import torch, so the web app and the GPU helper (which
 don't load models) don't start a GPU context of their own.
 """
-import json, os, shutil, subprocess
+import json, os, shutil, subprocess, sys
 
 ENV = "KARAOKE_DEVICE"
 
@@ -72,6 +72,60 @@ def free_mib():
     return c[0][1] - c[0][2] if c else 0
 
 
+def _num(x):
+    try:
+        return int(float(x.strip()))
+    except (ValueError, AttributeError):
+        return None   # "[N/A]", "[Not Supported]"
+
+
+def parse_query(out):
+    """nvidia-smi --query-gpu=name,memory.total,memory.used,utilization.gpu (csv, no header/units): the first card as
+    {"name", "total", "used", "free" (MiB), "util" (percent, None if not reported)}, or None."""
+    for row in (out or "").strip().splitlines():
+        parts = [x.strip() for x in row.rsplit(",", 3)]
+        if len(parts) == 3:   # (a driver or a stand-in without the utilisation field)
+            parts.append(None)
+        if len(parts) != 4:
+            continue
+        nm, tot, used, util = parts[0], _num(parts[1]), _num(parts[2]), _num(parts[3]) if parts[3] is not None else None
+        if tot is None or used is None:
+            continue
+        return {"name": nm, "total": tot, "used": used, "free": tot - used, "util": util}
+    return None
+
+
+def parse_apps(out):
+    """nvidia-smi --query-compute-apps=pid,process_name,used_memory (csv, no header/units) -> [(pid, name, MiB)].
+    Inside a container this is usually empty (the driver's process ids aren't in the container's namespace)."""
+    apps = []
+    for row in (out or "").strip().splitlines():
+        parts = [x.strip() for x in row.split(",")]
+        if len(parts) < 3:
+            continue
+        pid, mib = _num(parts[0]), _num(parts[-1])
+        if pid is None or mib is None:
+            continue
+        apps.append((pid, ",".join(parts[1:-1]).strip(), mib))
+    return apps
+
+
+def snapshot():
+    """The first GPU right now: {"name", "total", "used", "free" (MiB), "util" (percent or None), "apps": [(pid, name,
+    MiB)] (programs on it, when the driver lets this process see them; else [])}, or None when it can't be told (no
+    nvidia-smi / rocm-smi, or an Intel/Apple GPU). The studio's GPU check (gpuwatch.py) reads this."""
+    snap = parse_query(_run(["nvidia-smi", "--query-gpu=name,memory.total,memory.used,utilization.gpu",
+                             "--format=csv,noheader,nounits"]))
+    if snap:
+        snap["apps"] = parse_apps(_run(["nvidia-smi", "--query-compute-apps=pid,process_name,used_memory",
+                                        "--format=csv,noheader,nounits"]))
+        return snap
+    c = _rocm()
+    if c:
+        return {"name": c[0][0], "total": c[0][1], "used": c[0][2], "free": c[0][1] - c[0][2], "util": None, "apps": []}
+    return None
+
+
 def name():
     """The first GPU's name ("NVIDIA GeForce RTX 3090"), or None."""
     c = _cards()
@@ -120,3 +174,57 @@ def empty_cache(dev=None):
 
 def is_gpu(dev):
     return str(dev).split(":")[0] in ("cuda", "xpu", "mps")
+
+
+# ---- this process's own use (pipeline.py tells the studio, so it can tell its own memory from other programs') ----
+def _torch_gpu():
+    """torch.cuda when this process has already started using the GPU through it (NVIDIA, or AMD through ROCm), else
+    None. Never imports torch and never starts a GPU context."""
+    t = sys.modules.get("torch")
+    c = getattr(t, "cuda", None) if t is not None else None
+    try:
+        return c if c is not None and c.is_initialized() else None
+    except Exception:
+        return None
+
+
+def held_mib():
+    """GPU memory this process holds through PyTorch (what its allocator reserved), MiB; 0 before it uses the GPU.
+    The GPU context itself (some hundreds of MiB) isn't counted: gpuwatch adds an allowance for it."""
+    c = _torch_gpu()
+    try:
+        return int(c.memory_reserved() // (1 << 20)) if c is not None else 0
+    except Exception:
+        return 0
+
+
+def spare_mib():
+    """Reserved by this process's allocator but not in use (reused by the next model without asking the card), MiB."""
+    c = _torch_gpu()
+    try:
+        return int((c.memory_reserved() - c.memory_allocated()) // (1 << 20)) if c is not None else 0
+    except Exception:
+        return 0
+
+
+def peak_mib(reset=True):
+    """The most this process's allocator reserved since the last call (MiB; None before it used the GPU): the peak of
+    the step that just ran."""
+    c = _torch_gpu()
+    if c is None:
+        return None
+    try:
+        v = int(c.max_memory_reserved() // (1 << 20))
+        if reset:
+            c.reset_peak_memory_stats()
+        return v
+    except Exception:
+        return None
+
+
+def is_oom(e):
+    """Did this exception come from the GPU running out of memory (CUDA/ROCm "out of memory", cuDNN/cuBLAS alloc)?"""
+    name = type(e).__name__
+    msg = str(e).lower()
+    return name == "OutOfMemoryError" or "out of memory" in msg or "cudnn_status_alloc_failed" in msg \
+        or "cublas_status_alloc_failed" in msg

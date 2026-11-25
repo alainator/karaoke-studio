@@ -36,6 +36,7 @@ import guidevocals  # noqa: E402
 import loudness  # noqa: E402
 import schemalite  # noqa: E402
 import gpu as gpumod  # noqa: E402
+import gpuwatch  # noqa: E402
 import agents  # noqa: E402
 import automake as AM
 import videocheck as VC  # noqa: E402
@@ -122,6 +123,28 @@ def check_origin(req: Request):
 
 def gpu_free_mib():
     return gpumod.free_mib()
+
+
+def gpu_snapshot():
+    """This machine's card now (gpu.snapshot(): used/free memory, how busy, the programs on it), or None."""
+    return gpumod.snapshot()
+
+
+_OLLAMA_PS = {"at": 0.0, "v": None}
+
+
+def ollama_models():
+    """The models Ollama holds on the card ([{"name", "size_vram"}]; its /api/ps, cached 15 s), when it's set up: to say
+    who is using the GPU. None without Ollama or when it doesn't answer."""
+    if not C.OLLAMA_URL:
+        return None
+    if time.time() - _OLLAMA_PS["at"] > 15:
+        try:
+            v = [{"name": m.get("name"), "size_vram": int(m.get("size_vram") or 0)} for m in http_json(C.OLLAMA_URL + "/api/ps", timeout=3, tries=1).get("models") or []]
+        except Exception:
+            v = None
+        _OLLAMA_PS.update(at=time.time(), v=v)
+    return _OLLAMA_PS["v"]
 
 
 def rebuild_lyrics(jid, job, lines=None, cast=None, offset=None):
@@ -667,7 +690,8 @@ async def create_job(req: Request):
                    "video_title": str(b.get("video_title", ""))[:200], **({"import": ir} if ir else {}),
                    "gpu_pref": b.get("gpu") if b.get("gpu") in ("local", "remote") else "auto",
                    **({"lyrics_text": pasted} if source == "pasted" else {}),
-                   **({"auto_publish": {"by": agents.actor_of(req), "at": time.time()}} if auto_pub else {})}, agents.actor_of(req))
+                   **({"auto_publish": {"by": agents.actor_of(req), "at": time.time()}} if auto_pub else {}),
+                   "priority": "hand"}, agents.actor_of(req))
     log.info("queued %s | video %s | lyrics %s:%s | gpu %s%s", jid, yt, source, lrc_id if source != "pasted" else f"{len(pasted)} chars",
              b.get("gpu") or "auto", f" | replaces {b.get('replace')}" if b.get("replace") else "")
     if ir:
@@ -714,6 +738,9 @@ def to_check(jid):
 
 def summary(job):
     out = _summary(job)
+    if job.get("status") == "queued":   # its place in the queue, and what it waits for
+        out["queue_n"], out["waiting"] = queue_place(job)
+    out["background"] = bool(job_class(job))
     out["to_check"] = to_check(job["id"]) if job.get("status") == "done" else None
     out["updates"] = versions.missing(job) if job.get("status") == "done" else []
     out["can_undo_remake"] = bool(job.get("remade")) and not job.get("remake_undone") and job.get("status") == "done" \
@@ -740,7 +767,7 @@ def _summary(job):
     keys = ("id", "artist", "title", "yt", "status", "step", "created", "finished", "error", "offset",
             "published", "published_as", "video_title", "result", "waiting", "edited", "unpublished_changes", "lang", "gpu", "ai_romaji", "video_v", "gpu_pref", "reviewed", "lrc_id", "lyrics_source", "trim", "video_task",
             "lyrics_display", "cancel_requested", "last_edit", "published_by", "made_by", "quick", "auto_held", "auto_retry", "auto_publish",
-            "import", "library_removed")
+            "import", "library_removed", "paused", "priority")
     out = {k: job.get(k) for k in keys}
     am = job.get("automake")
     out["automake"] = {k: am.get(k) for k in ("player_name", "by", "party", "at")} if am else None
@@ -762,7 +789,7 @@ def list_jobs(brief: int = 0):
 
 BRIEF_KEYS = ("id", "artist", "title", "yt", "status", "step", "created", "finished", "error", "published", "waiting",
               "unpublished_changes", "gpu", "reviewed", "to_check", "cancel_requested", "encore_flags", "published_as", "import",
-              "library_removed")
+              "library_removed", "queue_n", "paused", "background")
 
 
 def brief_summary(s):
@@ -789,7 +816,8 @@ def job_index():
             if j.get("artist") and j.get("title"):
                 out.append({k: j.get(k) for k in ("id", "artist", "title", "status", "published", "published_as",
                                                   "created", "finished", "cancel_requested", "encore_rids", "error",
-                                                  "started", "step", "gpu", "gpu_pref", "automake", "auto_held", "yt")})
+                                                  "started", "step", "gpu", "gpu_pref", "automake", "auto_held", "yt",
+                                                  "priority", "import", "paused")})
     return out
 
 
@@ -2180,6 +2208,9 @@ def _remake(jid, actor, gpu=None, note=None):
                 os.remove(job_path(jid, f))
         if os.path.exists(job_path(jid, "words.orig.json")):
             os.replace(job_path(jid, "words.orig.json"), job_path(jid, "words.before-remake.auto.json"))
+        clear_resume(jid, job)
+        if not note:   # a person asked for it (the automatic retry keeps the song's place: an import's stays background)
+            job["priority"] = "hand"
         job.update(status="queued", step="queued", error=None, log=[], waiting=None, oom_retries=0, ai_romaji=None,
                    video_v=time.time(), remade=time.time(), reviewed=None, remake_merge=merge, remake_note=None, remake_undone=False,
                    pre_remake={**{k: job.get(k) for k in ("edited", "result", "offset", "reviewed", "ai_romaji", "remade", "remake_note")},
@@ -2277,7 +2308,8 @@ async def retry(jid: str, req: Request):
         if job["status"] not in ("failed", "cancelled"):
             raise HTTPException(400, "only failed or cancelled songs can be tried again")
         job.pop("cancel_requested", None)
-        job.update(status="queued", step="queued", error=None, waiting=None, log=[])
+        clear_resume(jid, job)
+        job.update(status="queued", step="queued", error=None, waiting=None, log=[], oom_retries=0)
         save(jid, job)
     log.info("retry %s", jid)
     wake.set()
@@ -2295,14 +2327,25 @@ def delete_job(jid: str, req: Request):
         if video_busy(job):
             raise HTTPException(400, VIDEO_BUSY)
         shutil.rmtree(job_path(jid))  # only the studio's copy; a published song stays in the library
+        clear_resume(jid)
         if job.get("published"):  # and stays in the catalog, from its last listing (marked job_deleted)
             update_catalog()
     log.info("deleted %s (%s - %s)", jid, job.get("artist"), job.get("title"))
     return {"ok": True}
 
 
+def clear_resume(jid, job=None):
+    """Forget what a paused song had done (gpuwatch.Memo): it's made from the start next time (cancelled, tried again,
+    remade, deleted)."""
+    shutil.rmtree(gpuwatch.resume_dir(C.WORK, jid), ignore_errors=True)
+    if job is not None:
+        job.pop("resume", None)
+        job.pop("paused", None)
+
+
 def _mark_cancelled(job, note="cancelled by you"):
     """(under the lock) The song ends as cancelled: Retry makes it again from the start, Delete removes it."""
+    clear_resume(job["id"], job)
     job.pop("cancel_requested", None)
     job.update(status="cancelled", step="cancelled", waiting=None, error=None, finished=time.time())
     job.setdefault("log", []).append(note)
@@ -2317,6 +2360,7 @@ def _cancel_queued(jid, job):
         if os.path.exists(job_path(jid, "words.before-remake.auto.json")):
             os.replace(job_path(jid, "words.before-remake.auto.json"), job_path(jid, "words.orig.json"))
         job.pop("cancel_requested", None)
+        clear_resume(jid, job)
         job.update(status="done", step="done", waiting=None, error=None, oom_retries=0, remake_merge=False,
                    remake_undone=True,  # the remake overwrote what "Undo remake" would have gone back to
                    **{k: pr.get(k) for k in ("edited", "result", "offset", "reviewed", "ai_romaji", "remade", "remake_note")})
@@ -2476,11 +2520,13 @@ def claim(jid, where, gpu_name):
         job.pop("cancel_requested", None)
         if job.get("pre_remake"):
             job["pre_remake"].pop("unstarted", None)  # a remake that started can't be cancelled back to the old song
-        job.update(status="running", step="lyrics", waiting=None, started=time.time(), gpu=gpu_name, log=[])
+        pz = job.get("paused") or {}
+        job.update(status="running", step="lyrics", waiting=None, started=time.time(), gpu=gpu_name,
+                   log=[f"carrying on after {pz.get('n', 1)} pause{'s' if pz.get('n', 1) != 1 else ''} for the GPU (last: {pz.get('why')})"] if pz else [])
         save(jid, job)
         slots[where] = jid
-        runners[jid] = {"where": where, "proc": None, "stopper": None}
-    log.info("started %s on %s (%s)", jid, gpu_name, where)
+        runners[jid] = {"where": where, "proc": None, "stopper": None, "own": 0, "step": "lyrics"}
+    log.info("started %s on %s (%s)%s", jid, gpu_name, where, " (resumed)" if job.get("resume") else "")
     C.job_log(job_path(jid), f"run started on {gpu_name} ({where}), code {C.code_version()}", header=True)
     return True
 
@@ -2495,20 +2541,88 @@ def worker():
         wake.wait(10); wake.clear()
 
 
+# The queue's order (queue_order): songs a person asked for (Make, ks make, a remake, a party request from Encore) come
+# before an import's songs, which are background work: one of those starts whenever no other song waits. Within each,
+# a song paused for the GPU goes first (it has work done), then first come, first served.
+def job_class(j):
+    """0: a person is waiting for it (made by hand, a remake, a party request); 1: background work (an import)."""
+    p = j.get("priority")
+    if p:
+        return 1 if p == "import" else 0
+    return 1 if j.get("import") else 0   # (songs queued before priorities: an import's songs are background work)
+
+
+def queue_order(jobs):
+    """The queued songs in the order they'll be made."""
+    return sorted((j for j in jobs if j.get("status") == "queued"),
+                  key=lambda j: (job_class(j), 0 if j.get("paused") else 1, j.get("created") or 0))
+
+
+def queued_jobs():
+    """The songs waiting to be made (straight from job.json, in queue order)."""
+    out = []
+    for jid in os.listdir(JOBS):
+        if ID_RE.match(jid):
+            try:
+                with open(os.path.join(JOBS, jid, "job.json")) as f:
+                    j = json.load(f)
+            except Exception:
+                continue
+            if j.get("status") == "queued":
+                out.append(j)
+    return queue_order(out)
+
+
+_GPU_OK = {"since": None}   # since when this card has had room for a song (a paused song waits GPU_RESUME_S of it)
+
+
+def studio_on_gpu():
+    """The studio itself is computing on this card outside a song (the pitch worker, words scoring): a busy card then
+    says nothing about other programs."""
+    return bool(_PITCH.get("current")) or bool(getattr(WORDS, "busy", False))
+
+
+def local_gpu_wait(paused=False):
+    """Why a song can't start on this machine's card now, or None. Tells who holds it when it can be told."""
+    free = gpu_free_mib()
+    snap = gpu_snapshot()
+    why = gpuwatch.check_start(snap, free, NEED_GPU_MIB, own_busy=studio_on_gpu())
+    now = time.time()
+    if why:
+        _GPU_OK["since"] = None
+        who = gpuwatch.others(snap, ollama=ollama_models())
+        return f"{who} {'is' if who.startswith('Ollama') else 'are'} using it: {why}" if who else why
+    _GPU_OK["since"] = _GPU_OK["since"] or now
+    if paused and now - _GPU_OK["since"] < C.GPU_RESUME_S:
+        return "it has room again; making sure it stays free"
+    return None
+
+
+# what the last pass of the scheduler looked at: the songs it tried to start (each has its own "waiting" reason); the
+# songs after them are simply queued behind them (summary() says so, with their place in the queue)
+_SCHED = {"looked": set(), "order": [], "at": 0.0}
+
+
 def schedule_once():
-    queued = sorted((j for j in list_jobs() if j["status"] == "queued"), key=lambda j: j["created"])
+    queued = queued_jobs()
     if queued:
         WORDS.release_gpu()  # (words scoring never holds the card while a song waits for one)
+    if not queued or slots["local"] is not None:
+        _GPU_OK["since"] = None   # (room is counted from when a waiting song can see it)
+    local_why = None
+    looked = set()
     for j in queued:
+        looked.add(j["id"])
         jid = j["id"]
-        pref = load(jid).get("gpu_pref", "auto")  # "auto": whichever card is free; "local"/"remote": only that one
+        pref = j.get("gpu_pref", "auto")  # "auto": whichever card is free; "local"/"remote": only that one
         use_local = pref in ("auto", "local") and C.USE_LOCAL_GPU
         use_remote = pref in ("auto", "remote") and bool(C.GPU_HELPER_URL)
-        free = gpu_free_mib()
-        if use_local and slots["local"] is None and free >= NEED_GPU_MIB:
-            if claim(jid, "local", LOCAL_GPU):
-                threading.Thread(target=run_local, args=(jid,), daemon=True).start()
-            continue
+        if use_local and slots["local"] is None:
+            local_why = local_gpu_wait(paused=bool(j.get("paused")))
+            if local_why is None:
+                if claim(jid, "local", LOCAL_GPU):
+                    threading.Thread(target=run_local, args=(jid,), daemon=True).start()
+                continue
         if use_remote and slots["remote"] is None:
             h = helper_health()
             if h and h.get("version") != code_version():
@@ -2517,25 +2631,44 @@ def schedule_once():
                 h = None  # the helper runs different code: don't use it until it's updated
             elif h:
                 helper_seen["stale"] = False
-            if h and not h.get("busy") and h.get("free_mib", 0) >= NEED_GPU_MIB:
+            if h and not h.get("busy") and h.get("free_mib", 0) >= NEED_GPU_MIB \
+                    and not (C.GPU_BUSY_PCT and (h.get("util") or 0) >= C.GPU_BUSY_PCT):
                 if claim(jid, "remote", h.get("gpu", "helper").replace("NVIDIA GeForce ", "") + " (" + C.GPU_HELPER_NAME + ")"):
                     threading.Thread(target=run_remote, args=(jid,), daemon=True).start()
                 continue
         parts = []
         if use_local:
-            parts.append(f"{LOCAL_GPU}: " + (f"{free // 1024} GB free, needs {NEED_GPU_MIB // 1024}" if slots["local"] is None
-                                              else "making another song"))
+            parts.append(f"{LOCAL_GPU}: " + ("making another song" if slots["local"] is not None else local_why or "free"))
         if use_remote:
+            hh = helper_seen["health"] or {}
             parts.append(f"{C.GPU_HELPER_NAME}: " + ("making another song" if slots["remote"] is not None else
                          "updating to the new studio code (if this stays, update it: on that PC run deploy/install-helper.sh again)"
-                         if helper_seen.get("stale") else "busy" if helper_seen["health"] else "off or unreachable"))
-        why = ("waiting for " + ("the card you picked" if pref != "auto" else "a graphics card") + " (" + "; ".join(parts) + ")"
+                         if helper_seen.get("stale") else (f"it's {hh.get('util')}% busy" if hh.get("free_mib", 0) >= NEED_GPU_MIB else
+                         f"{gpuwatch.gb(hh.get('free_mib', 0))} GB free, a song needs {gpuwatch.gb(NEED_GPU_MIB)}")
+                         if hh and not hh.get("busy") else "busy" if hh else "off or unreachable"))
+        why = ("waiting for " + ("the card you picked" if pref != "auto" else "the GPU") + " (" + "; ".join(parts) + ")"
                if parts else "waiting: the card you picked isn't set up in this studio")
+        if j.get("paused"):
+            why = f"paused ({j['paused'].get('why')}); " + why
         if j.get("waiting") != why:
             set_job(jid, waiting=why)
         if pref == "auto":
-            break  # first come, first served: later songs can't use a card this one couldn't
+            break  # first in the queue, first served: later songs can't use a card this one couldn't
         # a song waiting for one particular card doesn't hold up songs that can use the other one
+    _SCHED.update(looked=looked, order=[j["id"] for j in queued], at=time.time())
+
+
+def queue_place(job):
+    """(place in the queue, 1 = next; what it waits for) for a queued song, from the scheduler's last pass."""
+    order = _SCHED["order"]
+    try:
+        n = order.index(job["id"]) + 1
+    except ValueError:
+        return None, job.get("waiting")
+    if job["id"] in _SCHED["looked"]:
+        return n, job.get("waiting")
+    ahead = n - 1
+    return n, f"queued behind {ahead} song{'s' if ahead != 1 else ''}" + (" (imports wait behind songs made by hand)" if job_class(job) else "")
 
 
 def cancel_requested(jid):
@@ -2545,8 +2678,8 @@ def cancel_requested(jid):
         return False
 
 
-def finish(jid, rc, err, oom, where):
-    _finish(jid, rc, err, oom, where)
+def finish(jid, rc, err, oom, where, paused=None):
+    _finish(jid, rc, err, oom, where, paused)
     try:
         job = load(jid)
     except Exception:
@@ -2600,7 +2733,9 @@ def after_make(jid):
         batch_finish(jid)
 
 
-def _finish(jid, rc, err, oom, where):
+def _finish(jid, rc, err, oom, where, paused=None):
+    """A run ended: cancelled (the user stopped it), done, paused for the GPU (another program needed the card, or it
+    ran out of GPU memory: back to the front of its queue, to carry on later), or failed."""
     with lock:
         job = load(jid)
         if job.get("cancel_requested"):  # stopped by the user: not failed, not retried
@@ -2611,8 +2746,12 @@ def _finish(jid, rc, err, oom, where):
             C.job_log(job_path(jid), "run ended: cancelled by you", header=True)
             return
         job["finished"] = time.time()
+        if oom and not paused:
+            paused = f"the GPU ran out of memory on {job.get('gpu') or where}"
         if rc == 0 and os.path.exists(job_path(jid, "out.mp4")) and os.path.exists(job_path(jid, "result.json")):
-            job.update(status="done", step="done")
+            job.update(status="done", step="done", oom_retries=0)
+            for k in ("resume", "paused"):
+                job.pop(k, None)
             job["result"] = json.load(open(job_path(jid, "result.json")))
             job["result"]["gpu"] = job.get("gpu")
             if job.get("published"):  # a remade song: the library still has the old one until it's published again
@@ -2663,23 +2802,31 @@ def _finish(jid, rc, err, oom, where):
             except Exception as e:
                 log.exception("lyrics of %s", jid)
                 job.setdefault("log", []).append(f"couldn't redraw the lyrics ({str(e)[:100]})")
-        elif oom and job.get("oom_retries", 0) < 2:
-            # something else grabbed the GPU mid-job (an LLM loading, another tool): wait and try again
-            job.update(status="queued", step="queued", oom_retries=job.get("oom_retries", 0) + 1,
-                       waiting="the graphics card ran out of memory; trying again when one is free")
-            job.setdefault("log", []).append(f"ran out of GPU memory on {job.get('gpu')}; will retry")
+        elif paused and not (oom and job.get("oom_retries", 0) + 1 >= C.GPU_OOM_MAX):
+            # another program needed the card (or took the memory a step needed): not the song's fault. It goes back
+            # to the front of its queue and carries on when the card has room, reusing what it had done.
+            pz = job.get("paused") or {}
+            job.update(status="queued", step="queued", resume=True, oom_retries=job.get("oom_retries", 0) + (1 if oom else 0),
+                       paused={"why": paused, "at": time.time(), "where": where, "n": pz.get("n", 0) + 1},
+                       waiting=f"paused ({paused}); waiting for the GPU")
+            job.pop("finished", None)
+            job.setdefault("log", []).append(f"paused: {paused}; it carries on when the GPU has room")
         else:
-            job.update(status="failed", error=err or ("the graphics card ran out of memory" if oom else f"pipeline exited with code {rc}"))
+            job.update(status="failed", error=err or (f"the GPU ran out of memory {job.get('oom_retries', 0) + 1} times in a row, "
+                                                      "each time after waiting for room: this song may not fit on this card"
+                                                      if oom else f"pipeline exited with code {rc}"))
+            job.pop("paused", None)
         save(jid, job)
-        took = f"{job['finished'] - job['started']:.0f}s" if job.get("started") else "?"
+        took = f"{(job.get('finished') or time.time()) - job['started']:.0f}s" if job.get("started") else "?"
         if job["status"] == "done":
             c = (job.get("result") or {}).get("confidence") or {}
             log.info("done %s on %s in %s | %s lines, %s to check, %s heard in place", jid, where, took, c.get("lines"), c.get("check"), c.get("sure"))
         elif job["status"] == "failed":
             log.error("failed %s on %s after %s | %s", jid, where, took, job.get("error"))
         else:
-            log.warning("requeued %s after running out of GPU memory on %s", jid, where)
-        C.job_log(job_path(jid), f"run ended: {job['status']}" + (f" ({job.get('error')})" if job["status"] == "failed" else ""), header=True)
+            log.warning("paused %s on %s: %s", jid, where, paused)
+        C.job_log(job_path(jid), f"run ended: {'paused' if job['status'] == 'queued' else job['status']}" + (
+            f" ({job.get('error')})" if job["status"] == "failed" else f" ({paused})" if job["status"] == "queued" else ""), header=True)
 
 
 def _ltext(l):
@@ -2774,8 +2921,31 @@ def maybe_auto_romaji(jid, rc):
     auto_romaji(jid)
 
 
+def _pause_local(jid, why):
+    """Another program keeps taking the card while this song is made: stop the pipeline; the song goes back to the front
+    of its queue (as paused) and carries on later."""
+    with lock:
+        r = runners.get(jid)
+        if r is None or r.get("stopper") is not None or r.get("proc") is None:
+            return   # (cancelled or already stopping)
+        r["pausing"] = why
+        r["stopper"] = threading.Thread(target=C.stop_group, args=(r["proc"],), daemon=True)
+        r["stopper"].start()
+    log.info("pausing %s: %s", jid, why)
+    C.job_log(job_path(jid), f"pausing: {why}")
+
+
+WATCH_S = 5.0   # how often the card is looked at while a song is made
+
+
+def _watch_local(jid, p):
+    r = runners.get(jid) or {}
+    gpuwatch.watch(p, reported=lambda: r.get("own", 0), step=lambda: r.get("step"), pause=lambda why: _pause_local(jid, why),
+                   snapshot=lambda: gpu_snapshot(), every=WATCH_S)
+
+
 def run_local(jid):
-    rc, err, oom, crash = 1, None, False, None
+    rc, err, oom, crash, paused = 1, None, False, None, None
     try:
         with lock:  # cancelled between claim and here: don't start it
             if load(jid).get("cancel_requested"):
@@ -2788,8 +2958,15 @@ def run_local(jid):
         if p is None:
             finish(jid, 1, None, False, "local")
             return
+        threading.Thread(target=_watch_local, args=(jid, p), daemon=True, name="gpu-watch").start()
         for line in p.stdout:
             line = line.rstrip()
+            if line.startswith("@gpu "):   # what the pipeline holds on the card (for the watch; not logged)
+                try:
+                    runners.get(jid, {})["own"] = int(line[5:])
+                except ValueError:
+                    pass
+                continue
             oom = oom or "out of memory" in line.lower()
             C.job_log(job_path(jid), line)
             if not line.startswith("@"):
@@ -2797,29 +2974,36 @@ def run_local(jid):
                     crash = line[:200]
                 continue
             kind, _, text = line[1:].partition(" ")
+            if kind == "pause":   # no room on the card for the next step (pipeline.py stops itself)
+                paused = text
+                continue
+            if kind not in ("step", "info", "error"):
+                continue
             with lock:
                 job = load(jid)
                 if kind == "step":
                     job["step"] = text
+                    runners.get(jid, {})["step"] = text
                 elif kind == "info":
                     job.setdefault("log", []).append(text)
                 elif kind == "error":
                     err = text
                 save(jid, job)
         rc = p.wait()
-        with lock:  # gone: a cancel from now on (OOM wait, romaji check) has no process to stop
+        with lock:  # gone: a cancel from now on (romaji check) has no process to stop
             r = runners.get(jid) or {}
             r.pop("proc", None)
             stopper = r.get("stopper")
+            paused = paused or r.get("pausing")
         if stopper:
-            stopper.join(15)  # cancelled: wait until everything it started is gone, so the GPU is free again
+            stopper.join(15)  # cancelled or paused: wait until everything it started is gone, so the GPU is free again
+        if rc == gpuwatch.PAUSE_EXIT and not paused:
+            paused = "no room on the GPU for the next step"
         if rc != 0 and not err and not oom and crash:
             err = f"it stopped with an error ({crash})"
-        if oom and not cancel_requested(jid):
-            time.sleep(20)
         if not cancel_requested(jid):
             maybe_auto_romaji(jid, rc)
-        finish(jid, rc, err, oom, "local")
+        finish(jid, rc, err, oom, "local", paused=paused if rc != 0 else None)
     except Exception as e:
         try:
             with lock:
@@ -2847,7 +3031,7 @@ def run_remote(jid):
         if job.get("cancel_requested"):  # cancelled between claim and here: don't send it
             finish(jid, 1, None, False, "remote")
             return
-        helper_call("/jobs", "POST", {"id": jid, **{k: job.get(k) for k in ("yt", "lrc_id", "lyrics_source", "artist", "title", "lang", "lyrics_text")}})
+        helper_call("/jobs", "POST", {"id": jid, **{k: job.get(k) for k in ("yt", "lrc_id", "lyrics_source", "artist", "title", "lang", "lyrics_text", "resume")}})
         misses = 0
         while True:
             time.sleep(2)
@@ -2910,8 +3094,9 @@ def run_remote(jid):
                 else:
                     maybe_auto_romaji(jid, 0)
                     finish(jid, 0, None, False, "remote")
-            else:
-                finish(jid, 1, st.get("error"), bool(st.get("oom")), "remote")
+            else:   # failed, or paused for the helper's GPU (a game started on that PC): back in the queue
+                finish(jid, 1, st.get("error"), bool(st.get("oom")), "remote",
+                       paused=(f"{C.GPU_HELPER_NAME}: {st['paused']}" if st.get("paused") else None))
             try:
                 helper_call(f"/jobs/{jid}", "DELETE")
             except Exception:
@@ -3431,6 +3616,25 @@ def refresh_library(req: Request):
     return r
 
 
+_QV = {"at": 0.0, "v": None}
+
+
+def queue_view():
+    """The queue in short (cached 3 s): how many songs wait (made by hand / from imports / paused for the GPU), and the
+    next few, each with its place and what it waits for."""
+    if _QV["v"] is None or time.time() - _QV["at"] > 3:
+        q = queued_jobs()
+        nxt = []
+        for j in q[:5]:
+            n, why = queue_place(j)
+            nxt.append({"id": j["id"], "artist": j.get("artist"), "title": j.get("title"), "place": n, "waiting": why,
+                        "background": bool(job_class(j)), "paused": (j.get("paused") or {}).get("why")})
+        _QV.update(at=time.time(), v={"queued": len(q), "hand": sum(1 for j in q if not job_class(j)),
+                                      "imports": sum(1 for j in q if job_class(j)), "paused": sum(1 for j in q if j.get("paused")),
+                                      "next": nxt})
+    return _QV["v"]
+
+
 @app.get("/api/status")
 def status():
     if C.GPU_HELPER_URL and time.time() - helper_seen["at"] > 20:
@@ -3440,6 +3644,7 @@ def status():
             "romaji_ai": bool(C.OLLAMA_URL),
             "requests_open": STORE.q("select count(*) from requests where status='open'")[0][0],
             "pitch_pending": pitch_pending(),
+            "queue": queue_view(),
             "gpus": {"local": LOCAL_GPU, "local_busy": slots["local"] is not None,
                      "helper": C.GPU_HELPER_NAME if C.GPU_HELPER_URL else None,
                      "helper_online": bool(helper_seen["health"]) if C.GPU_HELPER_URL else None,
@@ -3459,8 +3664,8 @@ def recover_jobs():
             if job.get("status") == "running":
                 if job.get("cancel_requested"):
                     _mark_cancelled(job, "cancelled by you (the studio restarted while stopping it)")
-                else:
-                    job.update(status="queued", step="queued")
+                else:   # (what its GPU steps had worked out is reused: gpuwatch.Memo)
+                    job.update(status="queued", step="queued", resume=True)
                 save(j["id"], job)
             if (job.get("video_task") or {}).get("running"):  # not requeued: the custom videos say they need a re-render
                 job["video_task"] = dict(job["video_task"], running=False, error="the studio restarted while making it; try again (Re-render)")
@@ -4064,8 +4269,12 @@ def _queue_plan(jobs, extra=None):
         if j["status"] == "running" and j.get("started"):
             where = (runners.get(j["id"]) or {}).get("where") or ("local" if j.get("gpu") == LOCAL_GPU else "remote")
             running[where] = j["started"]
-    queued = [(j["id"], j.get("gpu_pref") or "auto") for j in sorted(jobs, key=lambda j: j.get("created") or 0) if j["status"] == "queued"]
-    return now, secs, up, running, AM.plan(now, up, running, queued, secs, extra)
+    order = queue_order(jobs)
+    queued = [(j["id"], j.get("gpu_pref") or "auto") for j in order]
+    if extra:   # a party request not queued yet: ahead of the import songs, like any song a person asks for
+        k = next((i for i, j in enumerate(order) if job_class(j)), len(order))
+        queued.insert(k, extra)
+    return now, secs, up, running, AM.plan(now, up, running, queued, secs)
 
 
 def auto_etas(jobs):
@@ -4245,7 +4454,7 @@ def automake_run(rid):
         return _auto_fail(rid, p["why"])
     pname = STORE.player_names().get(r["player"]) or ("the preset player" if r["player"] == encore.PRESET else "a player")
     jid = new_job({"yt": v["id"], "lrc_id": l["id"], "lyrics_source": l["source"], "artist": artist, "title": title,
-                   "video_title": str(v.get("title") or "")[:200], "gpu_pref": "auto", "encore_rids": [rid],
+                   "video_title": str(v.get("title") or "")[:200], "gpu_pref": "auto", "encore_rids": [rid], "priority": "party",
                    "automake": {"rid": rid, "player": r["player"], "player_name": pname, "by": r["by_name"], "party": r["party"],
                                 "at": time.time(), "video": v["id"], "lyrics": f"{l['source']}:{l['id']}",
                                 "names_from": p["names_from"]}}, AM.actor(pname))
@@ -4804,7 +5013,7 @@ async def import_make(iid: str, req: Request):
             v, l = r["video"], r["lyrics"]
             jid = new_job({"yt": v["id"], "lrc_id": l["id"], "lyrics_source": l["source"], "artist": artist, "title": title,
                            "video_title": str(v.get("title") or "")[:200], "gpu_pref": gpu,
-                           "import": {"id": iid, "n": r["n"]}}, actor)
+                           "import": {"id": iid, "n": r["n"]}, "priority": "import"}, actor)
             r.update(job=jid, artist=artist, title=title, status="made", tick=False)
             made.append({"n": r["n"], "id": jid})
             log.info("import %s: queued %s (row %s) | video %s | lyrics %s:%s", iid, jid, r["n"], v["id"], l["source"], l["id"])

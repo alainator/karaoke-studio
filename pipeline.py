@@ -14,6 +14,8 @@ import json, os, re, shutil, subprocess, sys, time, unicodedata, urllib.parse, u
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config as C  # noqa: E402
+import gpu  # noqa: E402  (no torch: it's imported once a model is needed)
+import gpuwatch  # noqa: E402
 from assgen import save_lines, write_lyrics  # noqa: E402
 import versions  # noqa: E402
 import videocheck  # noqa: E402
@@ -28,7 +30,7 @@ SR = 16000
 
 
 def say(kind, text=""):
-    print(f"@{kind} {text}".rstrip(), flush=True)
+    gpuwatch.say(kind, text)   # (one write per line: the GPU report thread prints too)
 
 
 def fail(text):
@@ -52,6 +54,32 @@ if not re.fullmatch(r"[A-Za-z0-9_-]{11}", yt):
 os.makedirs(WORK, exist_ok=True); os.makedirs(MODELS, exist_ok=True)
 w = f"{WORK}/{yt}"
 t0 = time.time()
+# Sharing the GPU (gpuwatch.py): this process says how much of the card it holds, so the studio can tell other
+# programs' memory from its own; before each model the card must have that step's room, else the song pauses
+# (PAUSE_EXIT) and the studio starts it again later. What the GPU steps worked out is kept until the song is made
+# (MEMO): a resumed song (job["resume"]: paused, or cut short by a restart) takes it instead of listening again.
+gpuwatch.report()
+gpuwatch.clean_resume(WORK)
+MEMO = gpuwatch.Memo(gpuwatch.resume_dir(WORK, job_dir), job.get("resume"), salt=[versions.VERSION, C.WHISPER_MODEL])
+GPU_PEAKS = {}  # step -> the most GPU memory it held (MiB): in result.json, to tune C.GPU_STEP_MIB
+
+
+def peak(step):
+    v = gpu.peak_mib()
+    if v:
+        GPU_PEAKS[step] = max(v, GPU_PEAKS.get(step, 0))
+        gpuwatch.say("gpu-peak", f"{step} {v}")   # (only in the song's pipeline.log)
+
+
+def no_oom(e):
+    """Steps that can do without their result (the transcription, the pitch, the talking check) carry on when they
+    fail, but not when the GPU ran out of memory: that pauses the song instead of quietly making a worse one."""
+    if gpu.is_oom(e):
+        raise e
+
+
+if job.get("resume"):
+    say("info", "carrying on after a pause for the GPU: what was done is reused")
 
 # 1. lyrics first: cheap, and the job is pointless without synced lines
 say("step", "lyrics")
@@ -394,6 +422,7 @@ say("info", f"video {vinfo}, {duration:.0f}s")
 say("step", "separate")
 vocals, inst = f"{WORK}/{yt}-vocals.wav", f"{WORK}/{yt}-inst.wav"
 if not (os.path.exists(vocals) and os.path.exists(inst)):
+    gpuwatch.gate("removing the vocals", "separate")
     run("ffmpeg", "-v", "error", "-y", "-i", f"{w}.mp4", "-map", "0:a:0", "-ac", "2", "-ar", "44100", f"{w}.wav")
     from audio_separator.separator import Separator
     sep = Separator(model_file_dir=MODELS, output_dir=WORK, output_format="WAV")
@@ -406,6 +435,7 @@ if not (os.path.exists(vocals) and os.path.exists(inst)):
     os.replace(f"{WORK}/{tmp_}-inst.wav", inst)
     del sep
     os.remove(f"{w}.wav")
+    peak("separate")
 # 3b. "Keep backing vocals" (the song's switch, job["keep_backing"]): a karaoke model splits the separated vocals into the
 # lead and the backing voices (cached per model). The music gets the backing back (choirs, "aah"s, harmonies stay); the
 # guide vocals are the lead only. The lyrics are still timed on the whole vocal track, as without it.
@@ -418,6 +448,7 @@ if job.get("keep_backing"):
     _tag = hashlib.sha1(C.BACKING_MODEL.encode()).hexdigest()[:8]
     lead, backing, inst_bk = f"{WORK}/{yt}-lead.{_tag}.wav", f"{WORK}/{yt}-backing.{_tag}.wav", f"{WORK}/{yt}-inst-backing.{_tag}.wav"
     if not (os.path.exists(lead) and os.path.exists(backing)):
+        gpuwatch.gate("splitting the backing vocals", "backing")
         say("info", "splitting the backing vocals from the lead")
         from audio_separator.separator import Separator
         sep = Separator(model_file_dir=MODELS, output_dir=WORK, output_format="WAV")
@@ -427,6 +458,7 @@ if job.get("keep_backing"):
         os.replace(f"{WORK}/{tmp_}-lead.wav", lead)
         os.replace(f"{WORK}/{tmp_}-backing.wav", backing)
         del sep
+        peak("backing")
     swaps_used = sorted([round(float(a), 2), round(float(b), 2)] for a, b in (job.get("voice_swaps") or [])
                         if isinstance(a, (int, float)) and isinstance(b, (int, float)) and b - a >= 0.3)
     if swaps_used:
@@ -455,7 +487,6 @@ if job.get("keep_backing"):
     inst_out, voc_out, backing_kept = inst_bk, lead, True
     say("info", "backing vocals kept in the music (only the lead singer is taken out)")
 import gc, torch  # noqa: E402
-import gpu  # noqa: E402
 DEV = gpu.device(cpu_ok=False)  # cuda on NVIDIA (and AMD ROCm builds of PyTorch); see gpu.py
 gc.collect(); gpu.empty_cache(DEV)
 
@@ -477,8 +508,19 @@ if source != "karamoe" and not untimed and len(synced) >= 4:
         album_proc = None
 say("step", "align")
 import numpy as np, stable_whisper  # noqa: E402
-model = stable_whisper.load_model(C.WHISPER_MODEL, device=DEV)
+_WM = {}
+
+
+def wmodel():
+    """Whisper, loaded the first time it's needed (a resumed song may have everything it would say already)."""
+    if "m" not in _WM:
+        gpuwatch.gate("listening to the vocals (Whisper)", "whisper")
+        _WM["m"] = stable_whisper.load_model(C.WHISPER_MODEL, device=DEV)
+    return _WM["m"]
+
+
 audio = stable_whisper.audio.load_audio(vocals)  # 16 kHz mono
+AUDIO_ID = [os.path.basename(vocals), os.path.getsize(vocals), int(os.path.getmtime(vocals)), len(audio)]
 SUNG = None  # the language Whisper hears in the singing (set when the lyrics' script leaves it open)
 _txt = " ".join(t for _, t in synced)
 _accented = sum(1 for c in _txt if c.isalpha() and not c.isascii()) / max(1, sum(c.isalpha() for c in _txt))
@@ -490,25 +532,31 @@ if SCRIPT == "zh" or SCRIPT in SCRIPTS or (SCRIPT == "latin" and (_en(_txt) < 0.
                "arabic": ["ar", "fa", "ur", "ps", "sd"], "devanagari": ["hi", "mr", "ne", "sa"], "bengali": ["bn", "as"]}
     allowed = ALLOWED.get(SCRIPT) or ([SCRIPT_LANG[SCRIPT]] if SCRIPT in SCRIPT_LANG else None)
     det = None
-    try:
+
+    def _votes():
         import whisper as _wh
         votes = {}
         for frac in (0.3, 0.5, 0.7):
             c_ = int(len(audio) * frac)
             seg_ = _wh.pad_or_trim(audio[max(0, c_ - 15 * SR):c_ + 15 * SR])
-            mel_ = _wh.log_mel_spectrogram(seg_, n_mels=model.dims.n_mels).to(model.device)
-            _, probs_ = model.detect_language(mel_)
+            mel_ = _wh.log_mel_spectrogram(seg_, n_mels=wmodel().dims.n_mels).to(wmodel().device)
+            _, probs_ = wmodel().detect_language(mel_)
             for k_, p_ in probs_.items():
                 votes[k_] = votes.get(k_, 0.0) + float(p_)
+        return votes
+    try:
+        votes = MEMO.get("detect", AUDIO_ID, _votes)
         pool = allowed or list(votes)
         det = max(pool, key=lambda k_: votes.get(k_, 0.0)) if votes else None
         if allowed and len(allowed) == 1:
             det = allowed[0]
-    except Exception:
+    except Exception as e:
+        no_oom(e)
         try:
             mid = len(audio) // 2
-            det = model.transcribe(audio[max(0, mid - 15 * SR):mid + 15 * SR], language=None, vad=True, verbose=None).language
-        except Exception:
+            det = wmodel().transcribe(audio[max(0, mid - 15 * SR):mid + 15 * SR], language=None, vad=True, verbose=None).language
+        except Exception as e2:
+            no_oom(e2)
             det = None
     if SCRIPT == "zh":
         # Mandarin or Cantonese? Whisper can't tell (it gives Cantonese under 1.5 % even on Cantonese songs, and
@@ -552,8 +600,14 @@ hear_lang = SUNG if (SCRIPT == "latin" and not any(origs) and SUNG in ("ja", "ko
 if mixed:
     say("info", f"mostly English with {sum(1 for o in origs if o)} "
                 f"{dict(ja='Japanese', ko='Korean', zh='Chinese', yue='Cantonese').get(lang) or SCRIPTS[SCRIPT][1]} lines: listening in English")
-res = model.align(audio, "\n".join(align_text), language=wlang, original_split=True)
-wsegs = [[(x.start, x.end) for x in s.words if x.word.strip()] for s in res.segments if s.words]
+
+
+def _align():
+    res = wmodel().align(audio, "\n".join(align_text), language=wlang, original_split=True)
+    return [[(x.start, x.end) for x in s.words if x.word.strip()] for s in res.segments if s.words]
+
+
+wsegs = [[tuple(x) for x in sg] for sg in MEMO.get("align", [AUDIO_ID, align_text, wlang], _align)]
 heard_words = []
 heard_spans = []  # the same words with start and end times (saved as heard.json for checking by ear)
 listen_ja = lang == "ja" and not mixed and any(origs) and len(hand_romaji) < 0.8 * sum(1 for o in origs if o)
@@ -565,10 +619,13 @@ if True:  # every song is transcribed: the lyrics checks use it where they apply
     try:
         # no voice-activity filter: it drops everything after a long non-singing scene (The Kill's video stopped being
         # transcribed at 224 s); each stretch is transcribed on its own so silence can't make it loop
-        tr = model.transcribe(audio, language=hear_lang, word_timestamps=True, vad=False, verbose=None,
-                              condition_on_previous_text=False)
-        heard_words = [((w.start + w.end) / 2, w.word) for sg in tr.segments for w in sg.words]
-        heard_spans = [[round(w.start, 2), round(w.end, 2), w.word] for sg in tr.segments for w in sg.words]
+        def _hear():
+            tr = wmodel().transcribe(audio, language=hear_lang, word_timestamps=True, vad=False, verbose=None,
+                                     condition_on_previous_text=False)
+            return [[w.start, w.end, w.word] for sg in tr.segments for w in sg.words]
+        _heard = MEMO.get("transcribe", [AUDIO_ID, hear_lang], _hear)
+        heard_words = [((a_ + b_) / 2, w_) for a_, b_, w_ in _heard]
+        heard_spans = [[round(a_, 2), round(b_, 2), w_] for a_, b_, w_ in _heard]
         if hear_lang != wlang:
             say("info", f"romanized lyrics, sung in {hear_lang}: listened in that language for the check by ear ({len(heard_spans)} words heard)")
             heard_words = []
@@ -578,19 +635,33 @@ if True:  # every song is transcribed: the lyrics checks use it where they apply
         if heard_words:
             say("info", f"listened to the vocals for the lyrics check ({len(heard_words)} words heard)")
     except Exception as e:
+        no_oom(e)
         say("info", f"couldn't transcribe the vocals ({str(e)[:60]})")
-del model; gc.collect(); gpu.empty_cache(DEV)
+if _WM:
+    peak("whisper")
+_WM.clear(); gc.collect(); gpu.empty_cache(DEV)
 # Pitch (CREPE): which 10 ms frames of the vocals hold a sung note. A held last word ends where its note does, which
 # loudness alone can't tell from a breath, a backing voice or separation leftovers in the gap after it.
 VOICED = None
-try:
+
+
+def _voiced():
     import torchcrepe
+    gpuwatch.gate("tracking the pitch", "pitch")
     _a = torch.from_numpy(audio).float().unsqueeze(0).to(DEV)
     _f0, _per = torchcrepe.predict(_a, SR, hop_length=SR // 100, fmin=65, fmax=1100, model="tiny", batch_size=4096,
                                    device=DEV, return_periodicity=True)
-    VOICED = (torchcrepe.filter.median(_per, 5)[0].float().cpu().numpy() > 0.45)
+    v_ = (torchcrepe.filter.median(_per, 5)[0].float().cpu().numpy() > 0.45)
     del _a, _f0, _per; gpu.empty_cache(DEV)
+    peak("pitch")
+    return np.packbits(v_).tobytes().hex() + f":{len(v_)}"   # (kept as text: 1 bit a frame)
+
+
+try:
+    _vh, _, _vn = MEMO.get("pitch", AUDIO_ID, _voiced).partition(":")
+    VOICED = np.unpackbits(np.frombuffer(bytes.fromhex(_vh), dtype=np.uint8))[:int(_vn)].astype(bool)
 except Exception as e:
+    no_oom(e)
     say("info", f"couldn't track the pitch ({str(e)[:60]}); held notes end by loudness")
 # Where does the video's singing sit relative to LRCLIB's (album) timing? Candidates:
 #  - Whisper: median and most common difference of line starts (repeated choruses can fool the median)
@@ -673,6 +744,7 @@ say("info", "offset candidates " + ", ".join(f"{k} {v:+.2f}s (activity fit {scor
 
 import torchaudio  # noqa: E402
 fa = torchaudio.pipelines.MMS_FA
+gpuwatch.gate("timing the words", "words")
 fa_model = fa.get_model(with_star=False).to(DEV)
 tokenizer, aligner = fa.get_tokenizer(), fa.get_aligner()
 VOCAL_RMS = float(np.sqrt(np.mean(audio ** 2)))
@@ -720,6 +792,7 @@ def align_at(off, only=None):
                         full[-1][2] += " " + x
                 words = full
         except Exception as e:
+            no_oom(e)
             say("info", f"line {i + 1}: aligner failed ({str(e)[:80]}); words spread evenly")
         if not words:
             step = max(0.2, (b_al - a - 0.3) / len(orig))
@@ -1165,38 +1238,45 @@ if heard_words and (not any(origs) or mixed or listen_other) and len(synced) >= 
 _SPEECH = None
 # Talking found by sound: an AudioSet classifier (AST) scores "Speech" every second on the video's own audio. A skit
 # scores ~0.3, singing ~0.03 (The Kill), in any language, so this also works when Whisper can't follow the words.
+def _talk():
+    from transformers import ASTFeatureExtractor, ASTForAudioClassification
+    gpuwatch.gate("checking the video's sound for talking", "talk")
+    name, cache = "MIT/ast-finetuned-audioset-10-10-0.4593", os.path.join(MODELS, "hf")
+    fe_ = ASTFeatureExtractor.from_pretrained(name, token=False, cache_dir=cache)
+    m_ = ASTForAudioClassification.from_pretrained(name, token=False, cache_dir=cache).eval().to(DEV)
+    sp_i = {v: k for k, v in m_.config.id2label.items()}["Speech"]
+    y_ = np.frombuffer(subprocess.run(["ffmpeg", "-v", "error", "-i", f"{w}.mp4", "-map", "0:a:0", "-ac", "1", "-ar", "16000",
+                                       "-f", "f32le", "-"], capture_output=True, check=True).stdout, dtype=np.float32)
+    st_ = list(range(0, max(1, len(y_) - 32000), 16000))
+    out_ = []
+    for b0 in range(0, len(st_), 32):
+        x_ = fe_([y_[s0:s0 + 32000] for s0 in st_[b0:b0 + 32]], sampling_rate=16000, return_tensors="pt").to(DEV)
+        with torch.inference_mode():
+            out_ += torch.sigmoid(m_(**x_).logits)[:, sp_i].float().cpu().tolist()
+    del m_; gc.collect(); gpu.empty_cache(DEV)
+    peak("talk")
+    spans_, cur_ = [], None
+    for s0, p_ in zip(st_, out_):
+        t_ = s0 / 16000 + 1.0  # window centre
+        if p_ >= 0.15:
+            cur_ = [t_ - 0.5, t_ + 0.5] if cur_ is None else [cur_[0], t_ + 0.5]
+        elif cur_:
+            spans_.append(cur_); cur_ = None
+    if cur_:
+        spans_.append(cur_)
+    return [(a_, b_) for a_, b_ in spans_ if b_ - a_ >= 3.0]
+
+
 def speech_spans():
     global _SPEECH
     if _SPEECH is not None:
         return _SPEECH
     _SPEECH = []
     try:
-        from transformers import ASTFeatureExtractor, ASTForAudioClassification
-        name, cache = "MIT/ast-finetuned-audioset-10-10-0.4593", os.path.join(MODELS, "hf")
-        fe_ = ASTFeatureExtractor.from_pretrained(name, token=False, cache_dir=cache)
-        m_ = ASTForAudioClassification.from_pretrained(name, token=False, cache_dir=cache).eval().to(DEV)
-        sp_i = {v: k for k, v in m_.config.id2label.items()}["Speech"]
-        y_ = np.frombuffer(subprocess.run(["ffmpeg", "-v", "error", "-i", f"{w}.mp4", "-map", "0:a:0", "-ac", "1", "-ar", "16000",
-                                           "-f", "f32le", "-"], capture_output=True, check=True).stdout, dtype=np.float32)
-        st_ = list(range(0, max(1, len(y_) - 32000), 16000))
-        out_ = []
-        for b0 in range(0, len(st_), 32):
-            x_ = fe_([y_[s0:s0 + 32000] for s0 in st_[b0:b0 + 32]], sampling_rate=16000, return_tensors="pt").to(DEV)
-            with torch.inference_mode():
-                out_ += torch.sigmoid(m_(**x_).logits)[:, sp_i].float().cpu().tolist()
-        del m_; gc.collect(); gpu.empty_cache(DEV)
-        spans_, cur_ = [], None
-        for s0, p_ in zip(st_, out_):
-            t_ = s0 / 16000 + 1.0  # window centre
-            if p_ >= 0.15:
-                cur_ = [t_ - 0.5, t_ + 0.5] if cur_ is None else [cur_[0], t_ + 0.5]
-            elif cur_:
-                spans_.append(cur_); cur_ = None
-        if cur_:
-            spans_.append(cur_)
-        _SPEECH = [(a_, b_) for a_, b_ in spans_ if b_ - a_ >= 3.0]
+        _SPEECH = [tuple(x) for x in MEMO.get("talk", [os.path.getsize(f"{w}.mp4"), int(os.path.getmtime(f"{w}.mp4"))], _talk)]
         return _SPEECH
     except Exception as e:
+        no_oom(e)
         say("info", f"couldn't check the video's sound for talking ({str(e)[:60]})")
         return []
 
@@ -1411,6 +1491,7 @@ def repeat_check():
             out_lines, skipped, cur_fit = r_[0], r_[1], r_[2]
             say("info", "moved them to where the melody repeats")
     except Exception as e:
+        no_oom(e)
         say("info", f"repeat check skipped ({str(e)[:60]})")
 
 
@@ -1429,7 +1510,8 @@ for i in range(len(out_lines) - 1):
         _, sa = _fa_words(A[0][0] - 0.15, A[-1][1] + 0.15, [wd[2] for wd in A])
         _, sb = _fa_words(B[0][0] - 0.15, B[-1][1] + 0.15, [wd[2] for wd in B])
         tj, sj = _fa_words(A[0][0] - 0.15, B[-1][1] + 0.15, [wd[2] for wd in A + B])
-    except Exception:
+    except Exception as e:
+        no_oom(e)
         continue
     if abs(tj[len(A)][0] - B[0][0]) >= 0.5 and np.mean(sj) - np.mean(sa + sb) >= 0.09:
         held = B[-1][1]  # the second line's held last note (measured earlier) isn't affected by the boundary
@@ -1472,8 +1554,8 @@ if backs:
                 m_ = float(np.mean(sc_))
                 if not best_ or m_ > best_[0]:
                     best_ = (m_, tb_)
-            except Exception:
-                pass
+            except Exception as e:
+                no_oom(e)
             st_ += 0.25
         if best_:
             out_lines.append({"words": [[round(x_, 3), round(y_, 3), w_] for w_, (x_, y_) in zip(words_b, best_[1])],
@@ -1483,6 +1565,7 @@ if backs:
     if _placed_b:
         say("info", f"placed {_placed_b} backing-vocal phrase{'s' if _placed_b != 1 else ''} by ear (they may overlap the lead)")
 del fa_model; gc.collect(); gpu.empty_cache(DEV)
+peak("words")
 if heard_words:
     for l in out_lines:
         if (l.get("orig") and listen_ja) or (not l.get("orig") and listen_latin):
@@ -1512,6 +1595,8 @@ save_lines(f"{job_dir}/words.json", out_lines)
 vw, vh = (int(x) for x in vinfo.split(",")[1:3])
 write_lyrics(job_dir, dict(job, result=dict(job.get("result") or {}, width=vw, height=vh, lang=lang)), lines=out_lines)
 say("info", f"{len(out_lines)} lines aligned" + (f", {len(skipped)} not sung in this video" if skipped else ""))
+if MEMO.used:
+    say("info", "reused from before the pause: " + ", ".join(MEMO.used))
 
 # 5. render: video copied + instrumental; vocals separately for the preview toggle
 say("step", "render")
@@ -1625,6 +1710,7 @@ json.dump({"offset": round(off, 2), "lines": len(out_lines), "skipped": skipped,
            else ("kara.moe" if source == "karamoe" else None),
            "duration": round(duration, 1), "seconds": round(time.time() - t0), "encoded": "x264",
            "confidence": CONF, "pipeline": versions.VERSION, "backing": backing_kept, "voice_swaps": swaps_used,
+           "gpu_peaks": GPU_PEAKS or None, "resumed": MEMO.used or None,
            "video_check": {"lyrics_lang": videocheck.lyrics_language([t for _, t in synced]) if SCRIPT == "latin" else None,
                            "sung": SUNG, "album": ALBUM, "source": source,
                            "lyrics_end": round(float(synced[-1][0]), 1) if synced and not untimed else None}},
@@ -1635,4 +1721,5 @@ _trim = job.get("trim") or {}
 if _trim.get("start") or _trim.get("end"):
     import trimtools  # noqa: E402
     say("info", trimtools.reapply(job_dir, _trim))
+MEMO.clear()   # made: nothing left to resume
 say("step", "done")

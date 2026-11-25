@@ -7,10 +7,12 @@ Runs the same pipeline.py as the studio, one job at a time, and serves the finis
 must carry the shared secret (HELPER_TOKEN, header X-Helper-Token); HELPER_ALLOW can limit which addresses may
 connect (the studio's). The helper downloads the video itself, so the PC needs internet access, ffmpeg and node.
 
-    GET    /health                 -> {"ok", "gpu", "free_mib", "busy"}
+    GET    /health                 -> {"ok", "gpu", "free_mib", "util" (how busy the card is, %), "busy"}
     POST   /jobs                   -> {"id"}   body: the studio's job (yt, lrc_id, lyrics_source, artist, title, lang,
-                                              lyrics_text when the lyrics were pasted)
-    GET    /jobs/<id>              -> {"status": running|done|failed|cancelled, "step", "log", "error"}
+                                              lyrics_text when the lyrics were pasted, resume)
+    GET    /jobs/<id>              -> {"status": running|done|failed|cancelled|paused, "step", "log", "error",
+                                       "paused": why (paused: this PC's GPU was needed by another program; the studio
+                                       queues the song again), "oom"}
     GET    /jobs/<id>/files/<name> -> out.mp4, vocals.m4a, words.json, lyrics.ass, result.json
     POST   /jobs/<id>/cancel       -> {"ok", "status"}  stop it (the pipeline and everything it started); the job ends
                                       "cancelled" a few seconds later
@@ -25,6 +27,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import config as C  # noqa: E402
 import gpu as gpu_mod  # noqa: E402
+import gpuwatch  # noqa: E402
 
 TOKEN = os.environ.get("HELPER_TOKEN", "")
 ALLOW = {a.strip() for a in os.environ.get("HELPER_ALLOW", "").split(",") if a.strip()}
@@ -61,10 +64,28 @@ def gpu():
     return gpu_mod.info()
 
 
+def gpu_util():
+    """How busy this PC's card is (%), or None (a game or another program computing on it: the studio waits)."""
+    return (gpu_mod.snapshot() or {}).get("util")
+
+
 @app.get("/health")
 def health():
     name, free = gpu()
-    return {"ok": True, "gpu": name, "free_mib": free, "busy": state["busy"] is not None, "version": C.code_version()}
+    return {"ok": True, "gpu": name, "free_mib": free, "util": gpu_util() if state["busy"] is None else None,
+            "busy": state["busy"] is not None, "version": C.code_version()}
+
+
+def _pause(jid, why):
+    """Another program keeps taking this PC's card during the song (a game): stop it; the studio queues it again."""
+    with lock:
+        j, p = jobs.get(jid), procs.get(jid)
+        if j is None or p is None or j.get("cancel") or j.get("_stopper"):
+            return
+        j["_pausing"] = why
+        t = threading.Thread(target=C.stop_group, args=(p,), daemon=True)
+        j["_stopper"] = t
+        t.start()
 
 
 def run(jid):
@@ -78,10 +99,20 @@ def run(jid):
         p = subprocess.Popen([sys.executable, "-I", PIPELINE, d], stdout=subprocess.PIPE, start_new_session=True,
                              stderr=subprocess.STDOUT, text=True, env=dict(C.tool_env(), PYTHONUNBUFFERED="1"))
         procs[jid] = p
+        jobs[jid]["_own"] = 0
     oom = False
     C.job_log(d, f"run started on the helper, code {C.code_version()}", header=True)
+    threading.Thread(target=gpuwatch.watch, daemon=True, name="gpu-watch", kwargs=dict(
+        proc=p, reported=lambda: jobs[jid].get("_own", 0), step=lambda: jobs[jid].get("step"),
+        pause=lambda why: _pause(jid, why))).start()
     for line in p.stdout:
         line = line.rstrip()
+        if line.startswith("@gpu "):
+            try:
+                jobs[jid]["_own"] = int(line[5:])
+            except ValueError:
+                pass
+            continue
         C.job_log(d, line)
         oom = oom or "out of memory" in line.lower()
         if line.startswith("@"):
@@ -94,6 +125,8 @@ def run(jid):
                     j["log"].append(text)
                 elif kind == "error":
                     j["error"] = text
+                elif kind == "pause":
+                    j["_pausing"] = text
     rc = p.wait()
     with lock:  # reaped: nothing left to stop
         procs.pop(jid, None)
@@ -108,6 +141,9 @@ def run(jid):
         if j.get("cancel"):
             j.update(status="cancelled", error="cancelled")
             C.job_log(d, "cancelled", header=True)
+        elif not ok and (j.get("_pausing") or rc == gpuwatch.PAUSE_EXIT):
+            j.update(status="paused", paused=j.get("_pausing") or "no room on the GPU for the next step", error=None)
+            C.job_log(d, f"paused: {j['paused']}", header=True)
         else:
             j["status"] = "done" if ok else "failed"
             if not ok and not j.get("error"):
@@ -128,7 +164,7 @@ async def create(req: Request):
         d = os.path.join(JOBS, jid)
         shutil.rmtree(d, ignore_errors=True)
         os.makedirs(d)
-        spec = {k: b.get(k) for k in ("yt", "lrc_id", "lyrics_source", "artist", "title", "lang", "lyrics_text")}
+        spec = {k: b.get(k) for k in ("yt", "lrc_id", "lyrics_source", "artist", "title", "lang", "lyrics_text", "resume")}
         if spec.get("lyrics_text") is not None:
             spec["lyrics_text"] = str(spec["lyrics_text"])[:20000]
         json.dump(spec, open(os.path.join(d, "job.json"), "w"))
