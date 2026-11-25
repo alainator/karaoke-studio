@@ -34,6 +34,11 @@ additive only; Encore accepts 1 and 2 and ignores unknown fields):
   (`"peak_db"`, dBTP) of the video's sound; `"mix_lufs"`, `"mix_peak_db"` the same with `<base>.vocals.m4a` mixed in at
   full (null without vocals); `"v": 1`. Versions carry the song's. Missing = null; players use it to even out volumes
   between songs, the files never change.
+- Lines of `<base>.words.json` may carry `"syl"` (optional, only when a word of that line is sung in syllable pieces):
+  an array as long as `words`, each entry null or two or more `[start, end, "piece"]` in video time. The pieces' texts
+  joined are the word's text; the first piece starts and the last ends with the word. Players show them joined, each
+  lit at its own time (the `.ass` does this). `words`, `word_parts` and the §2.9 `w` index stay per whole word. Players
+  ignore `words.json` fields they don't know, as for `catalog.json`.
 - Lyric modes (`lyrics.modes`): besides `both` (romanized words highlighted, the original script as a small row above),
   `original`, `romaji` and (Japanese) `kana`, songs whose lyrics are in another script also have `both_original`: the
   original script as the main, highlighted line with the romanization as a small row above, lit in step. Chinese
