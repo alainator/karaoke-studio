@@ -46,6 +46,9 @@ per song.
 - `gpu.free_mib()`, `gpu.name()`, `gpu.info()`: free memory and the card's name, from `nvidia-smi`, else `rocm-smi`,
   else 0/None. These run command-line tools and never import torch, so the web app and the helper don't open a GPU
   context.
+- `gpu.snapshot()`: the card's used/free memory, how busy it is and the programs on it (for sharing the card with
+  other programs: `gpuwatch.py`); `gpu.held_mib()`, `gpu.peak_mib()`, `gpu.is_oom(e)`: this process's own use, without
+  importing torch.
 - `gpu.empty_cache(dev)`: frees cached memory between models.
 
 Nothing else says `"cuda"` or calls `nvidia-smi` (a test checks).

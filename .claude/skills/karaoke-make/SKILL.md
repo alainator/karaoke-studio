@@ -30,7 +30,7 @@ description: Make new karaoke songs in Karaoke Studio - search for the music vid
    song is published by itself if its video check passes, otherwise it waits with the reason (`ks show SONG`).
 
 Given a list or a YouTube playlist: `ks import PLAYLIST-LINK` (or `ks import FILE`, one song per line: Artist - Title
-or a video link; `-` reads stdin; up to 50) makes the Studio pick the video and timed lyrics for each the way party
+or a video link; `-` reads stdin; up to 2000) makes the Studio pick the video and timed lyrics for each the way party
 auto-make picks (a playlist keeps its own videos), and prints a review: `[x]` ready rows, skipped rows with the reason
 (no timed lyrics, too long, already in the library or the queue, a duplicate, an unavailable video, a lyric/live/cover
 video found for a typed line). Nothing is made yet. Its picks are automatic: check every `[x]` row against the rules
@@ -39,6 +39,8 @@ above (right song and version, the official video, lyrics of the same length and
 list made; otherwise follow the pacing below); for a row that's wrong, make that song by hand (steps 1-4) instead.
 The person can do the same review on the Make tab (Import a list), with Change… per row.
 
-For many songs, don't queue them all at once while the person may be making their own: the studio makes one song
-at a time per GPU, first come first served. Queue one, wait until `ks status` says nothing is being made, then the
-next; and hold off while a party is singing (the GPU and disk are busy with playback).
+The studio makes one song at a time per GPU. An import's songs are background work: songs made by hand (`ks make`,
+the Make button, a remake) and party requests go before them, so queueing a whole import doesn't hold the person up.
+For many songs with `ks make`, queue one, wait until `ks status` says nothing is being made, then the next; and hold
+off while a party is singing (the GPU and disk are busy with playback). `ks status` shows the queue and why the next
+song waits (the GPU held by another program, a song paused for the GPU).

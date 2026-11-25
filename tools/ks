@@ -297,6 +297,13 @@ def cmd_status(a):
                "online but on older code (it updates from GitHub, so it waits until the studio's code is pushed)"
                if g.get("helper_outdated") else "online") if g.get("helper") else ""))
     print(line)
+    qv = st.get("queue") or {}
+    if qv.get("queued"):   # the queue: songs by hand first, then imports (background); paused ones wait for the GPU
+        print(f"queue: {qv['queued']} waiting ({qv.get('hand', 0)} by hand or requested, {qv.get('imports', 0)} from imports"
+              + (f", {qv['paused']} paused for the GPU" if qv.get("paused") else "") + ")")
+        for x in qv.get("next") or []:
+            print(f"  #{x.get('place') or '?'} {x.get('artist')} - {x.get('title')}{' [import]' if x.get('background') else ''}: "
+                  f"{x.get('waiting') or 'waiting for its turn'}")
     if not a.brief:
         print("tools: ks list --fix | ks show SONG | ks check SONG | ks look SONG --line N (see `ks -h`)")
 

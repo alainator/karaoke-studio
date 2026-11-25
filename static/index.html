@@ -779,9 +779,16 @@ function confTagOwn(j) {
   return "";
 }
 
+// a waiting song: its place in the queue and what it waits for ("#3 · queued behind 2 songs", "#1 · paused (another
+// program took 6 GB of the GPU); waiting for the GPU (RTX 5090: Ollama (…) is using it: 4 GB free, a song needs 9)")
+function queuedState(j) {
+  return (j.queue_n ? `#${j.queue_n} in the queue · ` : "") + (j.waiting || "Waiting for its turn");
+}
+const queueTags = j => j.status !== "queued" ? "" : (j.paused ? ` <span class="tag warn" title="Another program needed the GPU (or it ran out of GPU memory): it carries on where it was once the card has room">⏸ paused for the GPU</span>` : "")
+  + (j.background ? ` <span class="tag" title="Songs from an import are background work: songs made by hand and party requests go first">background</span>` : "");
 function jobState(j) {
   if (j.status === "running") return j.cancel_requested ? "Stopping…" : (STEP_NAMES[j.step] || j.step) + (j.gpu ? ` · ${j.gpu}` : "");
-  if (j.status === "queued") return j.waiting || "Waiting";
+  if (j.status === "queued") return queuedState(j);
   return {failed: "Failed", cancelled: "Cancelled"}[j.status] || (j.published ? "Published" : j.library_removed ? "Removed from the library" : "Ready to preview");
 }
 const canCancel = j => (j.status === "queued" || j.status === "running") && !j.cancel_requested;
@@ -790,7 +797,7 @@ function jobLine(j) {
   return `<div class="card" data-j="${esc(j.id)}">
     <img src="https://i.ytimg.com/vi/${esc(j.yt)}/mqdefault.jpg" alt="" loading="lazy">
     <div style="flex:1;min-width:0"><div class="t">${esc(j.artist)} – ${esc(j.title)}</div>
-    <div class="status ${esc(j.status)}">${esc(jobState(j))}${j.import ? ` <a class="tag" href="#make/import/${esc(j.import.id)}" onclick="event.stopPropagation()" title="Made from an import (Make → Import a list); the import is kept for 24 hours">import · row ${esc(j.import.n)}</a>` : ""}${j.quick ? ` <span class="tag quick" title="Party auto-make made and published it by itself; nobody has played it through yet">quick make, not reviewed</span>` : ""}${nUp ? ` <span class="tag" title="Made with an older version of the studio; the song's page lists what's better now">↻ ${nUp} improvement${nUp === 1 ? "" : "s"} since</span>` : ""}${confTag(j)}</div>${j.status === "running" || j.status === "queued" ? stepBar(j) : ""}</div>
+    <div class="status ${esc(j.status)}">${esc(jobState(j))}${queueTags(j)}${j.import ? ` <a class="tag" href="#make/import/${esc(j.import.id)}" onclick="event.stopPropagation()" title="Made from an import (Make → Import a list); the import is kept for 24 hours">import · row ${esc(j.import.n)}</a>` : ""}${j.quick ? ` <span class="tag quick" title="Party auto-make made and published it by itself; nobody has played it through yet">quick make, not reviewed</span>` : ""}${nUp ? ` <span class="tag" title="Made with an older version of the studio; the song's page lists what's better now">↻ ${nUp} improvement${nUp === 1 ? "" : "s"} since</span>` : ""}${confTag(j)}</div>${j.status === "running" || j.status === "queued" ? stepBar(j) : ""}</div>
     ${canCancel(j) ? `<button class="ghost danger sm cancelbtn" data-cancel="${esc(j.id)}" title="Stop making this song">✕ Cancel</button>` : ""}</div>`;
 }
 async function cancelJob(id) {
@@ -856,6 +863,7 @@ const SONG_SORTS = {
   az: (a, b) => String(a.artist).localeCompare(b.artist, undefined, {sensitivity: "base"}) || String(a.title).localeCompare(b.title, undefined, {sensitivity: "base"}),
   fix: (a, b) => (b.to_check || 0) + (b.encore_flags || 0) - (a.to_check || 0) - (a.encore_flags || 0) || (b.created || 0) - (a.created || 0),
   pub: (a, b) => (b.published || 0) - (a.published || 0) || (b.created || 0) - (a.created || 0),
+  queue: (a, b) => (a.status === "running" ? 0 : a.queue_n || 1e9) - (b.status === "running" ? 0 : b.queue_n || 1e9) || (a.created || 0) - (b.created || 0),
 };
 let SF = lsGet("ks.songs", {q: "", f: "all", sort: "new", lang: ""}), SF_N = PAGE, JOBS_ALL = null;
 let langName = c => c;
@@ -874,7 +882,8 @@ function renderJobs() {
   const base = all.filter(j => (!SF.lang || j.lang === SF.lang) && matches(songHay(j), SF.q));
   const counts = SONG_FILTERS.map(([, , fn]) => base.filter(fn).length);
   const cur = SONG_FILTERS.find(f => f[0] === SF.f) || SONG_FILTERS[0];
-  const list = base.filter(cur[2]).sort(SONG_SORTS[SF.sort] || SONG_SORTS.new);
+  // (Queued / making: in the order they'll be made, the one being made first)
+  const list = base.filter(cur[2]).sort(cur[0] === "making" ? SONG_SORTS.queue : SONG_SORTS[SF.sort] || SONG_SORTS.new);
   $("#jchips").innerHTML = chipsHtml(SONG_FILTERS, counts, cur[0]);
   const narrowed = SF.q || SF.lang || cur[0] !== "all";
   $("#jcount").innerHTML = narrowed ? `<b>${list.length}</b> of ${all.length} songs` : `<b>${all.length}</b> songs`;
@@ -957,7 +966,7 @@ async function openJob(id) {
   if (currentJob !== id) return;
   if (j.status !== "done") {
     $("#jobdetail").innerHTML = `${backLink()}<h2>${esc(j.artist)} – ${esc(j.title)}</h2>
-      <div class="ctl"><div class="status ${esc(j.status)}">${j.status === "failed" ? "Failed: " + esc(j.error) : j.status === "cancelled" ? "Cancelled: you stopped it. Try again makes it from the start." : esc(j.status === "queued" ? (j.waiting || "Waiting for its turn") : j.cancel_requested ? "Stopping…" : STEP_NAMES[j.step] || j.step)}</div>
+      <div class="ctl"><div class="status ${esc(j.status)}">${j.status === "failed" ? "Failed: " + esc(j.error) : j.status === "cancelled" ? "Cancelled: you stopped it. Try again makes it from the start." : esc(j.status === "queued" ? queuedState(j) : j.cancel_requested ? "Stopping…" : STEP_NAMES[j.step] || j.step)}</div>
       ${j.status === "cancelled" ? "" : stepBar(j)}<div class="m hint" style="margin-top:8px">${j.log.map(esc).join("<br>")}</div>
       ${j.status === "failed" || j.status === "cancelled" ? `<div class="row" style="margin-top:10px"><button class="ghost" id="retry">Try again</button><a class="tag" href="/api/jobs/${esc(id)}/log" target="_blank" rel="noopener" title="Everything the studio printed while making this song">log ↗</a><button class="ghost" id="chpicks2" title="Go back to the search for this song, pick a different video or lyrics, and make it again in place of this one">← Change video or lyrics</button><button class="ghost danger" id="del">Delete</button></div>`
         : `<div class="row" style="margin-top:10px">${j.status === "queued" ? `<button class="ghost" id="chpicks2" title="Go back to the search for this song, pick again, and make it in place of this one">← Change video or lyrics</button>` : `<a class="tag" href="/api/jobs/${esc(id)}/log" target="_blank" rel="noopener" title="Everything the studio printed while making this song">log ↗</a>`}${canCancel(j) ? `<button class="ghost danger" id="cancelmk" style="margin-left:auto" title="Stop making this song (you can try again later)">✕ Cancel making it</button>` : ""}</div>`}</div>`;
