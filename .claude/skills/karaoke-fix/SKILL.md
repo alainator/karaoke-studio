@@ -53,6 +53,15 @@ or a unique piece of "Artist - Title". `ks whoami` says what your key allows.
    - A whole section shifted: `ks move SONG N DELTA --ripple` moves line N and every line after it.
    - Wrong words (misheard lyrics, a missing word): `ks text SONG N "the right words"`.
    - Two phrases in one line, or one phrase split in two: `ks split SONG N W` / `ks join SONG N`.
+   - A word sung in pieces, one syllable held or stretched (the word's sweep runs ahead of or behind the singing,
+     the melody row shows several notes under one word): `ks syllables SONG N W "tra|ge|dies"` splits word W (the
+     pieces show joined, each lit at its own time; `ks show` prints them with |), then time each piece from the
+     melody row's note starts with `ks word SONG N W.P --start T --end T` (3.2 = word 3's second piece; a shared
+     boundary moves for both pieces). A held last syllable: `ks word SONG N W --end T` moves only its last piece's
+     end. Never split words into separate words for this (that adds spaces and changes the word count players
+     score). Most clear cases are split already when a song is made; `ks syllables SONG --auto --dry` lists what
+     the melody would split in an older song, without `--dry` it splits them (one undoable edit). Not for Japanese,
+     Chinese or Korean lines (already per character or per romanized word).
    - A line that isn't sung in this video: `ks delete-line SONG N`; one that's missing: `ks add SONG --start T "words"`.
    - A lyric line the studio left out that the video does sing: `ks skipped SONG` lists them; `ks unskip SONG K --start T`.
    - A ⚠ line that is actually fine (you looked and it sits right): leave it marked and say so on the line,

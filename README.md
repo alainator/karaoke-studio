@@ -17,6 +17,7 @@ Type `Artist - Title` (or paste a YouTube link). The studio finds the music vide
 - **Times the lyrics by listening.** It finds the album recording and matches it against the video's music, so skits, scenes in the middle and cuts are found exactly. Talking keeps its sound; only the singing is removed. Backing vocals in brackets get their own line, so they can overlap the lead.
 - **Fixes lyric mistakes.** An optional local AI (via [Ollama](https://ollama.com)) catches dropped or swapped words and wrong Japanese readings, and keeps a change only if it fits the singing better.
 - **Lets you edit easily.** A waveform or spectrogram of the vocals with a block per line: drag, stretch, or tap **S** as each line is sung, and starts snap to where notes begin. Slow playback to 0.5×, loop a line, split or join lines.
+- **Times held syllables.** A word sung in pieces ("tra-ge-diiies") lights up piece by piece, the pieces joined: type `|` inside the word in its line's box (`tra|ge|dies`) and drag the pieces in the timeline's syllables lane; a held syllable fills while it's held. Words the melody clearly holds or stretches over several notes are split when the song is made (`ks syllables --auto` for existing songs).
 - **Tells you what to fix.** Every song is checked by ear after it's made: lines heard somewhere other than where they sit are marked ⚠ with the reason, the song page lists them, and the song list shows how many each song has left.
 - **Colours singers.** Duets, groups of up to 8 named singers, and lines shared mid-way (paint the words of each singer). Pasting a Genius page with headers like `[Chorus: Name]` colours the lines for you.
 - **Remakes safely.** Older songs show what a remake would improve. A remake keeps your edits, changes nothing if it finds nothing better, and can be undone.
@@ -228,7 +229,10 @@ Every song is checked by ear after it's made, and the lines that may be off are 
 song means going through those: by hand in the web editor, or by letting an agent do the first pass.
 
 **By hand.** Open the song: the ⚠ list jumps to each line; drag, stretch or tap **S** where it's sung, click the ⚠ if
-it's fine, Save. **Undo** takes back the last edit; *Undo all edits* goes back to the automatic version.
+it's fine, Save. **Undo** takes back the last edit; *Undo all edits* goes back to the automatic version. A word sung
+in pieces (a stretched syllable): type `|` inside it in the line's box, `tra|ge|dies` (the `|` never shows on
+screen); its pieces appear in the timeline's bottom lane, where you drag a piece or its edges, and stretch the last
+one to where its note ends. Typing the word without `|` makes it whole again.
 
 **With an agent.** `tools/ks` does what the editor does, from a terminal, and lets an agent "see" a song: the Studio's
 by-ear check of the lines as they are now, the words it heard around a line, a picture of the vocals with the line
