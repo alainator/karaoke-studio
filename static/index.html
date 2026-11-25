@@ -1116,6 +1116,52 @@ const fmtT = t => { t = Math.max(0, t); const m = Math.floor(t / 60); return `${
 const parseT = s => { const m = String(s).trim().match(/^(?:(\d+):)?(\d+(?:\.\d+)?)$/); return m ? parseInt(m[1] || "0") * 60 + parseFloat(m[2]) : null; };
 const curOff = () => parseFloat(($("#offr") || {}).value || 0);
 const lineText = l => l.words.map(w => w[2]).join(" ");
+// ---- syllables: a word sung in pieces (l.syl: null, or per word null / [[start, end, "tra"], ...]; syllables.py) ----
+const SYL_MIN = 0.06;
+const sylOf = l => Array.isArray(l.syl) && l.syl.length === l.words.length ? l.syl : l.words.map(() => null);
+// the line's text as typed in its box: a split word with | between its pieces (tra|ge|dies)
+const lineEditText = l => { const s = sylOf(l); return l.words.map((w, j) => s[j] ? s[j].map(p => p[2]).join("|") : w[2]).join(" "); };
+// a typed word: [the word, its pieces or null]; "tra|ge|dies" -> ["tragedies", ["tra", "ge", "dies"]]
+const parseSyl = tok => { const p = tok.split("|").filter(Boolean); return [p.join(""), p.length >= 2 ? p : null]; };
+function evenPieces(a, b, texts) {
+  const w = texts.map(x => Math.max(1, x.length)), tot = w.reduce((x, y) => x + y, 0); let t = a;
+  return texts.map((x, k) => { const e = k === texts.length - 1 ? b : t + (b - a) * w[k] / tot, r = [t, e, x]; t = e; return r; });
+}
+// a word's pieces on the word's span (a moved or stretched line takes them along), or null when they no longer
+// belong to it (its text changed): as syllables.fit
+function fitPieces(w, ps) {
+  if (!Array.isArray(ps) || ps.length < 2 || ps.map(p => p[2]).join("") !== w[2]) return null;
+  ps = ps.map(p => [+p[0], +p[1], p[2]]).sort((x, y) => x[0] - y[0]);
+  const [a, b] = w, pa = ps[0][0], pb = Math.max(...ps.map(p => p[1]));
+  if (!(pb - pa > 1e-6) || !(b - a > 1e-6)) return evenPieces(a, b, ps.map(p => p[2]));
+  if (Math.abs(pa - a) > 5e-4 || Math.abs(pb - b) > 5e-4) { const k = (b - a) / (pb - pa); ps = ps.map(([x, y, t]) => [a + (x - pa) * k, a + (y - pa) * k, t]); }
+  ps[0][0] = a; ps[ps.length - 1][1] = b;
+  return ps;
+}
+function fitSyl(l) {
+  if (!l.syl) return;
+  l.syl = Array.isArray(l.syl) && l.syl.length === l.words.length ? l.syl.map((p, j) => p ? fitPieces(l.words[j], p) : null) : null;
+  if (l.syl && !l.syl.some(Boolean)) l.syl = null;
+}
+// word j sung in these pieces (kept when they're already its pieces, else even), or whole again (texts null)
+function setSplit(l, j, texts) {
+  const s = sylOf(l).slice(), w = l.words[j];
+  s[j] = texts && texts.length >= 2 && texts.join("") === w[2] ? (s[j] && s[j].map(p => p[2]).join("|") === texts.join("|") ? s[j] : evenPieces(w[0], w[1], texts)) : null;
+  l.syl = s.some(Boolean) ? s : null;
+}
+// retime piece p of word j: s/e clamped between its neighbours (the first piece's start is the word's start, the last
+// piece's end the word's end: a held last syllable stretches its word); a shared boundary moves for both
+function setPiece(l, j, p, s, e) {
+  const ws = l.words, syl = sylOf(l).slice(), pcs = syl[j].map(x => [...x]);
+  const lo = p > 0 ? pcs[p - 1][0] + SYL_MIN : (j > 0 ? ws[j - 1][1] : 0), hi = p + 1 < pcs.length ? pcs[p + 1][1] - SYL_MIN : (j + 1 < ws.length ? ws[j + 1][0] : 1e9);
+  s = Math.max(lo, Math.min(s, hi - SYL_MIN)); e = Math.min(hi, Math.max(e, s + SYL_MIN));
+  if (p > 0) pcs[p - 1][1] = Math.abs(pcs[p - 1][1] - pcs[p][0]) < 1e-3 ? s : Math.min(pcs[p - 1][1], s);
+  if (p + 1 < pcs.length) pcs[p + 1][0] = Math.abs(pcs[p + 1][0] - pcs[p][1]) < 1e-3 ? e : Math.max(pcs[p + 1][0], e);
+  pcs[p] = [s, e, pcs[p][2]];
+  syl[j] = pcs.map(([x, y, t]) => [+x.toFixed(3), +y.toFixed(3), t]);
+  ws[j] = [syl[j][0][0], syl[j][syl[j].length - 1][1], ws[j][2]];
+  l.syl = syl;
+}
 function spread(texts, start, end) {
   const w = texts.map(x => Math.max(2, x.length)), tot = w.reduce((a, b) => a + b, 0), span = Math.max(0.4, end - start);
   let t = start;
@@ -1217,10 +1263,19 @@ function initWave() {
   c.onpointerdown = e => {
     if (e.button !== 0) return;  // right-click changes the singer (oncontextmenu)
     const r = c.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top, t = waveTime(x, c);
+    const pc = (ed._pieces || []).filter(b => x >= b.x0 - 5 && x <= b.x1 + 5 && y >= b.y0 && y <= b.y1)
+      .sort((p, q) => Math.min(Math.abs(x - p.x0), Math.abs(x - p.x1)) - Math.min(Math.abs(x - q.x0), Math.abs(x - q.x1)))[0];
+    if (pc) {  // a syllable: its edges stretch it (the shared boundary moves for both), its middle moves it
+      const mode = x <= pc.x0 + 5 ? "left" : x >= pc.x1 - 5 ? "right" : "move", l = ed.lines[pc.i];
+      waveDrag = {piece: pc, i: pc.i, mode, x0: x, orig: JSON.parse(JSON.stringify(l.words)), origSyl: JSON.parse(JSON.stringify(l.syl)), after: []};
+      ed.sel = pc.i;
+      c.setPointerCapture(e.pointerId);
+      return;
+    }
     const hit = (ed._blocks || []).find(b => x >= b.x0 - 6 && x <= b.x1 + 6 && y >= b.y0 && y <= b.y1);
     if (hit) {
       const mode = x <= hit.x0 + 6 ? "left" : x >= hit.x1 - 6 ? "right" : "move";
-      waveDrag = {i: hit.i, mode, x0: x, orig: JSON.parse(JSON.stringify(ed.lines[hit.i].words)),
+      waveDrag = {i: hit.i, mode, x0: x, orig: JSON.parse(JSON.stringify(ed.lines[hit.i].words)), origSyl: JSON.parse(JSON.stringify(ed.lines[hit.i].syl || null)),
                   after: ed.ripple ? ed.lines.slice(hit.i + 1).map(x => JSON.parse(JSON.stringify(x.words))) : []};
       ed.sel = hit.i;
       c.setPointerCapture(e.pointerId);
@@ -1229,11 +1284,18 @@ function initWave() {
   c.onpointermove = e => {
     const r = c.getBoundingClientRect(), x = e.clientX - r.left;
     if (!waveDrag) {
-      const b = (ed._blocks || []).find(b => x >= b.x0 - 6 && x <= b.x1 + 6 && e.clientY - r.top >= b.y0 && e.clientY - r.top <= b.y1);
+      const yy = e.clientY - r.top, pc = (ed._pieces || []).find(b => x >= b.x0 - 5 && x <= b.x1 + 5 && yy >= b.y0 && yy <= b.y1);
+      if (pc) { c.style.cursor = (x <= pc.x0 + 5 || x >= pc.x1 - 5) ? "ew-resize" : "grab"; return; }
+      const b = (ed._blocks || []).find(b => x >= b.x0 - 6 && x <= b.x1 + 6 && yy >= b.y0 && yy <= b.y1);
       c.style.cursor = !b ? "crosshair" : (x <= b.x0 + 6 || x >= b.x1 - 6) ? "ew-resize" : "grab"; return;
     }
     const l = ed.lines[waveDrag.i], dt = (x - waveDrag.x0) / c.clientWidth * ed.view.span;
-    l.words = JSON.parse(JSON.stringify(waveDrag.orig));
+    l.words = JSON.parse(JSON.stringify(waveDrag.orig)); l.syl = JSON.parse(JSON.stringify(waveDrag.origSyl));
+    if (waveDrag.piece) {
+      const {j, k} = waveDrag.piece, p = l.syl[j][k];
+      setPiece(l, j, k, p[0] + (waveDrag.mode === "right" ? 0 : dt), p[1] + (waveDrag.mode === "left" ? 0 : dt));
+      return drawWave();
+    }
     const [a, b] = [l.words[0][0], l.words[l.words.length - 1][1]];
     l.weak = false;
     let dts = dt;
@@ -1245,6 +1307,7 @@ function initWave() {
     else if (waveDrag.mode === "left") scaleLine(l, Math.min(a + dts, b - 0.2), b);
     else scaleLine(l, a, Math.max(b + dt, a + 0.2));
     if (waveDrag.mode === "move") waveDrag.after.forEach((w, k) => { const x = ed.lines[waveDrag.i + 1 + k]; x.words = JSON.parse(JSON.stringify(w)); shiftLine(x, dts); });
+    fitSyl(l);
     drawWave();
   };
   c.onpointerup = () => { if (waveDrag) { waveDrag = null; ed.dirty = true; renderEditor(); markCurrent(); } };
@@ -1318,6 +1381,27 @@ function drawWave() {
     g.fillStyle = "#17121c"; g.font = "600 12px system-ui"; g.fillText(lineText(l), x0 + 5, y0 + 15); g.restore();
     ed._blocks.push({i, x0, x1, y0, y1});
   });
+  // syllables: the pieces of the words sung in pieces, in their own lane under the lines (drag them like lines)
+  ed._pieces = [];
+  if (ed.lines.some(l => l.syl)) {
+    const y0 = WH + 18 + (ed.lines.some(l => l.backing) ? 3 : 2) * 26, y1 = y0 + 22;
+    g.fillStyle = "rgba(255,255,255,.35)"; g.font = "10px system-ui"; g.fillText("syllables", 2, y0 - 2);
+    ed.lines.forEach((l, i) => {
+      if (!l.syl) return;
+      const [a, b] = lineSpan(l); if (b < view.start || a > view.start + view.span) return;
+      fitSyl(l); if (!l.syl) return;
+      const cur = l.words[0][0] <= t0 && t0 <= l.words[l.words.length - 1][1];
+      l.syl.forEach((ps, j) => ps && ps.forEach((p, k) => {
+        const x0 = X(p[0] + curOff()), x1 = Math.max(X(p[1] + curOff()), x0 + 3);
+        g.fillStyle = (l.wwho ? whoColour(wordWho(l, j)) : lineColour(l)) + (cur ? "" : "88"); g.fillRect(x0, y0, x1 - x0, y1 - y0);
+        if (k) { g.fillStyle = "rgba(0,0,0,.55)"; g.fillRect(x0, y0, 1, y1 - y0); }
+        if (p[0] <= t0 && t0 <= p[1]) { g.strokeStyle = "#fff"; g.lineWidth = 2; g.strokeRect(x0 + 1, y0 + 1, x1 - x0 - 2, y1 - y0 - 2); }
+        g.save(); g.beginPath(); g.rect(x0 + 2, y0, x1 - x0 - 3, y1 - y0); g.clip();
+        g.fillStyle = "#17121c"; g.font = "600 12px system-ui"; g.fillText(p[2], x0 + 4, y0 + 15); g.restore();
+        ed._pieces.push({i, j, k, x0, x1, y0, y1});
+      }));
+    });
+  }
   g.fillStyle = "#ff7a85"; g.fillRect(X(now), 0, 2, H);
 }
 document.addEventListener("keydown", e => {
@@ -1463,6 +1547,7 @@ function fixBox() {
 function renderEditor() {
   if (!ed) return;
   const off = curOff();
+  ed.lines.forEach(fitSyl);
   ed.lines.sort((a, b) => a.words[0][0] - b.words[0][0]);
   if (!ed.view.start && $("#pv")) ed.view.start = Math.max(0, $("#pv").currentTime - 3);
   const keepTop = $(".edwrap") ? $(".edwrap").scrollTop : null, keepPage = window.scrollY;  // rebuilding must not scroll
@@ -1491,7 +1576,7 @@ function renderEditor() {
       ${ed.ai.suggestions.length ? ed.ai.suggestions.map((g, k) => `<label class="chk aisug"><input type="checkbox" class="aipick" value="${k}" checked>
         <span><span class="hint">${esc(g.japanese)}${g.how && g.how.includes("heard") ? " · confirmed by the singing" : ""}</span><br><s>${esc(g.old)}</s> → <b>${esc(g.new)}</b></span></label>`).join("") : `<div class="hint">No changes suggested: ${ed.lines.some(l => l.orig) ? "the romaji looks right" : "where the singing sounded different, the written lyrics still fit the vocals best"}.</div>`}
       <div class="row" style="margin-top:8px">${ed.ai.suggestions.length || (ed.ai.cast && ed.ai.cast.length) ? '<button class="primary" id="aiapply">Apply selected</button>' : ""}<button class="ghost" id="aidismiss">Close</button></div></div>` : ""}
-    <div class="wavebox"><div class="wavebar"><span class="hint">Vocals: drag a line's block to move it, drag its edge to stretch it, click to jump, right-click to change its singer · Space plays/pauses</span>
+    <div class="wavebox"><div class="wavebar"><span class="hint">Vocals: drag a line's block to move it, drag its edge to stretch it, click to jump, right-click to change its singer${ed.lines.some(l => l.syl) ? " · syllables (bottom lane): drag a piece or its edges" : ""} · Space plays/pauses</span>
       <span class="row"><span class="legend">${ed.cast.length ? ed.cast.map((n, k) => `<span><i style="background:${MEMBER_RGB[k]}"></i>${esc(n)}</span>`).join("") + '<span><i style="background:var(--gold)"></i>Together</span>' : '<span><i style="background:var(--gold)"></i>Singer 1</span><span><i style="background:#3cb4ff"></i>Singer 2</span><span><i style="background:#78e678"></i>Both</span>'}</span>
       <button class="ghost" id="castbtn" style="padding:5px 10px;font-size:13px" title="Name the singers (up to 8) to colour lines by member">${ed.cast.length ? "Edit singers" : "Name singers"}</button>
       <span class="swapbox row" title="Every line of one singer becomes the other's, and the other way round">
@@ -1503,9 +1588,10 @@ function renderEditor() {
       <button class="ghost ${ed.snap ? "on" : ""}" id="snapbtn" style="padding:5px 10px;font-size:13px" title="Line starts click onto vocal onsets (the green ticks) when you drag or tap S; hold Alt while dragging to place freely">Snap</button>
       <button class="ghost ${ed.loop ? "on" : ""}" id="loopbtn" style="padding:5px 10px;font-size:13px" title="Repeat the selected line while you adjust it (L)">⟲ Loop line</button>
       <button class="ib" id="zout" title="Zoom out">−</button><button class="ib" id="zin" title="Zoom in">+</button></span></div>
-      <canvas id="wave" style="height:${ed.lines.some(l => l.backing) ? 176 : 150}px"></canvas></div>
+      <canvas id="wave" style="height:${(ed.lines.some(l => l.backing) ? 176 : 150) + (ed.lines.some(l => l.syl) ? 26 : 0)}px"></canvas></div>
     ${fixBox()}
     <div class="edbar">${ed.lines.some(l => l.weak) ? `<button class="ghost" id="nextweak" title="Select the next line the aligner is unsure about and play from just before it">⚠ Next line to check (${ed.lines.filter(l => l.weak).length})</button>` : ""}<label class="ripple" title="When you move a line (S, arrows, −/+, ⏱, typing a time, dragging its block), every later line moves by the same amount: one fix repairs a whole section that's off"><input type="checkbox" id="ripple" ${ed.ripple ? "checked" : ""}> Move the lines after it too</label>
+      <span class="hint" id="sylhint" title="A held or stretched syllable: the word lights up piece by piece, the pieces joined (the | never shows). Drag the pieces in the timeline's bottom lane; stretch the last one to the end of its note.">Type <kbd>|</kbd> inside a word to time its syllables: tra|ge|dies</span>
       <input id="newline" placeholder="Missing line? Type it, play to where it's sung, then Add"><button class="ghost" id="addline">Add at playback time</button>
       ${ed.skipped.map((s, i) => `<button class="chip" data-sk="${i}" title="Not sung in this video according to the aligner">+ ${esc(s)}</button>`).join("")}</div>
     <div class="edwrap"><table class="edtab"><tbody>${ed.lines.map((l, i) => `
@@ -1514,7 +1600,7 @@ function renderEditor() {
         <td><input class="tm" data-act="time" value="${fmtT(l.words[0][0] + off)}" title="Line start (m:ss.cc)"></td>
         <td class="nowrap"><button class="ib" data-act="m" title="0.1 s earlier">−</button><button class="ib" data-act="p" title="0.1 s later">+</button><button class="ib" data-act="now" title="Start this line at the current playback time">⏱</button></td>
         <td class="nowrap">${l.unsure ? '<span class="unsure" title="Detect 2 singers wasn\'t sure about this line">?</span>' : ""}${ed.cast.length ? memberSelect(l) : `<select class="sg" data-act="singer" title="Who sings this line">${[["", "–"], [1, "1"], [2, "2"], [3, "Both"]].map(([v, t]) => `<option value="${v}" ${(l.singer || "") == v ? "selected" : ""}>${t}</option>`).join("")}</select>`}</td>
-        <td class="txc"><input class="tx ${l.backing ? "backing" : ""}" data-act="text" value="${esc(lineText(l))}" ${l.backing ? 'title="Backing vocals: shown on their own row, in italics"' : ""}>${l.orig ? `<div class="hint">${esc((ed.shown || {})[l.orig] || l.orig)}</div>` : ""}${noteHtml(l)}
+        <td class="txc"><input class="tx ${l.backing ? "backing" : ""}" data-act="text" value="${esc(lineEditText(l))}" title="${l.backing ? "Backing vocals: shown on their own row, in italics. " : ""}Type | inside a word to time its syllables (tra|ge|dies)">${l.orig ? `<div class="hint">${esc((ed.shown || {})[l.orig] || l.orig)}</div>` : ""}${noteHtml(l)}
           ${ed.cutFor === l ? `<div class="wchips"><span class="hint">Split before:</span>${l.words.map((w, j) => j ? `<span class="wchip cutchip" data-cj="${j}">${esc(w[2])}</span>` : `<span class="hint">${esc(w[2])}</span>`).join("")}</div>` : ""}
           ${ed.splitFor === l || l.wwho ? `<div class="wchips"><span class="hint" style="margin-right:2px">Paint with</span>${whoCycle().map((w, k) =>
               `<span class="brush ${sameWho(w, ed.brush || whoCycle()[1]) ? "on" : ""}" data-b="${k}" style="--c:${whoColour(w)}">${esc(whoName(w))}</span>`).join("")}
@@ -1590,8 +1676,8 @@ function renderEditor() {
     const cc = e.target.closest(".cutchip");
     if (cc) {  // split the line before this word: two lines, each keeping its words' timing
       const i = +cc.closest("tr").dataset.i, l = ed.lines[i], j = +cc.dataset.cj;
-      const second = {...l, words: l.words.slice(j), wwho: l.wwho ? l.wwho.slice(j) : null, weak: false};
-      l.words = l.words.slice(0, j); l.wwho = l.wwho ? l.wwho.slice(0, j) : null; l.weak = false;
+      const sy = sylOf(l), second = {...l, words: l.words.slice(j), wwho: l.wwho ? l.wwho.slice(j) : null, syl: sy.slice(j).some(Boolean) ? sy.slice(j) : null, weak: false};
+      l.words = l.words.slice(0, j); l.wwho = l.wwho ? l.wwho.slice(0, j) : null; l.syl = sy.slice(0, j).some(Boolean) ? sy.slice(0, j) : null; l.weak = false;
       ed.lines.splice(i + 1, 0, second); ed.cutFor = null; ed.sel = i + 1;
       return changed();
     }
@@ -1609,17 +1695,19 @@ function renderEditor() {
     if (b.dataset.act === "join") {  // this line and the next become one (words in time order)
       const n = ed.lines[i + 1]; if (!n) return toast("This is the last line");
       const ww = (l.wwho || n.wwho) ? [...(l.wwho || l.words.map(() => null)), ...(n.wwho || n.words.map(() => null))] : null;
-      const both = [...l.words.map((w, k) => [w, ww ? ww[k] : null]), ...n.words.map((w, k) => [w, ww ? ww[l.words.length + k] : null])].sort((x, y) => x[0][0] - y[0][0]);
-      l.words = both.map(x => x[0]); l.wwho = ww ? both.map(x => x[1]) : null; l.weak = false;
+      const sl = sylOf(l), sn = sylOf(n);
+      const both = [...l.words.map((w, k) => [w, ww ? ww[k] : null, sl[k]]), ...n.words.map((w, k) => [w, ww ? ww[l.words.length + k] : null, sn[k]])].sort((x, y) => x[0][0] - y[0][0]);
+      l.words = both.map(x => x[0]); l.wwho = ww ? both.map(x => x[1]) : null; l.syl = both.some(x => x[2]) ? both.map(x => x[2]) : null; l.weak = false;
       ed.lines.splice(i + 1, 1);
       return changed();
     }
     if (b.dataset.act === "splitbr") {  // bracketed words → their own (backing) line; same timing, then drag either one
       let open = false; const inB = l.words.map(w => { if (/^\(/.test(w[2])) open = true; const r = open; if (/\)[^\w]*$/.test(w[2])) open = false; return r; });
-      const back = l.words.filter((_, k) => inB[k]), lead = l.words.filter((_, k) => !inB[k]);
+      const back = l.words.filter((_, k) => inB[k]), lead = l.words.filter((_, k) => !inB[k]), sy = sylOf(l);
       if (!back.length || !lead.length) return toast("This line needs words both inside and outside brackets");
-      l.words = lead; l.wwho = null;
-      ed.lines.push({words: back.map(w => [...w]), orig: null, singer: l.singer, members: l.members, backing: true});
+      const syB = sy.filter((_, k) => inB[k]), syL = sy.filter((_, k) => !inB[k]);
+      l.words = lead; l.wwho = null; l.syl = syL.some(Boolean) ? syL : null;
+      ed.lines.push({words: back.map(w => [...w]), syl: syB.some(Boolean) ? syB : null, orig: null, singer: l.singer, members: l.members, backing: true});
       toast("The bracketed words are their own line now: drag either block to where it's sung");
       return changed();
     }
@@ -1637,11 +1725,12 @@ function renderEditor() {
       const t = parseT(inp.value); if (t == null) { toast("Use m:ss.cc, e.g. 1:23.40"); return renderEditor(); }
       moveLine(i, (t - curOff()) - l.words[0][0]);
     }
-    if (inp.dataset.act === "text") {
-      const words = inp.value.trim().split(/\s+/).filter(Boolean);
+    if (inp.dataset.act === "text") {  // a | inside a word splits it into syllables (tra|ge|dies)
+      const typed = inp.value.trim().split(/\s+/).map(parseSyl).filter(x => x[0]), words = typed.map(x => x[0]);
       if (!words.length) { ed.lines.splice(i, 1); return changed(); }
-      if (words.length === l.words.length) l.words = l.words.map((w, k) => [w[0], w[1], words[k]]);
-      else { l.words = spread(words, l.words[0][0], l.words[l.words.length - 1][1]); if (l.wwho) { l.wwho = null; toast("The line's words changed: set its singers again with ◐"); } }
+      if (words.length === l.words.length) { l.words = l.words.map((w, k) => [w[0], w[1], words[k]]); fitSyl(l); }
+      else { l.words = spread(words, l.words[0][0], l.words[l.words.length - 1][1]); l.syl = null; if (l.wwho) { l.wwho = null; toast("The line's words changed: set its singers again with ◐"); } }
+      typed.forEach(([_, pieces], k) => setSplit(l, k, pieces));
     }
     changed();
   };

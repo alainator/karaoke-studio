@@ -42,6 +42,7 @@ import videocheck as VC  # noqa: E402
 import autopick  # noqa: E402
 import songlinks as SL  # noqa: E402
 import wordscore  # noqa: E402
+import syllables  # noqa: E402
 
 # what the studio did and when: data/logs/studio.log (5 files of 2 MB kept)
 os.makedirs(C.LOGS, exist_ok=True)
@@ -1003,8 +1004,9 @@ def _valid_lines(raw, duration):
         if not isinstance(words, list) or not 1 <= len(words) <= 60:
             raise HTTPException(400, "each line needs 1-60 words")
         ww = l.get("wwho") if isinstance(l.get("wwho"), list) and len(l["wwho"]) == len(words) else [None] * len(words)
+        sy = l.get("syl") if isinstance(l.get("syl"), list) and len(l["syl"]) == len(words) else [None] * len(words)
         clean = []
-        for w, who in zip(words, ww):
+        for w, who, pcs in zip(words, ww, sy):
             if not (isinstance(w, list) and len(w) == 3 and all(isinstance(x, (int, float)) for x in w[:2])
                     and isinstance(w[2], str)):
                 raise HTTPException(400, "bad word entry")
@@ -1012,18 +1014,21 @@ def _valid_lines(raw, duration):
             if not (math.isfinite(a) and math.isfinite(b)) or not 0 <= a <= limit or not 0 <= b <= limit:
                 raise HTTPException(400, "word time out of range")
             if t:
-                clean.append(([round(a, 3), round(max(a, b), 3), t], who_of(who)))
+                wd = [round(a, 3), round(max(a, b), 3), t]
+                clean.append((wd, who_of(who), syllables.fit(wd, pcs) if pcs else None))
         if not clean:
             continue
-        clean.sort(key=lambda x: x[0][0])  # a word's own singer stays with it
-        wwho = [who for _, who in clean]
-        clean = [w for w, _ in clean]
+        clean.sort(key=lambda x: x[0][0])  # a word's own singer and syllables stay with it
+        wwho = [who for _, who, _ in clean]
+        syl = [p for _, _, p in clean]
+        clean = [w for w, _, _ in clean]
         orig = l.get("orig")
         sg = l.get("singer")
         heard = l.get("heard")
         mem = l.get("members")
         mem = sorted({int(i) for i in mem if isinstance(i, int) and 0 <= i < 8}) if isinstance(mem, list) else None
-        out.append({"words": clean, "orig": orig.strip()[:300] if isinstance(orig, str) and orig.strip() else None,
+        out.append({"words": clean, "syl": syl if any(syl) else None,
+                    "orig": orig.strip()[:300] if isinstance(orig, str) and orig.strip() else None,
                     "singer": sg if sg in (1, 2, 3) else None, "members": mem or None,
                     "heard": heard.strip()[:200] if isinstance(heard, str) and heard.strip() else None,
                     "wwho": wwho if any(wwho) else None, "weak": bool(l.get("weak")),
@@ -1096,6 +1101,60 @@ async def put_lines(jid: str, req: Request):
             job["unpublished_changes"] = True
         save(jid, job)
     return {"lines": len(lines), "edited": job["edited"]}
+
+
+@app.post("/api/jobs/{jid}/syllables")
+async def auto_syllables(jid: str, req: Request):
+    """Split the words that are clearly sung in pieces (a held or stretched syllable over several notes of the
+    melody) into syllables, timed to their notes (syllables.auto). {"dry": true} only tells which; words a person
+    split are never touched. The melody comes from the song's pitch file (tracked now if it has none: _look_melody).
+    An edit like any other (undo, history; a published song gets "changes not published")."""
+    check_origin(req)
+    try:
+        b = await req.json()
+    except Exception:
+        b = {}
+    b = b if isinstance(b, dict) else {}
+    return await asyncio.to_thread(_auto_syllables, jid, agents.actor_of(req), b)
+
+
+def _auto_syllables(jid, actor, b):
+    job = load(jid)
+    if job["status"] != "done":
+        raise HTTPException(400, "finish making it first")
+    lang = (job.get("result") or {}).get("lang") or job.get("lang")
+    if lang in syllables.NO_SYL:
+        return {"split": 0, "words": [], "why": "this song's lyrics are timed per character or per romanized word already"}
+    got = _look_melody(jid)
+    if got not in ("ok", "made"):
+        raise HTTPException(503 if got == "busy" else 400, f"no melody for this song ({got}); try again later")
+    d = job_path(jid)
+    f0, per = pitchmod.frames(d, lead=not job.get("keep_backing"), split=False)
+    notes, _ = pitchmod.notes(f0, per, pitchmod.word_spans(d, job))
+    with lock:
+        job = load(jid)
+        _check_edited(job, b)
+        wp = job_path(jid, "words.json")
+        old, cast = load_lines(wp), load_cast(wp)
+        lines = json.loads(json.dumps(old))
+        n = syllables.auto(lines, notes, float(job.get("offset") or 0.0), lang)
+        split = [{"line": i + 1, "w": j + 1, "word": syllables.marked(w, s_)}
+                 for i, l in enumerate(lines) for j, (w, s_) in enumerate(zip(l["words"], l.get("syl") or []))
+                 if s_ and not ((old[i].get("syl") or [None] * len(l["words"]))[j])]
+        if b.get("dry") or not n:
+            return {"split": n, "words": split, "saved": False}
+        what = f"syllables from the melody: {n} word{'s' if n != 1 else ''} split"
+        if not os.path.exists(job_path(jid, "words.orig.json")):
+            shutil.copyfile(wp, job_path(jid, "words.orig.json"))
+        agents.snapshot(job_path(jid), actor, what, lines=old, cast=cast)
+        save_lines(wp, lines, cast)
+        ass_same = not rebuild_lyrics(jid, job, lines, cast)
+        job["edited"] = time.time()
+        _edited(jid, job, actor, what)
+        if job.get("published") and not ass_same:
+            job["unpublished_changes"] = True
+        save(jid, job)
+    return {"split": n, "words": split, "saved": True, "edited": job["edited"]}
 
 
 @app.get("/api/jobs/{jid}/history")
@@ -2747,7 +2806,8 @@ def merge_remake(jid):
         if _ltext(l) != _ltext(old_auto[a]):  # the user fixed words: keep their text on the new timing
             words = remap_words(n["words"], " ".join(w[2] for w in l["words"]))
         ww = l.get("wwho") if l.get("wwho") and len(l["wwho"]) == len(words) else None
-        out.append(dict(l, words=words, wwho=ww, weak=n.get("weak"), why=n.get("why")))
+        # syllables: theirs (they follow their words onto the new timing), else the remake's own from the melody
+        out.append(dict(l, words=words, wwho=ww, syl=l.get("syl") or n.get("syl"), weak=n.get("weak"), why=n.get("why")))
         changed += 1
     # lines the remake found that the old version didn't have at all (the user deleting a line is respected)
     paired_new = set(a2n.values())

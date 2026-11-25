@@ -5,11 +5,14 @@ words.json, version 2: {"version": 2, "lines": [{"words": [[start, end, "word"],
   times in seconds on the video's clock *before* the job's timing offset; "orig" is optional (the original
   Japanese, Korean, Chinese… line: shown above the romaji, under it, or instead of it, depending on the display mode;
   Chinese lines are shown in traditional or simplified characters, see hanzi.py, without changing words.json); "singer" is optional: 1, 2 or 3 (both), each sung in its own colour; "heard"
-  (optional) is Whisper's transcription of what is sung on a Japanese line, for the AI romaji check.
+  (optional) is Whisper's transcription of what is sung on a Japanese line, for the AI romaji check; "syl" (optional)
+  is a list parallel to "words": null, or the pieces a word is sung in, [[start, end, "tra"], [start, end, "ge"],
+  [start, end, "dies"]], shown joined and each lit at its own time (syllables.py).
   Version 1 (older jobs) was just the list of word lists.
 """
 import itertools, json, math, os, re
 
+import syllables as SYL
 from romanize import SCRIPT_RE
 
 STYLE_FORMAT = ("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, "
@@ -82,14 +85,14 @@ def normalize(data):
             words = [list(w) for w in l.get("words", [])]
             ww = l.get("wwho")
             ww = [who_of(x) for x in ww] if isinstance(ww, list) and len(ww) == len(words) else None
-            out.append({"words": words, "orig": l.get("orig") or None,
+            out.append({"words": words, "syl": SYL.fit_line(words, l.get("syl")), "orig": l.get("orig") or None,
                         "singer": sg if sg in (1, 2, 3) else None, "heard": l.get("heard") or None,
                         "members": sorted(set(mem)) or None, "wwho": ww if ww and any(ww) else None,
                         "weak": bool(l.get("weak")), "why": (l.get("why") or None) if l.get("weak") else None,
                         "ok": bool(l.get("ok")), "backing": bool(l.get("backing")),
                         "note": l["note"] if isinstance(l.get("note"), dict) and l["note"].get("text") else None})
         else:
-            out.append({"words": [list(w) for w in l], "orig": None, "singer": None, "heard": None, "members": None, "wwho": None})
+            out.append({"words": [list(w) for w in l], "syl": None, "orig": None, "singer": None, "heard": None, "members": None, "wwho": None})
     return [l for l in out if l["words"]]
 
 
@@ -115,7 +118,9 @@ def save_lines(path, lines, cast=_KEEP):
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
         json.dump({"version": 2, **({"cast": list(cast)[:8]} if cast else {}),
-                   "lines": [{"words": l["words"], **({"orig": l["orig"]} if l.get("orig") else {}),
+                   "lines": [{"words": l["words"], **({"syl": SYL.fit_line(l["words"], l.get("syl"))}
+                                                         if SYL.fit_line(l["words"], l.get("syl")) else {}),
+                              **({"orig": l["orig"]} if l.get("orig") else {}),
                               **({"singer": l["singer"]} if l.get("singer") in (1, 2, 3) else {}),
                               **({"members": l["members"]} if l.get("members") else {}),
                               **({"wwho": l["wwho"]} if l.get("wwho") and len(l["wwho"]) == len(l["words"]) else {}),
@@ -297,16 +302,22 @@ def _script_runs(text, families, main):
     return s[len("{\\fn" + main + "}"):] if s.startswith("{\\fn" + main + "}") else s
 
 
-def _row_text(pieces, groups, lead_cs, kt, base_fill, families=None, main=None):
-    """ASS text for one row: the lead-in wait, then each piece with its sweep time and colour, broken into lines."""
+def _row_text(pieces, groups, lead_cs, kt, base_fill, families=None, main=None, held_kt=None):
+    """ASS text for one row: the lead-in wait, then each piece with its sweep time and colour, broken into lines.
+    A piece may carry the parts of a word sung in syllables (syllables.ass_parts): those are written one after the
+    other with no space, a held one with held_kt (kf: it fills while it's held, even when the row uses k)."""
     out = [f"{{\\k{lead_cs}}}"]
     cur = base_fill
     for gi, grp in enumerate(groups):
         for pi in grp:
-            text, cs, fill = pieces[pi]
+            text, cs, fill = pieces[pi][:3]
+            parts = pieces[pi][3] if len(pieces[pi]) > 3 else None   # a word sung in pieces (syllables.ass_parts)
             last_in_line = pi == grp[-1]
             if last_in_line and gi + 1 < len(groups):
                 text = text.rstrip()
+                if parts:  # (the space is on its last piece with text)
+                    q = max(k for k, x in enumerate(parts) if x[0])
+                    parts = parts[:q] + [(parts[q][0].rstrip(),) + tuple(parts[q][1:])] + parts[q + 1:]
             if not text:  # a word with no piece of its own (the original line split unevenly): just wait
                 out.append(f"{{\\k{cs}}}")
                 continue
@@ -314,6 +325,11 @@ def _row_text(pieces, groups, lead_cs, kt, base_fill, families=None, main=None):
             if fill != cur:
                 col = "\\1c" + (fill or DEFAULT_FILL)
                 cur = fill
+            if parts:  # its pieces joined, each lit at its own time; the colour goes on the first
+                for q, (pt, pcs, kind) in enumerate(parts):
+                    ptag = "k" if kind == "gap" else (held_kt or kt) if kind == "held" else kt
+                    out.append(f"{{{col if q == 0 else ''}\\{ptag}{pcs}}}{_script_runs(pt, families, main) if pt else ''}")
+                continue
             out.append(f"{{{col}\\{kt}{cs}}}{_script_runs(text, families, main)}")
         if gi + 1 < len(groups):
             out.append("\\N")
@@ -415,12 +431,22 @@ def make_ass(lines, offset=0.0, show_orig=True, video_size=None, cast=None, embe
     stagger = bool(st.get("stagger", True))
 
     def row_pieces(i, kind, words, fills):
-        """[(text, centiseconds, fill)] per word for one row of line i: kind words | orig | kana."""
+        """[(text, centiseconds, fill[, parts])] per word for one row of line i: kind words | orig | kana. A word
+        sung in syllables (words row only) has its parts too (syllables.ass_parts); the other rows stay per word,
+        and the parts add up to the word's time, so the rows stay in step."""
         out = []
+        syl = lines[i].get("syl") if kind == "words" else None
         for j, (a, b, w) in enumerate(words):
             nxt = words[j + 1][0] if j + 1 < len(words) else b
             cs = max(1, round((nxt - a) * 100))
             t = w + (" " if j + 1 < len(words) else "") if kind == "words" else (spans[i][j] if kind == "orig" else kanas[i][j])
+            if syl and syl[j]:
+                parts = [list(x) for x in SYL.ass_parts((a, b, w), [(x + offset, y + offset, pt) for x, y, pt in syl[j]], nxt)]
+                if t.endswith(" "):
+                    q = max(k for k, x in enumerate(parts) if x[0])
+                    parts[q][0] += " "
+                out.append([t, cs, fills[j], [tuple(x) for x in parts]])
+                continue
             out.append([t, cs, fills[j]])
         if kind != "words" and out:
             out[-1][0] = out[-1][0].rstrip()
@@ -535,7 +561,7 @@ def make_ass(lines, offset=0.0, show_orig=True, video_size=None, cast=None, embe
             fn = "\\fn" + r["fam"] if r["fam"] else ""
             head = f"{{\\an{an}\\pos({x},{round(yy)}){fx}\\fs{r['size']}{fc}{fn}}}"
             events.append((show, f"Dialogue: 0,{ts(show)},{ts(hide[n_])},{style},,0,0,0,,{head}"
-                                 f"{_row_text(r['pieces'], r['groups'], lead_cs, kt, base_fill, families, F.main)}"))
+                                 f"{_row_text(r['pieces'], r['groups'], lead_cs, kt, base_fill, families, F.main, 'k' if rtl else 'kf')}"))
             yy -= r["h"] + SUB_GAP * k
         top = yy + SUB_GAP * k
         tops[n_] = (top, show, hide[n_])
@@ -579,7 +605,7 @@ def make_ass(lines, offset=0.0, show_orig=True, video_size=None, cast=None, embe
         head = f"{{\\an2\\pos({W_ // 2},{round(y)}){fx}\\fs{size}{fc}\\i1{fade}}}"
         rtl = bool(RTL_RE.search(" ".join(w for _, _, w in words)))
         events.append((show, f"Dialogue: 0,{ts(show)},{ts(h)},Back,,0,0,0,,{head}"
-                             f"{_row_text(pieces, groups, round((start - show) * 100), 'k' if rtl else sweep, base_fill, families, F.main)}"))
+                             f"{_row_text(pieces, groups, round((start - show) * 100), 'k' if rtl else sweep, base_fill, families, F.main, 'k' if rtl else 'kf')}"))
 
     # ---- title card in the intro, and "♪ seconds left" in long instrumental parts ----
     if st.get("cards", True) and lead_idx:
