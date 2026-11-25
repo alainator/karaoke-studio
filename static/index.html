@@ -1734,10 +1734,13 @@ function renderEditor() {
     }
     changed();
   };
-  const add = text => {
-    const words = (text || "").trim().split(/\s+/).filter(Boolean); if (!words.length) return toast("Type the line first");
+  const add = text => {  // (a | inside a word: its syllables, as in a line's box)
+    const typed = (text || "").trim().split(/\s+/).map(parseSyl).filter(x => x[0]), words = typed.map(x => x[0]);
+    if (!words.length) return toast("Type the line first");
     const t = $("#pv").currentTime - curOff();
-    ed.lines.push({words: spread(words, t, t + Math.min(6, 0.45 * words.length + 0.8)), orig: null});
+    const nl = {words: spread(words, t, t + Math.min(6, 0.45 * words.length + 0.8)), orig: null};
+    typed.forEach(([_, pieces], k) => setSplit(nl, k, pieces));
+    ed.lines.push(nl);
     $("#newline").value = ""; changed();
   };
   $("#addline").onclick = () => add($("#newline").value);

@@ -1037,9 +1037,15 @@ def cmd_add(a):
 
     def ch(lines, off):
         s = parse_t(a.start) - off
-        words = a.words.split()
+        typed = typed_words(a.words)
+        words = [w for w, _ in typed]
+        if not words:
+            die("give the words")
         e = parse_t(a.end) - off if a.end is not None else s + min(6.0, 0.45 * len(words) + 0.8)
-        lines.append({"words": spread(words, s, e), "orig": None})
+        new = {"words": spread(words, s, e), "orig": None}
+        for j, (_, pieces) in enumerate(typed):
+            set_pieces(new, j, pieces)
+        lines.append(new)
         lines.sort(key=lambda l: l["words"][0][0])
         return f"added a line at {fmt(s + off)}"
     edit(job, ch, "add a line")

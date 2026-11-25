@@ -261,15 +261,18 @@ def vowel_split(word, lang=None):
 
 
 def syllables(word, lang=None):
-    """The word's syllables (vowel_split). A hyphenation dictionary (pyphen, LibreOffice's patterns) was tried and
-    left out: it is made for breaking lines, not for singing, and undercounts on purpose (no one-letter pieces): of 25
-    common English words it disagreed on 8 (about, tonight, singing, faces, tragedies...), every time wrongly. The
-    melody is the second opinion instead: auto_word() splits only where the notes agree with the syllables."""
+    """The word's syllables (vowel_split). A hyphenation dictionary (pyphen 0.18, LibreOffice's patterns, with
+    one-letter pieces allowed) was tried and left out: it's made for breaking lines, not for singing, and leaves out
+    breaks on purpose. Of 25 common English words it gave fewer syllables than are sung for 8 (about, tonight,
+    singing, faces, everything, tragedies...); where it agreed, it only moved letters (for|ev|er, heav|en). The melody
+    is the second opinion instead: auto_word() splits only where the notes agree with the syllables."""
     return vowel_split(word, lang)
 
 
 # ---- automatic splits from the melody ----
 MIN_WORD = 0.45        # seconds: shorter words aren't split (they're over before a split could show)
+AUTO_PIECE = 0.12      # seconds: an automatic piece at least this long, the last one at least AUTO_LAST (a short
+AUTO_LAST = 0.15       # last note after a held one is the held vowel's fall-off, or the word sits off its singing)
 MIN_NOTE = 0.08        # seconds: shorter bits of melody are slides, not notes
 SAME = 1.0             # semitones: neighbouring notes closer than this (and touching) are one note
 TOUCH = 0.06           # seconds
@@ -293,9 +296,12 @@ def auto_word(word, notes, lang=None):
     - it has 2+ separate notes, and either one note per syllable, or more notes than syllables with the extra ones
       at the end (the last syllable held over several notes: a melisma), or fewer notes with the last one held
       (HELD or longer) and the earlier syllables sharing the notes before it;
-    - no piece comes out shorter than MIN_PIECE, and one is held (HELD or longer: what splitting is for).
+    - no piece comes out shorter than AUTO_PIECE (the last one AUTO_LAST), and one is held (HELD or longer: what
+      splitting is for).
     Measured on 451 published songs' melodies (2026-11-24): without that last rule 9100 words split (7.6 %), mostly
-    quick two-note words that sweep right anyway; with it, 5606 (4.7 %, about 12 a song), the held and stretched ones."""
+    quick two-note words that sweep right anyway; with it and the piece floors (AUTO_PIECE, AUTO_LAST) 5069 (4.2 %,
+    about 11 a song), the held and stretched ones. Songs made here use the pipeline's own melody (CREPE tiny, 10 ms):
+    on 4 songs it split 44 words where the full model split 50, 41 of them the same."""
     a, b, text = word
     if b - a < MIN_WORD:
         return None
@@ -323,7 +329,7 @@ def auto_word(word, notes, lang=None):
         x = bounds[k]
         y = bounds[k + 1] if k + 1 < S else b
         pieces.append([round(x, 3), round(y, 3), t])
-    if any(p[1] - p[0] < MIN_PIECE - 1e-6 for p in pieces):
+    if any(p[1] - p[0] < AUTO_PIECE - 1e-6 for p in pieces) or pieces[-1][1] - pieces[-1][0] < AUTO_LAST - 1e-6:
         return None
     if max(p[1] - p[0] for p in pieces) < HELD:
         return None   # no held syllable: a quick word over two notes sweeps right as it is

@@ -157,6 +157,13 @@ class Consumers(unittest.TestCase):
         self.assertEqual(l0["syl"][1][0], [11.0, 11.3, "flim"])
         self.assertNotIn("syl", doc["lines"][1])
 
+    def test_words_doc_with_pieces_fits_the_contract_schema(self):
+        import catalog, schemalite
+        d = tempfile.mkdtemp()
+        save_lines(os.path.join(d, "words.json"), [line(), line(syl=False)])
+        doc = catalog.words_doc(d, {"id": "x", "offset": 0.5}, "Base")
+        self.assertEqual(schemalite.errors(schemalite.load("words.schema.json"), doc), [])
+
     def test_ultrastar_notes_per_syllable(self):
         import ultrastar as U
         notes = [[10.5, 10.8, 60.0], [10.8, 11.1, 62.0], [11.1, 13.0, 64.0]]
@@ -299,6 +306,33 @@ console.log(JSON.stringify({text, even, typed, end: l.words[1][1], moved, gone, 
         self.assertEqual(out["bar"], ["go", None])
 
 
+    def test_timeline_lane_and_drag_run(self):
+        """The editor's whole script with a stand-in page (tests/js/editor_stub_dom.js): the syllables lane is drawn,
+        a held last piece's edge stretches its word (not past the next word), a shared boundary moves for both
+        pieces, and the editor re-renders."""
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("no node")
+        src = open(os.path.join(HERE, "static", "index.html"), encoding="utf-8").read()
+        js = re.findall(r"<script(?![^>]*src)[^>]*>(.*?)</script>", src, re.S)[0]
+        pre = open(os.path.join(HERE, "tests", "js", "editor_stub_dom.js"), encoding="utf-8").read()
+        post = open(os.path.join(HERE, "tests", "js", "editor_syllables_drag.js"), encoding="utf-8").read()
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8") as f:
+            f.write(pre + js + post)
+        try:
+            r = subprocess.run([node, f.name], capture_output=True, text=True, timeout=60)
+        finally:
+            os.remove(f.name)
+        self.assertEqual(r.returncode, 0, r.stderr[-2000:])
+        out = json.loads(r.stdout.strip().splitlines()[-1])
+        self.assertEqual(out["labels"], ["syllables", "flim", "bar", "dies"])
+        self.assertEqual(out["afterStretch"], {"word": [10.5, 13.4, "flimbardies"], "last": [11.1, 13.4, "dies"]})
+        self.assertEqual(out["clamped"], 13.6)
+        self.assertEqual(out["render"], "ok")
+        self.assertEqual(out["boundary"], [[10.5, 10.95, "flim"], [10.95, 11.1, "bar"]])
+        self.assertEqual(out["text"], "these flim|bar|dies go")
+
+
 class Ks(unittest.TestCase):
     def test_typed_words_and_pieces(self):
         self.assertEqual(ks.typed_words("these flim|bar|dies"), [("these", None), ("flimbardies", ["flim", "bar", "dies"])])
@@ -332,6 +366,12 @@ class Ks(unittest.TestCase):
         self.assertEqual([p[2] for p in lines[0]["syl"][1]], ["flim", "bardies"])
         with self.assertRaises(SystemExit):
             self.run_edit(ks.cmd_syllables, lines, n="1", w="2", text="flam|bardies", auto=False, dry=False)
+
+    def test_add_with_pieces(self):
+        lines = [line()]
+        self.run_edit(ks.cmd_add, lines, start="20", end="22", words="new flim|bar|dies")
+        self.assertEqual(ks.marked_text(lines[1]), "new flim|bar|dies")
+        self.assertEqual(ks.text_of(lines[1]), "new flimbardies")
 
     def test_text_keeps_and_makes_pieces(self):
         lines = [line()]
@@ -385,6 +425,19 @@ class Api(unittest.TestCase):
             self.assertIsNone(load_lines(f"{A.JOBS}/{jid}/words.json")[0]["syl"])
         finally:
             A._look_melody, A.pitchmod.frames = keep
+
+    def test_undo_keeps_earlier_pieces(self):
+        jid = self.TA.make_song()
+        st, _, b = self.TA.api("POST", f"/api/jobs/{jid}/lines", {"lines": [line()]})
+        self.assertEqual(st, 200, b)
+        moved = line()
+        moved["words"] = [[w[0] + 1, w[1] + 1, w[2]] for w in moved["words"]]
+        st, _, b = self.TA.api("POST", f"/api/jobs/{jid}/lines", {"lines": [moved]})
+        self.assertEqual(st, 200, b)
+        self.assertEqual(load_lines(f"{self.A.JOBS}/{jid}/words.json")[0]["syl"][1][2], [12.1, 14.0, "dies"])  # (followed)
+        st, _, b = self.TA.api("POST", f"/api/jobs/{jid}/lines/undo", {})
+        self.assertEqual(st, 200, b)
+        self.assertEqual(load_lines(f"{self.A.JOBS}/{jid}/words.json")[0]["syl"][1], PIECES)
 
     def test_describe_says_syllables(self):
         import agents
