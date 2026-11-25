@@ -10,6 +10,16 @@ steps:
    voiced, so it's computed here: in a separate process (python pitch.py extract JOB_DIR), so the web app never holds
    the GPU. On the GPU (when it has 4 GB free) the "full" model takes about 2 s a song plus 5 s to start; on the CPU
    the "tiny" model takes about 20 s for a 4-minute song.
+   With lead=True (publishing; not for a song whose vocals are already the lead only, "Keep backing vocals") and a
+   GPU with room for it, the same run also splits the vocals into the lead and the backing voices (the karaoke model,
+   C.BACKING_MODEL, only when it's already on disk: never downloaded here) and tracks the lead too (about 15 s more a
+   song). lead_merge() then follows the lead where it clearly sings something else than the whole vocal track's
+   pitch: in a group's chorus the tracker can lock onto a harmony above the lead (La Oreja de Van Gogh's Rosas: a
+   fourth above in every chorus), and a karaoke singer sings the lead. Where no lead is found (the whole group sings
+   it together: Aserejé, Stayin' Alive), two voices are equally loud (no lead to follow) or it agrees anyway, it's
+   today's melody. Measured (2026-11-24) with Encore's scorer on 54 songs' original vocals (half of them groups and
+   duets), the pitch files written by write(): none worse beyond noise (2 points), Rosas 57 -> 66, Pantropiko
+   58 -> 66, Dancing Queen 40 -> 47, Barbie Girl 78 -> 83.
 2. notes(): pure numpy. Voiced frames inside sung words (words.json + the song's timing offset) become notes: cut at
    word boundaries, split where the pitch jumps by more than 0.8 semitone, each note at its median pitch (MIDI, a
    float: 60.0 = middle C). Silence, breaths and anything sung outside the words are gaps. range = the lowest and
@@ -36,6 +46,13 @@ VOICED = 0.5                    # CREPE periodicity above this = a sung note
 JUMP = 0.8                      # semitones: a new note starts where the pitch moves more than this
 MIN_NOTE = 3                    # frames (60 ms): shorter bits are dropped
 GPU_MIN_FREE_MIB = 4000
+LEAD_GPU_MIB = 6000             # the karaoke model and CREPE in one process: about 4 GB at the peak (measured)
+LEAD_DB = -35.0                 # the lead stem at least this loud (RMS dBFS over the frame's 64 ms) ...
+LEAD_SEMI = 1.0                 # ... and more than this far from the whole track's pitch (octave-folded): the lead's
+LEAD_OVER = 0.0                 # ... and louder than the backing stem there (dB): two equally loud voices in harmony
+                                # (ABBA's Mamma Mia, the Beach Boys) have no lead to follow, the karaoke model only
+                                # picks one of them, and following it made those songs score worse
+LEAD_SMOOTH = 7                 # frames: whole stretches (a majority over 140 ms), not single frames
 MUSIC_HOP = 0.1                 # seconds per loudness value
 MUSIC_FLOOR = -90.0             # dBFS given for digital silence (JSON has no -inf)
 
@@ -54,27 +71,87 @@ def gpu_free_mib():
     return gpu.free_mib()
 
 
-def extract(job_dir, device="cpu"):
-    """Run CREPE on the job's vocals and write the cache (pitch.f0.npz). Runs in its own process (see frames())."""
+def _audio(path):
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-ac", "1", "-ar", str(SR), "-f", "f32le", "-"],
+                         capture_output=True, check=True).stdout
+    return np.frombuffer(raw, dtype=np.float32)
+
+
+def frame_db(a, n, hop=HOP, sr=SR):
+    """RMS dBFS of 16 kHz samples around each of n frames (CREPE's frames are centred: +-512 samples)."""
+    a = np.asarray(a, dtype=np.float64)
+    c = np.cumsum(np.concatenate([[0.0], a * a]))
+    k = np.arange(n) * int(sr * hop)
+    lo, hi = np.clip(k - 512, 0, len(a)), np.clip(k + 512, 0, len(a))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ms = (c[hi] - c[lo]) / np.maximum(1, hi - lo)
+    return 10 * np.log10(ms + 1e-12)
+
+
+def lead_model():
+    """The karaoke model's file when it's already on disk (with its config), else None: never downloaded here."""
+    import config as C
+    p = os.path.join(C.MODELS, C.BACKING_MODEL)
+    stem = os.path.splitext(C.BACKING_MODEL)[0]
+    try:
+        has_cfg = any(f.startswith(stem) and f.endswith((".yaml", ".yml")) for f in os.listdir(C.MODELS))
+    except OSError:
+        return None
+    return p if os.path.isfile(p) and has_cfg else None
+
+
+def _lead_audio(src, workdir):
+    """The lead and the backing vocals of the vocals file (the karaoke model), as 16 kHz samples."""
+    import shutil, config as C
+    from audio_separator.separator import Separator
+    tmpdir = os.path.join(workdir, f".pitch-lead.{os.getpid()}")
+    os.makedirs(tmpdir, exist_ok=True)
+    try:
+        wav = os.path.join(tmpdir, "in.wav")
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", src, "-ac", "2", "-ar", "44100", wav], check=True)
+        sep = Separator(model_file_dir=C.MODELS, output_dir=tmpdir, output_format="WAV")
+        sep.load_model(C.BACKING_MODEL)
+        sep.separate(wav, {"Vocals": "lead", "Instrumental": "backing"})
+        return _audio(os.path.join(tmpdir, "lead.wav")), _audio(os.path.join(tmpdir, "backing.wav"))
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def extract(job_dir, device="cpu", lead=False):
+    """Run CREPE on the job's vocals (and with lead, on its lead vocal: GPU only) and write the cache (pitch.f0.npz).
+    Runs in its own process (see frames()). The lead failing only leaves it out (lead_model "" in the cache)."""
     import torch, torchcrepe
     src = _vocals(job_dir)
     stamp = _stamp(src)
-    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", src, "-ac", "1", "-ar", str(SR), "-f", "f32le", "-"],
-                         capture_output=True, check=True).stdout
-    a = torch.from_numpy(np.frombuffer(raw, dtype=np.float32).copy()).unsqueeze(0)
     if device != "cpu":  # a GPU
         model, batch = "full", 1024
     else:
         torch.set_num_threads(min(4, os.cpu_count() or 1))
         model, batch = "tiny", 512
-    with torch.no_grad():
-        f0, per = torchcrepe.predict(a.to(device), SR, hop_length=int(SR * HOP), fmin=65, fmax=1100, model=model,
-                                     batch_size=batch, device=device, return_periodicity=True)
-    f0 = f0[0].float().cpu().numpy()
-    per = per[0].float().cpu().numpy()
+
+    def track(a):
+        a = torch.from_numpy(np.array(a, dtype=np.float32)).unsqueeze(0)
+        with torch.no_grad():
+            f0, per = torchcrepe.predict(a.to(device), SR, hop_length=int(SR * HOP), fmin=65, fmax=1100, model=model,
+                                         batch_size=batch, device=device, return_periodicity=True)
+        return f0[0].float().cpu().numpy(), per[0].float().cpu().numpy()
+    f0, per = track(_audio(src))
+    extra = {}
+    if lead and device != "cpu":
+        extra["lead_model"] = np.array("")
+        try:
+            if lead_model():
+                la, ba = _lead_audio(src, job_dir)
+                lf0, lper = track(la)   # (the same timeline: lead_merge evens out a frame more or less)
+                n = len(lf0)
+                extra = {"lead_f0": lf0.astype(np.float32), "lead_per": lper.astype(np.float16),
+                         "lead_db": frame_db(la, n).astype(np.float16), "backing_db": frame_db(ba, n).astype(np.float16),
+                         "lead_model": np.array(os.path.basename(lead_model()))}
+        except Exception as e:
+            print(f"pitch: no lead melody ({str(e)[:200]})", file=sys.stderr)
     tmp = os.path.join(job_dir, f".pitch.f0.{os.getpid()}.tmp.npz")   # (a publish and a look may track at once)
     np.savez_compressed(tmp, f0=f0.astype(np.float32), per=per.astype(np.float16), hop=np.float32(HOP),
-                        stamp=np.array(stamp), model=np.array(model))
+                        stamp=np.array(stamp), model=np.array(model), **extra)
     os.replace(tmp, os.path.join(job_dir, CACHE))
 
 
@@ -84,35 +161,79 @@ def _gpu_device():
     return os.environ.get(gpu.ENV, "").strip() or "cuda"
 
 
-def frames(job_dir, timeout=900, log=None, device=None):
+def _load_cache(job_dir, stamp):
+    try:
+        z = np.load(os.path.join(job_dir, CACHE))
+        if str(z["stamp"]) == stamp and abs(float(z["hop"]) - HOP) < 1e-6:
+            return {k: z[k] for k in z.files}
+    except Exception:
+        pass
+    return None
+
+
+def _out(z, lead):
+    f0, per = z["f0"].astype(np.float64), z["per"].astype(np.float64)
+    if lead and "lead_f0" in z:
+        return lead_merge(f0, per, z["lead_f0"], z["lead_per"], z["lead_db"], z["backing_db"])
+    return f0, per
+
+
+def frames(job_dir, timeout=900, log=None, device=None, lead=False):
     """(f0 in Hz, periodicity) per 20 ms frame of the job's vocals, from the cache or computed now (a subprocess, GPU
-    if it has room, else CPU; device "cpu"/"cuda" (or another torch device) forces one). Raises if it can't be made."""
+    if it has room, else CPU; device "cpu"/"cuda" (or another torch device) forces one). Raises if it can't be made.
+    lead: the melody that follows the lead singer (lead_merge) when it can be had: a cache made without it is tracked
+    again (with it) only on a GPU with room for the karaoke model, which must be on disk already; else the plain one."""
     src = _vocals(job_dir)
     if not os.path.exists(src):
         raise FileNotFoundError("no vocals.m4a")
-    cache = os.path.join(job_dir, CACHE)
     stamp = _stamp(src)
-    if os.path.exists(cache):
-        try:
-            z = np.load(cache)
-            if str(z["stamp"]) == stamp and abs(float(z["hop"]) - HOP) < 1e-6:
-                return z["f0"].astype(np.float64), z["per"].astype(np.float64)
-        except Exception:
-            pass
-    device = device or (_gpu_device() if gpu_free_mib() >= GPU_MIN_FREE_MIB else "cpu")
+    z = _load_cache(job_dir, stamp)
+    if z is not None and (not lead or "lead_model" in z):
+        return _out(z, lead)
+    if device is None:
+        free = gpu_free_mib()
+        device = _gpu_device() if free >= GPU_MIN_FREE_MIB else "cpu"
+        lead = lead and device != "cpu" and free >= LEAD_GPU_MIB
+    lead = lead and device != "cpu" and lead_model() is not None
+    if z is not None and not lead:
+        return _out(z, False)
     t0 = time.time()
-    r = subprocess.run([sys.executable, "-I", os.path.join(HERE, "pitch.py"), "extract", job_dir, device],
-                       capture_output=True, text=True, timeout=timeout)
-    if r.returncode != 0 and device != "cpu":  # the GPU got busy in between: the CPU does it
-        device = "cpu"
+    cmd = [sys.executable, "-I", os.path.join(HERE, "pitch.py"), "extract", job_dir, device] + (["lead"] if lead else [])
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    if r.returncode != 0 and device != "cpu":  # the GPU got busy in between: the CPU does it (without the lead)
+        device, lead = "cpu", False
         r = subprocess.run([sys.executable, "-I", os.path.join(HERE, "pitch.py"), "extract", job_dir, device],
                            capture_output=True, text=True, timeout=timeout)
     if r.returncode != 0:
         raise RuntimeError("pitch tracking failed: " + (r.stderr or r.stdout).strip()[-300:])
     if log:
-        log.info("pitch: %s tracked on the %s in %.1f s", os.path.basename(job_dir), device.upper(), time.time() - t0)
-    z = np.load(cache)
-    return z["f0"].astype(np.float64), z["per"].astype(np.float64)
+        log.info("pitch: %s tracked on the %s%s in %.1f s", os.path.basename(job_dir), device.upper(),
+                 " with its lead" if lead else "", time.time() - t0)
+    return _out(_load_cache(job_dir, stamp) or {k: v for k, v in np.load(os.path.join(job_dir, CACHE)).items()}, lead)
+
+
+def fold_semis(d):
+    """Semitones folded to the nearest octave (-6..6)."""
+    return (np.asarray(d, dtype=np.float64) + 6.0) % 12.0 - 6.0
+
+
+def lead_merge(f0, per, lead_f0, lead_per, lead_db, backing_db):
+    """The melody's frames: the whole vocal track's (f0, per), except in stretches where the lead stem sings, loud
+    enough (LEAD_DB) and louder than the backing stem (LEAD_OVER), more than LEAD_SEMI away from it (octave-folded: an
+    octave slip isn't another voice): there the lead's. Pure numpy; arrays per 20 ms frame (the stems' are cut or
+    padded to the same length)."""
+    f0, per = np.asarray(f0, dtype=np.float64), np.asarray(per, dtype=np.float64)
+    n = len(f0)
+    fit = lambda x, fill: np.concatenate([np.asarray(x, dtype=np.float64)[:n], np.full(max(0, n - len(x)), fill)])
+    lf0, lper, ldb, bdb = fit(lead_f0, 0.0), fit(lead_per, 0.0), fit(lead_db, -120.0), fit(backing_db, -120.0)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        d = 12.0 * np.log2(np.maximum(lf0, 1e-6) / np.maximum(f0, 1e-6))
+    apart = np.abs(fold_semis(d)) > LEAD_SEMI
+    take = (_median(lper, 3) > VOICED) & (lf0 > 0) & (ldb > LEAD_DB) & (ldb - bdb > LEAD_OVER) & ((f0 <= 0) | apart)
+    take = _median(take.astype(np.float64), LEAD_SMOOTH) > 0.5
+    out_f0, out_per = f0.copy(), per.copy()
+    out_f0[take], out_per[take] = lf0[take], lper[take]
+    return out_f0, out_per
 
 
 def _median(x, k):
@@ -230,7 +351,7 @@ def write(job_dir, job, mv_dir, bases, log=None, device=None):
     On failure of the melody the old pitch files of these bases are removed (no score beats a wrong one) and the error
     is raised; the loudness failing only leaves it out."""
     try:
-        f0, per = frames(job_dir, log=log, device=device)
+        f0, per = frames(job_dir, log=log, device=device, lead=not job.get("keep_backing"))
         ns, rng = notes(f0, per, word_spans(job_dir, job))
     except Exception:
         for b in bases:
@@ -259,6 +380,6 @@ def write(job_dir, job, mv_dir, bases, log=None, device=None):
 
 if __name__ == "__main__":
     if len(sys.argv) >= 3 and sys.argv[1] == "extract":
-        extract(sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else "cpu")
+        extract(sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else "cpu", lead=sys.argv[4:5] == ["lead"])
     else:
-        sys.exit("usage: pitch.py extract JOB_DIR [cuda|cpu|<torch device>]")
+        sys.exit("usage: pitch.py extract JOB_DIR [cuda|cpu|<torch device>] [lead]")

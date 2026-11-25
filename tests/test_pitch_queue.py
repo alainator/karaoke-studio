@@ -152,8 +152,8 @@ class PitchQueue(unittest.TestCase):
         self.assertEqual(self.written, [])
 
     def test_busy_studio_waits(self):
-        saved = A.gpu_free_mib, A.NEED_GPU_MIB
-        A.NEED_GPU_MIB = 8000
+        saved = A.gpu_free_mib, A.NEED_GPU_MIB, A.C.USE_LOCAL_GPU
+        A.NEED_GPU_MIB, A.C.USE_LOCAL_GPU = 8000, True
         try:
             A.gpu_free_mib = lambda: 99999
             A.job_index = lambda: [{"id": "x", "status": "queued", "gpu_pref": "auto"}]
@@ -164,7 +164,7 @@ class PitchQueue(unittest.TestCase):
             A.gpu_free_mib = lambda: 0
             self.assertTrue(A.pitch_idle())    # the card has no room for it anyway
         finally:
-            A.gpu_free_mib, A.NEED_GPU_MIB = saved
+            A.gpu_free_mib, A.NEED_GPU_MIB, A.C.USE_LOCAL_GPU = saved
         A.job_index = lambda: []
         A.slots["local"] = "some-song"
         self.assertFalse(A.pitch_idle())

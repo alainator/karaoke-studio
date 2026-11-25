@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Write <base>.pitch.json (the sung melody, for singing scores in Encore: pitch.py) for songs published before the
 studio made them on publish, then rewrite catalog.json so it lists them. Each song's pitch is tracked once from its
-vocals (about 2 s on the GPU plus a few seconds to start, about 20 s on the CPU for a 4-minute song) and cached in its
-job folder (pitch.f0.npz). Run it when nobody is singing (it loads the server) and when no song is being made, or
+vocals and its lead vocal (about 20 s a song on the GPU, with the karaoke model splitting the lead; about 20 s on the
+CPU for a 4-minute song, without the lead) and cached in its job folder (pitch.f0.npz). The studio does this itself
+for songs without an up-to-date pitch file (at startup and hourly when idle); --force redoes every song, e.g. to give
+the songs written before it the melody that follows the lead (pitch.lead_merge). Run it when nobody is singing (it loads the server) and when no song is being made, or
 with --cpu to leave the GPU alone. The files it writes carry the instrumental's loudness too (§1.1 "music");
 deploy/write-music.py adds that to existing pitch files without tracking the pitch again.
 

@@ -55,6 +55,7 @@ cloud service, and only if you choose one.
 | Placing every word | MMS forced aligner (`torchaudio.pipelines.MMS_FA`) | pipeline, AI checks |
 | Talking vs singing | AST AudioSet classifier (`MIT/ast-finetuned-audioset-10-10-0.4593`) | pipeline |
 | Held notes, melody | CREPE (torchcrepe: tiny in the pipeline, full for `.pitch.json`) | pipeline, publish |
+| Lead vs backing vocals | Mel-Band RoFormer karaoke (`mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt`) | Keep backing vocals, publish (melody) |
 | Who sings (experimental) | SpeechBrain ECAPA (`speechbrain/spkrec-ecapa-voxceleb`) | Detect 2 singers |
 | Lyrics and romaji checks (optional) | any [Ollama](https://ollama.com) model (`OLLAMA_MODEL`) | AI checks |
 
@@ -157,11 +158,13 @@ a setting) and no lines are crammed, published without review, signed "auto-make
 look"); it never replaces a published song. Encore sees the stage and an ETA (from the queue and the measured make
 times) and keeps the guest's place meanwhile (contract §2.2b). Agents can't turn it on or start it.
 
-**Melody files.** Publishing writes `<name>.pitch.json` in the background (CREPE on the song's separated vocals: a few
-seconds on the GPU, about 20 s on the CPU), never while a song is being made. The waiting songs survive a restart, and
-the studio also fills in any published song without an up-to-date pitch file (at startup, then hourly when idle). To
-do them all at once instead (when nobody is singing): `python -I deploy/write-pitch.py --dry`, then without `--dry`
-(`--limit 5` to try a few first). The file also carries
+**Melody files.** Publishing writes `<name>.pitch.json` in the background (CREPE on the song's separated vocals: about
+20 s a song on the GPU, 20 s on the CPU), never while a song is being made. On the GPU it also splits the vocals into
+the lead and the backing voices (the "Keep backing vocals" karaoke model, if it's already downloaded) and follows the
+lead where a louder lead sings under a harmony the tracker locked onto. The waiting songs survive a restart, and the
+studio also fills in any published song without an up-to-date pitch file (at startup, then hourly when idle). To do
+them all at once instead (when nobody is singing): `python -I deploy/write-pitch.py --dry`, then without `--dry`
+(`--limit 5` to try a few first; `--force` writes every song's again, e.g. for the lead-following melody). The file also carries
 the instrumental's loudness every 0.1 s (`music`); to add it to pitch files written before: `python -I
 deploy/write-music.py --dry`, then without `--dry` (ffmpeg only, about a second a song).
 
