@@ -898,7 +898,7 @@ let octopus = null, vox = null, detailTimer = null;
 // follow, and the pitch stays natural
 const SPEEDS = [0.5, 0.75, 1];
 // how a song with original-script lines (Japanese, Korean, Chinese…) shows its lyrics (assgen.py display modes)
-const DISPLAY_NAMES = {both: "Original above romanized", original: "Original only", romaji: "Romanized only", kana: "Kana only (hiragana)"};
+const DISPLAY_NAMES = {both: "Original above romanized", original: "Original only", romaji: "Romanized only", kana: "Kana only (hiragana)", both_original: "Original, romanized small above"};
 let playSpeed = 1;
 function setSpeed(x) {
   playSpeed = x;
@@ -988,6 +988,9 @@ async function openJob(id) {
       ${(j.display_modes || []).length ? `<div class="ctl"><label><span>Lyrics on screen</span></label>
         <select id="dispsel" class="dispsel" title="Which lyrics players show for this song">${j.display_modes.map(m => `<option value="${esc(m)}"${m === j.lyrics_display ? " selected" : ""}>${esc(DISPLAY_NAMES[m] || m)}</option>`).join("")}</select>
         <div class="hint">What players show first${j.published ? " (publish again after changing it)" : ""}. Every way is kept with the song, for players that let the singer pick.</div></div>` : ""}
+      ${j.hanzi ? `<div class="ctl"><label><span>Chinese characters</span></label>
+        <select id="hanzisel" class="dispsel" title="Which Chinese characters players show for this song (the pinyin / jyutping and timing stay the same)"><option value=""${j.hanzi.song ? "" : " selected"}>Studio setting (${esc((j.hanzi.choices.find(c => c.value === j.hanzi.studio) || {}).label || j.hanzi.studio)})</option>${j.hanzi.choices.map(c => `<option value="${esc(c.value)}"${c.value === j.hanzi.song ? " selected" : ""}>${esc(c.label)}</option>`).join("")}</select>
+        <div class="hint">${j.hanzi.available ? "Only what's shown changes; the lyrics as written stay in the editor" : "The conversion package isn't installed: shown as in the lyrics"}${j.hanzi.title_orig ? ` · title shown as ${esc(j.hanzi.title_orig)}` : ""}${j.published ? " (publish again after changing it)" : ""}.</div></div>` : ""}
       <div class="ctl"><div class="hint">${r.romaji === "automatic" && r.lang && r.lang !== "ja" ? `<span class="tag warn">automatic ${r.lang === "ko" ? "romanization" : "pinyin"}</span> check it against the singing<br>` : r.romaji === "automatic" ? '<span class="tag warn">automatic romaji</span> check readings in the editor below<br>' : r.romaji === "kara.moe" ? '<span class="tag good">hand-timed romaji (kara.moe)</span><br>' : ""}${r.lines ?? "?"} lines · video ${esc(r.video || "")} · made in ${r.seconds ?? "?"} s${r.gpu ? " on " + esc(r.gpu) : ""}${r.skipped && r.skipped.length ? `<br>Not sung in this video: ${r.skipped.map(s => "“" + esc(s) + "”").join(", ")}` : ""}</div></div>
     </div>
     ${j.ai_romaji && j.ai_romaji.length ? `<details class="ctl aidone"><summary><b>AI fixed ${j.ai_romaji.length} ${j.ai_romaji.some(g => g.japanese) ? "romaji reading" : "lyric line"}${j.ai_romaji.length === 1 ? "" : "s"}</b> <span class="hint">(${j.ai_romaji.some(g => g.japanese) ? "it read the Japanese, and checked special readings against the singing" : "where the lyrics differ from what's sung, checked against the vocals"}; <i>Undo all edits</i> in the editor restores the original)</span></summary>
@@ -1017,6 +1020,17 @@ async function openJob(id) {
       try { await api(`/api/jobs/${id}/offset`, {method: "POST", body: JSON.stringify({offset: o})}); reloadLyrics(); if (ed) renderEditor(); if (j.published) renderPublish(id, {...j, unpublished_changes: true}); }
       catch (err) { toast(err.message); }
     }, 300);
+  };
+  if ($("#hanzisel")) $("#hanzisel").onchange = async e => {
+    const sel = e.target;
+    sel.disabled = true;
+    try {
+      const r = await api(`/api/jobs/${id}/hanzi`, {method: "POST", body: JSON.stringify({hanzi: sel.value || null})});
+      j.hanzi = r.hanzi; reloadLyrics();
+      if (ed) { try { ed.shown = (await api(`/api/jobs/${id}/lines`)).orig_shown || {}; renderEditor(); } catch (_) {} }
+      if (j.published) { j.unpublished_changes = r.unpublished_changes; renderPublish(id, j); }
+    } catch (err) { toast(err.message); }
+    sel.disabled = false;
   };
   if ($("#dispsel")) $("#dispsel").onchange = async e => {
     const sel = e.target, mode = sel.value;
@@ -1105,7 +1119,7 @@ try { rippleDefault = localStorage.getItem("ks-ripple") === "1"; } catch (e) {}
 async function initEditor(id, j) {
   let d; try { d = await api(`/api/jobs/${id}/lines`); } catch (e) { $("#editor").textContent = e.message; return; }
   if (currentJob !== id) return;
-  ed = {id, j, lines: d.lines, cast: d.cast || [], ripple: rippleDefault, sel: null, dirty: false, spec: lsFlag("ks-spec", false), snap: lsFlag("ks-snap", true), onsets: null, specImg: null, canReset: d.can_reset, skipped: d.skipped || [], view: {span: 12, start: 0}, peaks: null};
+  ed = {id, j, lines: d.lines, cast: d.cast || [], shown: d.orig_shown || {}, ripple: rippleDefault, sel: null, dirty: false, spec: lsFlag("ks-spec", false), snap: lsFlag("ks-snap", true), onsets: null, specImg: null, canReset: d.can_reset, skipped: d.skipped || [], view: {span: 12, start: 0}, peaks: null};
   loadHistory(id);
   api(`/api/jobs/${id}/peaks`).then(p => { if (ed && ed.id === id) { ed.peaks = p; drawWave(); } }).catch(() => {});
   api(`/api/jobs/${id}/onsets`).then(o => { if (ed && ed.id === id) { ed.onsets = o.onsets; drawWave(); } }).catch(() => {});
@@ -1487,7 +1501,7 @@ function renderEditor() {
         <td><input class="tm" data-act="time" value="${fmtT(l.words[0][0] + off)}" title="Line start (m:ss.cc)"></td>
         <td class="nowrap"><button class="ib" data-act="m" title="0.1 s earlier">−</button><button class="ib" data-act="p" title="0.1 s later">+</button><button class="ib" data-act="now" title="Start this line at the current playback time">⏱</button></td>
         <td class="nowrap">${l.unsure ? '<span class="unsure" title="Detect 2 singers wasn\'t sure about this line">?</span>' : ""}${ed.cast.length ? memberSelect(l) : `<select class="sg" data-act="singer" title="Who sings this line">${[["", "–"], [1, "1"], [2, "2"], [3, "Both"]].map(([v, t]) => `<option value="${v}" ${(l.singer || "") == v ? "selected" : ""}>${t}</option>`).join("")}</select>`}</td>
-        <td class="txc"><input class="tx ${l.backing ? "backing" : ""}" data-act="text" value="${esc(lineText(l))}" ${l.backing ? 'title="Backing vocals: shown on their own row, in italics"' : ""}>${l.orig ? `<div class="hint">${esc(l.orig)}</div>` : ""}${noteHtml(l)}
+        <td class="txc"><input class="tx ${l.backing ? "backing" : ""}" data-act="text" value="${esc(lineText(l))}" ${l.backing ? 'title="Backing vocals: shown on their own row, in italics"' : ""}>${l.orig ? `<div class="hint">${esc((ed.shown || {})[l.orig] || l.orig)}</div>` : ""}${noteHtml(l)}
           ${ed.cutFor === l ? `<div class="wchips"><span class="hint">Split before:</span>${l.words.map((w, j) => j ? `<span class="wchip cutchip" data-cj="${j}">${esc(w[2])}</span>` : `<span class="hint">${esc(w[2])}</span>`).join("")}</div>` : ""}
           ${ed.splitFor === l || l.wwho ? `<div class="wchips"><span class="hint" style="margin-right:2px">Paint with</span>${whoCycle().map((w, k) =>
               `<span class="brush ${sameWho(w, ed.brush || whoCycle()[1]) ? "on" : ""}" data-b="${k}" style="--c:${whoColour(w)}">${esc(whoName(w))}</span>`).join("")}

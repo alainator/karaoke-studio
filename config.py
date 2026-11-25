@@ -81,8 +81,12 @@ AGENT_KEYS_REQUIRED = env("AGENT_KEYS_REQUIRED", "0").strip().lower() in ("1", "
 # how the lyrics look (assgen.py); 1 = on, 0 = off. Existing songs change when their lyrics are next saved, or all at
 # once with deploy/rebuild-lyrics.py.
 #   display: for songs with an original-script line (Japanese, Korean, Chinese…), what new songs show by default:
-#            both (original above the romanized line), original, romaji, or kana (Japanese in hiragana); each song can
-#            pick its own on its page
+#            both (original above the romanized line), original, romaji, kana (Japanese in hiragana), or
+#            both_original (the original as the main line, the romanized line small above it); each song can pick its
+#            own on its page
+#   hanzi: Chinese songs' characters as shown (hanzi.py): traditional (Taiwan standard for Mandarin, Hong Kong for
+#          Cantonese), simplified, or lyrics (as the lyrics have them); each song can pick its own on its page. Only
+#          what's shown changes: the lyrics, timing and pinyin / jyutping stay as made
 #   sweep: words fill gradually as they're sung (else a whole word lights up at once)
 #   countdown: dots before the first line and after a gap, going one by one until the singing starts
 #   stagger: the top row starts at the left and the bottom row ends at the right (else both centred)
@@ -95,6 +99,7 @@ LYRICS_COUNTDOWN = _on("KARAOKE_LYRICS_COUNTDOWN")
 LYRICS_STAGGER = _on("KARAOKE_LYRICS_STAGGER")
 LYRICS_CARDS = _on("KARAOKE_LYRICS_CARDS")
 LYRICS_FONT = env("KARAOKE_LYRICS_FONT", "heavy").strip().lower()
+LYRICS_HANZI = env("KARAOKE_LYRICS_HANZI", "traditional").strip().lower()
 
 
 # how the karaoke video is encoded (see pipeline.py, render): re-encoded, never copied from YouTube, because
@@ -104,7 +109,7 @@ VENC = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-g", "48", "-pi
 
 # the modules that make songs (pipeline.py imports these), and the helper itself: a helper on different code is asked to
 # update (git pull) before it gets songs, so a change to helper.py reaches the helper PC once it's pushed
-CODE_FILES = ("pipeline.py", "assgen.py", "config.py", "romanize.py", "versions.py", "albumsync.py", "fonts.py", "earcheck.py", "linecheck.py", "karamoe.py", "lyricmap.py", "helper.py", "gpu.py", "videocheck.py")
+CODE_FILES = ("pipeline.py", "assgen.py", "config.py", "romanize.py", "versions.py", "albumsync.py", "fonts.py", "earcheck.py", "linecheck.py", "karamoe.py", "lyricmap.py", "hanzi.py", "helper.py", "gpu.py", "videocheck.py")
 
 
 def code_version():
