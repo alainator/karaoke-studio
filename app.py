@@ -3618,7 +3618,7 @@ def catalog_soon(delay=20.0):
 # when it's queued, removed once its files are written or it failed), and at startup the worker takes the marked songs
 # up again, then sweeps the published songs for a missing pitch file or one older than the vocals (a remake). It
 # sweeps again every PITCH_SWEEP_S while it has nothing to do, so songs whose files went missing any other way fill in
-# too. It never tracks while a song is being made here or waits for a card (align_device's rule): it waits for that.
+# too. It never tracks while a song is being made here or is about to be (pitch_idle): it waits for that.
 # A song whose pitch couldn't be made is remembered with its vocals' stamp (pitch.failed): the sweep leaves it alone
 # until its vocals change (a publish still tries again).
 PITCH_TODO, PITCH_FAILED = "pitch.todo", "pitch.failed"
@@ -3664,9 +3664,16 @@ def pitch_pending():
 
 
 def pitch_idle():
-    """True when pitch tracking may run: no song is being made here and none waits for a card."""
+    """True when pitch tracking may run: no song is being made here, and none is about to be (one waiting that may use
+    this card while it has room). Songs waiting only for the helper PC, or for room the card doesn't have, don't hold
+    it up (they can wait for hours)."""
     try:
-        return slots["local"] is None and not any(j["status"] in ("queued", "running") for j in job_index())
+        if slots["local"] is not None:
+            return False
+        if C.USE_LOCAL_GPU and any(j["status"] == "queued" and (j.get("gpu_pref") or "auto") in ("auto", "local")
+                                   for j in job_index()):
+            return gpu_free_mib() < NEED_GPU_MIB
+        return True
     except Exception:
         return False
 
