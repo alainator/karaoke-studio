@@ -3370,6 +3370,7 @@ def status():
     return {"helper_free_gb": round(hh.get("free_mib", 0) / 1024, 1) if hh else None, "helper_gpu": (hh.get("gpu") or "").replace("NVIDIA GeForce ", "") or None,"gpu_free_gb": round(gpu_free_mib() / 1024, 1), "need_gb": NEED_GPU_MIB // 1024,
             "romaji_ai": bool(C.OLLAMA_URL),
             "requests_open": STORE.q("select count(*) from requests where status='open'")[0][0],
+            "pitch_pending": pitch_pending(),
             "gpus": {"local": LOCAL_GPU, "local_busy": slots["local"] is not None,
                      "helper": C.GPU_HELPER_NAME if C.GPU_HELPER_URL else None,
                      "helper_online": bool(helper_seen["health"]) if C.GPU_HELPER_URL else None,
@@ -3613,16 +3614,113 @@ def catalog_soon(delay=20.0):
 
 
 # ---- pitch files (pitch.py), written in the background after a publish ----
-_PITCH_Q = queue.Queue()
-_PITCH = {"thread": None}
+# The work survives a restart: a song waiting for its pitch files has a marker in its job folder (pitch.todo, written
+# when it's queued, removed once its files are written or it failed), and at startup the worker takes the marked songs
+# up again, then sweeps the published songs for a missing pitch file or one older than the vocals (a remake). It
+# sweeps again every PITCH_SWEEP_S while it has nothing to do, so songs whose files went missing any other way fill in
+# too. It never tracks while a song is being made here or waits for a card (align_device's rule): it waits for that.
+# A song whose pitch couldn't be made is remembered with its vocals' stamp (pitch.failed): the sweep leaves it alone
+# until its vocals change (a publish still tries again).
+PITCH_TODO, PITCH_FAILED = "pitch.todo", "pitch.failed"
+PITCH_SWEEP_S = 3600.0
+PITCH_IDLE_POLL_S = 30.0
+_PITCH = {"thread": None, "order": [], "cv": threading.Condition(), "sweep_at": 0.0, "current": None}
 
 
 def pitch_later(jid):
     """Write the published song's <base>.pitch.json (and its versions') soon; never holds up the publish."""
-    if _PITCH["thread"] is None or not _PITCH["thread"].is_alive():
-        _PITCH["thread"] = threading.Thread(target=_pitch_worker, daemon=True, name="pitch")
-        _PITCH["thread"].start()
-    _PITCH_Q.put(jid)
+    pitch_queue(jid)
+
+
+def pitch_queue(jid, mark=True):
+    """Queue the song for its pitch files (once: a song already waiting isn't queued twice) and start the worker.
+    mark: leave its marker (pitch.todo) so a restart picks it up again."""
+    if mark:
+        try:
+            p = job_path(jid, PITCH_TODO)
+            with open(p + ".tmp", "w") as f:
+                f.write(str(time.time_ns()))   # (a token: a song queued again while it's being written keeps its marker)
+            os.replace(p + ".tmp", p)
+        except (HTTPException, OSError):
+            pass
+    with _PITCH["cv"]:
+        if jid not in _PITCH["order"]:
+            _PITCH["order"].append(jid)
+        _PITCH["cv"].notify()
+    _pitch_start()
+
+
+def _pitch_start():
+    with _PITCH["cv"]:
+        if _PITCH["thread"] is None or not _PITCH["thread"].is_alive():
+            _PITCH["thread"] = threading.Thread(target=_pitch_worker, daemon=True, name="pitch")
+            _PITCH["thread"].start()
+
+
+def pitch_pending():
+    """How many songs wait for their pitch files (the one being written included)."""
+    with _PITCH["cv"]:
+        return len(_PITCH["order"]) + (1 if _PITCH["current"] else 0)
+
+
+def pitch_idle():
+    """True when pitch tracking may run: no song is being made here and none waits for a card."""
+    try:
+        return slots["local"] is None and not any(j["status"] in ("queued", "running") for j in job_index())
+    except Exception:
+        return False
+
+
+def _read(path):
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except OSError:
+        return None
+
+
+def pitch_missing(jid, job=None):
+    """True when a published song (or one of its versions) has no pitch file, or one older than its vocals, and
+    making it hasn't failed on these same vocals before."""
+    try:
+        job = job or load(jid)
+        if job.get("status") != "done":
+            return False
+        voc = job_path(jid, "vocals.m4a")
+        if not os.path.exists(voc):
+            return False
+        bases = published_bases(jid, job)
+        if not bases:
+            return False
+        vt = os.path.getmtime(voc)
+        if all(os.path.exists(f"{MV_DIR}/{b}{pitchmod.EXT}") and os.path.getmtime(f"{MV_DIR}/{b}{pitchmod.EXT}") >= vt
+               for b in bases):
+            return False
+        return _read(job_path(jid, PITCH_FAILED)) != pitchmod._stamp(voc)
+    except (HTTPException, OSError, ValueError):
+        return False
+
+
+def pitch_resume():
+    """At startup (and after each sweep interval): queue the songs with a marker (oldest first), then the published
+    songs whose pitch file is missing or stale. Returns how many were queued."""
+    marked, swept = [], []
+    for jid in sorted(os.listdir(JOBS)) if os.path.isdir(JOBS) else []:
+        if not ID_RE.match(jid):
+            continue
+        if os.path.exists(os.path.join(JOBS, jid, PITCH_TODO)):
+            marked.append(jid)
+        elif pitch_missing(jid):
+            swept.append(jid)
+    for jid in marked:
+        pitch_queue(jid, mark=False)
+    for jid in swept:
+        pitch_queue(jid)
+    _PITCH["sweep_at"] = time.time()
+    if marked or swept:
+        log.info("pitch: %d song(s) to do (%d left from before, %d without an up-to-date pitch file)",
+                 len(marked) + len(swept), len(marked), len(swept))
+    return len(marked) + len(swept)
 
 
 def published_bases(jid, job):
@@ -3649,15 +3747,76 @@ def write_pitch(jid):
         update_catalog()
 
 
-def _pitch_worker():
-    while True:
-        jid = _PITCH_Q.get()
+def pitch_one(jid):
+    """Write one queued song's pitch files and settle its marker: removed when done (unless the song was queued again
+    meanwhile), a failure remembered with the vocals' stamp."""
+    try:
+        todo = job_path(jid, PITCH_TODO)
+    except HTTPException:
+        return  # the song was deleted meanwhile
+    token = _read(todo)
+    try:
+        write_pitch(jid)
         try:
-            write_pitch(jid)
-        except HTTPException:
-            pass  # the song was deleted meanwhile
-        except Exception as e:
-            log.warning("pitch: no pitch file for %s (%s)", jid, str(e)[:200])
+            os.remove(job_path(jid, PITCH_FAILED))
+        except (HTTPException, OSError):
+            pass
+    except HTTPException:
+        return
+    except Exception as e:
+        log.warning("pitch: no pitch file for %s (%s)", jid, str(e)[:200])
+        try:
+            st = pitchmod._stamp(job_path(jid, "vocals.m4a"))
+            with open(job_path(jid, PITCH_FAILED), "w") as f:
+                f.write(st)
+        except (HTTPException, OSError):
+            pass
+    if token is not None and _read(todo) == token:
+        try:
+            os.remove(todo)
+        except OSError:
+            pass
+
+
+def _pitch_worker():
+    if not _PITCH["sweep_at"]:
+        try:
+            pitch_resume()
+        except Exception:
+            log.exception("pitch: couldn't look for songs without pitch files")
+    while not _PITCH.get("stop"):   # (stop: the tests' own workers)
+        with _PITCH["cv"]:
+            while not _PITCH["order"] and not _PITCH.get("stop"):
+                left = PITCH_SWEEP_S - (time.time() - _PITCH["sweep_at"])
+                if left <= 0:
+                    break
+                _PITCH["cv"].wait(timeout=min(left, PITCH_SWEEP_S))
+            jid = _PITCH["order"][0] if _PITCH["order"] else None
+        if _PITCH.get("stop"):
+            break
+        if jid is None:  # nothing to do for a while: sweep (when idle)
+            if pitch_idle():
+                try:
+                    pitch_resume()
+                except Exception:
+                    log.exception("pitch: couldn't look for songs without pitch files")
+            else:
+                _PITCH["sweep_at"] = time.time() - PITCH_SWEEP_S + PITCH_IDLE_POLL_S
+            continue
+        if not pitch_idle():  # a song is being made: wait, then look again
+            time.sleep(PITCH_IDLE_POLL_S)
+            continue
+        with _PITCH["cv"]:
+            if jid in _PITCH["order"]:
+                _PITCH["order"].remove(jid)
+            _PITCH["current"] = jid
+        try:
+            pitch_one(jid)
+        except Exception:
+            log.exception("pitch: %s", jid)
+        finally:
+            with _PITCH["cv"]:
+                _PITCH["current"] = None
 
 
 # ---- requests: matching and statuses ----
@@ -5768,6 +5927,7 @@ if __name__ == "__main__":
     recover_automake()
     recover_imports()
     threading.Thread(target=worker, daemon=True).start()
+    _pitch_start()   # the pitch files left to write before the restart, and any song missing one (when idle)
     if C.ALBUM_LOOKUP:
         threading.Thread(target=album_fill, daemon=True, name="album-fill").start()
     uvicorn.run(app, host=a.host, port=a.port, log_level="warning", proxy_headers=True, forwarded_allow_ips="*")

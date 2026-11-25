@@ -158,8 +158,10 @@ look"); it never replaces a published song. Encore sees the stage and an ETA (fr
 times) and keeps the guest's place meanwhile (contract §2.2b). Agents can't turn it on or start it.
 
 **Melody files.** Publishing writes `<name>.pitch.json` in the background (CREPE on the song's separated vocals: a few
-seconds on the GPU, about 20 s on the CPU). For songs published before, run once (when nobody is singing):
-`python -I deploy/write-pitch.py --dry`, then without `--dry` (`--limit 5` to try a few first). The file also carries
+seconds on the GPU, about 20 s on the CPU), never while a song is being made. The waiting songs survive a restart, and
+the studio also fills in any published song without an up-to-date pitch file (at startup, then hourly when idle). To
+do them all at once instead (when nobody is singing): `python -I deploy/write-pitch.py --dry`, then without `--dry`
+(`--limit 5` to try a few first). The file also carries
 the instrumental's loudness every 0.1 s (`music`); to add it to pitch files written before: `python -I
 deploy/write-music.py --dry`, then without `--dry` (ffmpeg only, about a second a song).
 
