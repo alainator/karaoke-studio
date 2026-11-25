@@ -33,6 +33,7 @@ import encore  # noqa: E402
 import bundle  # noqa: E402
 import pitch as pitchmod  # noqa: E402
 import guidevocals  # noqa: E402
+import loudness  # noqa: E402
 import schemalite  # noqa: E402
 import gpu as gpumod  # noqa: E402
 import agents  # noqa: E402
@@ -154,6 +155,21 @@ def publish_lyrics(jid, base):
         catalog.write_words(job_path(jid), load(jid), MV_DIR, base)
     except Exception:
         log.exception("catalog: couldn't write the words file of %s", base)
+
+
+def loudness_later(jid, base):
+    """Measure the published song's loudness (loudness.py: about a second, CPU) in the background, then list it in the
+    catalog; a song measured already (the same files) isn't measured again. Never holds up or stops a publish."""
+    def run():
+        try:
+            state, _ = loudness.update(job_path(jid), MV_DIR, base)
+            if state == "measured":
+                update_catalog()
+            elif state == "failed":
+                log.warning("loudness: couldn't measure %s", base)
+        except Exception:
+            log.exception("loudness: %s", base)
+    threading.Thread(target=run, daemon=True, name="loudness").start()
 
 
 def update_catalog():
@@ -1605,6 +1621,8 @@ async def publish_version(jid: str, key: str, req: Request):
         save(jid, job)
         update_catalog()
     pitch_later(jid)
+    if job.get("published_as"):   # (versions play over the song's own sound: the song's loudness is theirs)
+        loudness_later(jid, job["published_as"])
     msg = "published"
     return {"name": base, "message": msg}
 
@@ -3104,6 +3122,7 @@ def do_publish(jid, remove, actor):
         save(jid, job)
         update_catalog()
     pitch_later(jid)
+    loudness_later(jid, base)
     if C.ALBUM_LOOKUP and not job.get("album_meta"):   # a newly published song: its album and cover, then the catalog
         threading.Thread(target=lambda: (album_lookup(jid), update_catalog()), daemon=True).start()
     msg = "published"
