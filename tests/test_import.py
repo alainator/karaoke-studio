@@ -62,8 +62,10 @@ class Lists(unittest.TestCase):
 
     def test_cap(self):
         items, left = SL.parse_list("\n".join(f"Artist {i} - Song {i}" for i in range(73)))
-        self.assertEqual((len(items), left), (50, 23))
-        self.assertEqual(items[-1]["q"], "Artist 49 - Song 49")
+        self.assertEqual((len(items), left), (73, 0))                  # (the old cap was 50)
+        items, left = SL.parse_list("\n".join(f"Artist {i} - Song {i}" for i in range(SL.MAX_IMPORT + 23)))
+        self.assertEqual((len(items), left, SL.MAX_IMPORT), (2000, 23, 2000))   # only a guard against accidents
+        self.assertEqual(items[-1]["q"], "Artist 1999 - Song 1999")
         self.assertEqual(SL.parse_list("\n\n  \n"), ([], 0))
 
 
@@ -362,7 +364,7 @@ class Lookup(Base):
         self.assertIn("unavailable", rows[2]["why"])
         self.assertEqual(rows[4]["why"], "the same song as row 1")
         self.assertFalse(any(c.startswith("ytsearch") or "ytsearch10:" in c for c in self.net.calls))   # no searching for videos
-        self.assertTrue(any("--flat-playlist" in c and "--playlist-end 50" in c for c in self.net.calls))
+        self.assertTrue(any("--flat-playlist" in c and "--playlist-end 2000" in c for c in self.net.calls))
 
     def test_a_playlist_that_cant_be_read(self):
         d = self.start("https://www.youtube.com/playlist?list=PLnothere001")

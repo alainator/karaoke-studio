@@ -27,7 +27,7 @@ What an agent may do is set by its key (made on the Studio's Agents tab); withou
   ks import PLAYLIST-LINK | FILE | - [--make] [--gpu auto|local|remote]
                                           a YouTube playlist, or songs one per line (Artist - Title, or a video link;
                                           - reads them from stdin): the Studio picks the video and timed lyrics for
-                                          each (up to 50) and ks prints the review; --make queues the ready ones.
+                                          each (up to 2000) and ks prints the review; --make queues the ready ones.
                                           ks import IMPORT-ID [--make] shows (and makes) an import again
 
   editing (times are video times, as shown: m:ss.cc or seconds; N is the line number from ks show):
@@ -673,13 +673,13 @@ def import_table(d):
     head = f"playlist: {d['playlist'].get('title') or d['playlist']['id']}" if d.get("kind") == "playlist" else f"{d['total']} lines pasted"
     print(f"import {d['id']} ({head}): {d['ready']} ready, {d['skipped']} skipped, {d['made']} made")
     if d.get("left_out"):
-        print(f"  only the first 50 songs were taken; {d['left_out']} more left out")
+        print(f"  only the first {d.get('limit') or 2000} songs were taken; {d['left_out']} more left out")
     if d.get("error"):
         print(f"  {d['error']}")
     for r in d.get("rows") or []:
         box = "[x]" if r.get("can_make") and r.get("tick") else "[ ]"
         st = "made" if r.get("job") else r["status"]
-        print(f"{r['n']:>3} {box} {st:<7} {r.get('artist') or '?'} - {r.get('title') or r.get('input') or '?'}")
+        print(f"{r['n']:>4} {box} {st:<7} {r.get('artist') or '?'} - {r.get('title') or r.get('input') or '?'}")
         v, l = r.get("video"), r.get("lyrics")
         if v and v.get("id"):
             du = int(v.get("duration") or 0)

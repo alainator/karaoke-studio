@@ -4526,7 +4526,7 @@ def imp_view(imp):
     rows = imp.get("rows") or []
     count = lambda st: sum(1 for r in rows if r["status"] == st)
     return {k: imp.get(k) for k in ("id", "created", "by", "kind", "playlist", "state", "left_out", "error")} | {
-        "expires": imp["created"] + IMPORT_KEEP_S, "total": len(rows), "waiting": count("waiting"), "ready": count("ready"),
+        "expires": imp["created"] + IMPORT_KEEP_S, "limit": SL.MAX_IMPORT, "total": len(rows), "waiting": count("waiting"), "ready": count("ready"),
         "skipped": count("skipped"), "made": sum(1 for r in rows if r.get("job")),
         "rows": [{k: v for k, v in r.items() if k not in ("entry",)} | {"can_make": can_make_row(r)} for r in rows]}
 
@@ -4633,7 +4633,8 @@ def _import_worker():
 def import_list_playlist(lst):
     """A playlist's videos (at most MAX_IMPORT) and how many it has: yt-dlp --flat-playlist (one listing, no video
     pages). -> (title, entries, total)."""
-    d = yt_json(["--flat-playlist", "-J", "--playlist-end", str(SL.MAX_IMPORT), "--", SL.playlist_url(lst)], timeout=120)
+    # (a long playlist is listed 100 videos a page: allow a few minutes)
+    d = yt_json(["--flat-playlist", "-J", "--playlist-end", str(SL.MAX_IMPORT), "--", SL.playlist_url(lst)], timeout=600)
     entries = [e for e in d.get("entries") or [] if e and e.get("id") and SL.VIDEO_ID.fullmatch(str(e["id"]))]
     return d.get("title") or "", entries[:SL.MAX_IMPORT], max(d.get("playlist_count") or 0, len(entries))
 
@@ -4716,8 +4717,10 @@ async def import_create(req: Request):
     check_origin(req)
     b = await req.json()
     text = str(b.get("text") or "").strip()
-    if not text or len(text) > 20000:
+    if not text:
         raise HTTPException(400, "paste a YouTube playlist link, or songs one per line (Artist - Title, or a video link)")
+    if len(text) > SL.MAX_IMPORT_TEXT:
+        raise HTTPException(400, f"that's too much text for one import (up to {SL.MAX_IMPORT} songs): split it in two")
     kind, lst = SL.import_kind(text)
     iid = "imp-" + uuid.uuid4().hex[:10]
     imp = {"id": iid, "created": time.time(), "by": agents.stamp(agents.actor_of(req)), "kind": kind, "left_out": 0,

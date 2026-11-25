@@ -643,17 +643,20 @@ async function makeJob(force) {
 }
 
 // ---------- import a list: a YouTube playlist or pasted songs, looked up by the studio, reviewed here, then made ----------
-const IMP = {timer: null, id: null, data: null, edits: {}};
+const IMP = {timer: null, id: null, data: null, edits: {}, page: 0};
+const IMP_PAGE = 100;   // rows shown at a time (a playlist can have hundreds)
 const impKey = id => "ks.imp." + id;
 async function openImport(id) {
   clearTimeout(IMP.timer);
   if (!id) return importStart();
-  if (IMP.id !== id) { IMP.id = id; IMP.data = null; IMP.edits = lsGet(impKey(id), {}); $("#importpane").innerHTML = `<p class="hint"><span class="spinner"></span> Loading the import…</p>`; }
+  if (IMP.id !== id) { IMP.id = id; IMP.data = null; IMP.page = 0; IMP.edits = lsGet(impKey(id), {}); $("#importpane").innerHTML = `<p class="hint"><span class="spinner"></span> Loading the import…</p>`; }
   try { IMP.data = await api(`/api/imports/${encodeURIComponent(id)}`); }
   catch (e) { $("#importpane").innerHTML = `<a class="back" href="#make/import">← Import a list</a><div class="empty">${esc(e.message)}</div>`; return; }
   if (IMP.data.state === "cancelled") { location.hash = "make/import"; return; }
-  renderImport();
-  if (["listing", "looking"].includes(IMP.data.state) && location.hash === `#make/import/${id}`) IMP.timer = setTimeout(() => openImport(id), 2000);
+  // (while the rows fill in: not redrawn under someone typing a name; a long import is asked for less often)
+  const typing = document.activeElement && $("#importpane").contains(document.activeElement) && document.activeElement.type === "text";
+  if (!typing) renderImport();
+  if (["listing", "looking"].includes(IMP.data.state) && location.hash === `#make/import/${id}`) IMP.timer = setTimeout(() => openImport(id), (IMP.data.rows || []).length > 200 ? 6000 : 2000);
 }
 async function importStart() {
   IMP.id = null;
@@ -662,7 +665,7 @@ async function importStart() {
   const st = i => i.state === "listing" ? "reading the playlist…" : i.state === "looking" ? `looking up ${i.total - i.waiting} of ${i.total}…` : i.state === "made" ? `${i.made} made` : `${i.ready} ready, ${i.skipped} skipped`;
   $("#importpane").innerHTML = `<a class="back" href="#make">← Search</a>
     <h2 style="margin-top:6px">Import a list</h2>
-    <p class="hint">Paste a <b>YouTube playlist link</b> (its own videos are used), or <b>songs one per line</b>: <code>Artist - Title</code> or a YouTube video link (numbering like “1.” is fine). Up to 50 songs. The studio finds the video and timed lyrics for each; you check them before anything is made.</p>
+    <p class="hint">Paste a <b>YouTube playlist link</b> (its own videos are used), or <b>songs one per line</b>: <code>Artist - Title</code> or a YouTube video link (numbering like “1.” is fine). Up to 2000 songs; they wait behind songs made by hand. The studio finds the video and timed lyrics for each; you check them before anything is made.</p>
     <textarea id="imptext" placeholder="https://www.youtube.com/playlist?list=…&#10;or&#10;Artist - Title&#10;Artist - Title&#10;https://youtu.be/…"></textarea>
     <div class="row" style="margin-top:8px"><button class="primary" id="impgo">Look them up</button><span class="hint">about 5–10 seconds a song</span></div>
     ${recent.length ? `<h2>Recent imports</h2><div class="list">${recent.map(i => `<a class="card" style="text-decoration:none;color:inherit" href="#make/import/${esc(i.id)}"><div><div class="t">${i.kind === "playlist" ? `Playlist${i.playlist && i.playlist.title ? `: ${esc(i.playlist.title)}` : ""}` : `${i.total} song${i.total === 1 ? "" : "s"} pasted`}</div><div class="m">by ${esc((i.by || {}).by || "?")} · ${esc(new Date(i.created * 1000).toLocaleString())} · ${esc(st(i))}</div></div></a>`).join("")}</div><p class="hint">Imports are kept for 24 hours.</p>` : ""}`;
@@ -698,20 +701,30 @@ function renderImport() {
   const d = IMP.data, rows = d.rows || [], looking = ["listing", "looking"].includes(d.state);
   const head = d.kind === "playlist" ? `Playlist${d.playlist && d.playlist.title ? `: ${esc(d.playlist.title)}` : ""}` : `${d.total} song${d.total === 1 ? "" : "s"} pasted`;
   const n = impTicked().length;
+  const pages = Math.max(1, Math.ceil(rows.length / IMP_PAGE));
+  IMP.page = Math.max(0, Math.min(IMP.page, pages - 1));
+  const shown = rows.slice(IMP.page * IMP_PAGE, (IMP.page + 1) * IMP_PAGE);
+  const pager = pages > 1 ? `<div class="row imppager" style="margin-top:8px;gap:8px;align-items:center">
+      <button class="ghost sm" data-imppage="${IMP.page - 1}" ${IMP.page ? "" : "disabled"}>← Previous</button>
+      <span class="hint">rows ${IMP.page * IMP_PAGE + 1}–${Math.min(rows.length, (IMP.page + 1) * IMP_PAGE)} of ${rows.length}</span>
+      <button class="ghost sm" data-imppage="${IMP.page + 1}" ${IMP.page < pages - 1 ? "" : "disabled"}>Next →</button></div>` : "";
   $("#importpane").innerHTML = `<a class="back" href="#make/import">← Import a list</a>
     <h2 style="margin-top:6px">${head}</h2>
     <p class="hint">Started by ${esc((d.by || {}).by || "?")} · ${d.state === "listing" ? `<span class="spinner"></span> reading the playlist…` : looking ? `<span class="spinner"></span> looking them up: ${d.total - d.waiting} of ${d.total} done` : `${d.ready} ready, ${d.skipped} skipped${d.made ? `, ${d.made} made` : ""}`}. Check each song (the video, the lyrics, the names) before making it: <b>Change…</b> picks them yourself.</p>
-    ${d.left_out ? `<div class="aibox" style="border-color:var(--warn)">Only the first 50 songs were taken; ${d.left_out} more ${d.left_out === 1 ? "was" : "were"} left out (import the rest as another list).</div>` : ""}
+    ${d.left_out ? `<div class="aibox" style="border-color:var(--warn)">Only the first ${d.limit || 2000} songs were taken; ${d.left_out} more ${d.left_out === 1 ? "was" : "were"} left out (import the rest as another list).</div>` : ""}
     ${d.error ? `<div class="empty" style="padding:10px">${esc(d.error)}</div>` : ""}
-    <div class="list" style="margin-top:10px">${rows.map(impRow).join("")}</div>
+    ${pager}
+    <div class="list" style="margin-top:10px">${shown.map(impRow).join("")}</div>
+    ${pages > 1 ? pager : ""}
     <div class="impbar card" style="cursor:default">
       <button class="primary" id="impmake" ${looking || !n ? "disabled" : ""}>Make ticked (${n})</button>
       ${gpuMenu("impgpu")}
       <button class="ghost" id="impcancel">${d.made ? "Done" : "Cancel"}</button>
-      <span class="hint">${looking ? "wait until every song is looked up" : n ? "they join the queue in this order" : "tick the songs to make"}</span>
+      <span class="hint">${looking ? "wait until every song is looked up" : n ? `they join the queue in this order${pages > 1 ? " (the ticked ones on every page)" : ""}, behind songs made by hand` : "tick the songs to make"}</span>
     </div>`;
   const keep = () => lsSet(impKey(d.id), IMP.edits);
   const ed = n_ => (IMP.edits[n_] = IMP.edits[n_] || {});
+  document.querySelectorAll("[data-imppage]").forEach(b => b.onclick = () => { IMP.page = +b.dataset.imppage; renderImport(); $("#importpane").scrollIntoView(); });
   document.querySelectorAll(".imptick").forEach(c => c.onchange = () => { ed(+c.dataset.n).tick = c.checked; keep(); renderImport(); });
   document.querySelectorAll(".impa").forEach(i => i.oninput = () => { ed(+i.dataset.n).artist = i.value; keep(); });
   document.querySelectorAll(".impt").forEach(i => i.oninput = () => { ed(+i.dataset.n).title = i.value; keep(); });

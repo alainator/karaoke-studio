@@ -13,7 +13,9 @@ import re, urllib.parse
 
 import autopick
 
-MAX_IMPORT = 50          # songs per import
+MAX_IMPORT = 2000        # songs per import: only a guard against accidents (a whole channel pasted); the queue
+                         # takes any number, and import songs wait behind songs made by hand (app.job_class)
+MAX_IMPORT_TEXT = MAX_IMPORT * 250   # characters of pasted text (a long video link per line fits)
 IMPORT_MAX_S = 10 * 60   # an import skips videos longer than this (a person can still make one by hand)
 
 VIDEO_ID = re.compile(r"[A-Za-z0-9_-]{11}")
