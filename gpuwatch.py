@@ -23,7 +23,9 @@ import gpu
 
 PAUSE_EXIT = 75          # pipeline.py's exit code for "paused for the GPU" (EX_TEMPFAIL)
 TINY_MIB = 300           # programs holding less than this aren't worth naming
-GPU_STEPS = ("separate", "align", "render")   # the steps that hold the card (render: the talking check)
+# the steps that hold the card: a song is paused only during these (downloading and the final encode give nothing back;
+# the talking check in "render" is small and has its own gate)
+GPU_STEPS = ("separate", "align")
 
 
 def gb(mib):
