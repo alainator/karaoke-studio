@@ -34,11 +34,15 @@ Type `Artist - Title` (or paste a YouTube link). The studio finds the music vide
 | English and other Latin-alphabet languages (Spanish, French, Vietnamese…) | As written |
 | Japanese | Romaji with the Japanese line above it: hand-made from [kara.moe](https://kara.moe) when available, otherwise automatic and checked by listening |
 | Korean | Romanized the way it's pronounced, with the Korean line above it |
-| Chinese | Pinyin (Mandarin) or jyutping (Cantonese) with the Chinese line above it. Cantonese is picked up when the lyrics are written in spoken Cantonese; otherwise one click on the song page switches, keeping the timing |
+| Chinese | Pinyin (Mandarin) or jyutping (Cantonese) with the Chinese line above it. Cantonese is picked up when the lyrics are written in spoken Cantonese; otherwise one click on the song page switches, keeping the timing. The characters are shown traditional by default (Taiwan standard for Mandarin, Hong Kong for Cantonese), or simplified, or as the lyrics have them: `KARAOKE_LYRICS_HANZI`, and per song on its page. Only what's shown changes; the pinyin and timing stay as made |
 | Russian, Ukrainian and other Cyrillic; Greek | Romanized, with the original line above it |
 | Hindi and other Indian scripts, Thai, Georgian, Armenian, Lao, Khmer, Burmese, Amharic | Romanized, with the original line above it (the song carries the font it needs, so the TV can show it) |
 | Arabic, Persian, Urdu, Hebrew | In their own script, words lighting up right to left |
 | Mixed (an English song with a chorus in another script) | Each line as above |
+
+Songs with an original-script line can show it five ways (the song page picks what players show first; every way is
+published, for players that let the singer pick): the original above the romanized line, the original as the main
+line with the romanized line small above it, only the original, only the romanized line, or (Japanese) all in kana.
 
 Tested with one song each in Russian, Ukrainian, Greek, Hindi, Thai, Arabic, Hebrew and Cantonese; the other scripts use the same path.
 
@@ -258,7 +262,7 @@ melody, cut at each word, a 40 ms beat grid with no tempo guessing; a word the S
 - You're responsible for what you download and how you use it. This is meant for karaoke at home.
 - LRCLIB is a free community service; please keep `STUDIO_USER_AGENT` meaningful.
 - The lyric renderer is [JavascriptSubtitlesOctopus](https://github.com/libass/JavascriptSubtitlesOctopus).
-- Lyrics come from [LRCLIB](https://lrclib.net) and [kara.moe](https://kara.moe) (Karaoke Mugen). Romanization uses [uroman](https://github.com/isi-nlp/uroman), [cutlet](https://github.com/polm/cutlet), [PyThaiNLP](https://github.com/PyThaiNLP/pythainlp) and [ToJyutping](https://github.com/CanCLID/ToJyutping). Scripts the TV can't draw use [Noto](https://notofonts.github.io) fonts (SIL Open Font License), embedded in the subtitle file. The web app uses [Atkinson Hyperlegible Next](https://www.brailleinstitute.org/freefont/) and [Bricolage Grotesque](https://github.com/ateliertriay/bricolage) (SIL Open Font License; licence files in `static/fonts/`), the same as Encore.
+- Lyrics come from [LRCLIB](https://lrclib.net) and [kara.moe](https://kara.moe) (Karaoke Mugen). Romanization uses [uroman](https://github.com/isi-nlp/uroman), [cutlet](https://github.com/polm/cutlet), [PyThaiNLP](https://github.com/PyThaiNLP/pythainlp) and [ToJyutping](https://github.com/CanCLID/ToJyutping). Traditional / simplified Chinese characters use [OpenCC](https://github.com/BYVoid/OpenCC)'s dictionaries via [opencc-python-reimplemented](https://github.com/yichen0831/opencc-python) (Apache-2.0). Scripts the TV can't draw use [Noto](https://notofonts.github.io) fonts (SIL Open Font License), embedded in the subtitle file. The web app uses [Atkinson Hyperlegible Next](https://www.brailleinstitute.org/freefont/) and [Bricolage Grotesque](https://github.com/ateliertriay/bricolage) (SIL Open Font License; licence files in `static/fonts/`), the same as Encore.
 
 ## License
 

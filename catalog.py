@@ -2,7 +2,8 @@
 Name.words.json next to each published song.
 
     catalog.json  {"version": 2, "generated": unix time, "songs": [entry, ...]}
-      entry: {"id": job id, "artist", "title", "title_orig": title in its own script or null, "lang",
+      entry: {"id": job id, "artist", "title", "title_orig": title in its own script or null (Chinese: in the
+              characters the song shows, hanzi.py; so are the words.json "orig" rows), "lang",
               "duration": seconds, "published": unix time, "folder": "Music Videos" (relative to the library root),
               "base": "Artist - Title (Music Video)" (the .mp4 / .ass names without extension),
               "lyrics": {"file": "<base>.ass", "default_mode": "both"|...|null, "modes": {mode: "<base>.<mode>.ass"}},
@@ -153,6 +154,7 @@ def words_doc(job_dir, job, base):
     off = float(job.get("offset") or 0.0)
     r2 = lambda t: round(float(t) + off, 2)
     parts, together = parts_of(lines, cast)
+    shown = _shown_origs(lines, job)
     out = []
     for i, l in enumerate(lines):
         ws = [[r2(a), r2(b), w] for a, b, w in l["words"]]
@@ -161,13 +163,32 @@ def words_doc(job_dir, job, base):
             lp = x["parts"]
             x["word_parts"] = [(_who_parts(w) or lp) for w in l["wwho"]]
         if l.get("orig"):
-            x["orig"] = l["orig"]
+            x["orig"] = shown[i] or l["orig"]
         if l.get("backing"):
             x["backing"] = True
         out.append(x)
     together_color = ass_rgb(SINGER_FILL[3]) if any(p["key"].startswith("s") for p in parts) else ass_rgb(TOGETHER_FILL)
     return {"version": 1, "job": job.get("id"), "base": base, "duration": _duration(job), "parts": parts,
             "together": together, "together_color": together_color, "lines": out}
+
+
+def _shown_origs(lines, job):
+    """The original-script rows as players show them (Chinese: in the song's characters, hanzi.py)."""
+    origs = [l.get("orig") for l in lines]
+    try:
+        import hanzi as HZ
+        return HZ.show_lines(origs, HZ.song_lang(job), HZ.song_choice(job))[0]
+    except Exception:
+        return origs
+
+
+def shown_title_orig(job, orig):
+    """An original title as players show it (Chinese: in the song's characters)."""
+    try:
+        import hanzi as HZ
+        return HZ.show_text(orig, HZ.song_lang(job), HZ.song_choice(job))
+    except Exception:
+        return orig
 
 
 def _put_json(path, data):
@@ -294,7 +315,7 @@ def entry_for(job_dir, job, lib_dir, mv_dir):
     if sp and (not orig or orig == sp[1]):
         shown, orig = sp
     return {"id": job.get("id") or os.path.basename(job_dir), "artist": job.get("artist") or "", "title": shown,
-            "title_orig": orig or (title if has_own_script(title) else None),
+            "title_orig": shown_title_orig(job, orig or (title if has_own_script(title) else None)),
             "lang": (job.get("result") or {}).get("lang") or job.get("lang"),
             "duration": _duration(job), "published": job.get("published"),
             "folder": os.path.relpath(mv_dir, lib_dir).replace(os.sep, "/"), "base": base, "lyrics": lyr,

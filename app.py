@@ -25,6 +25,7 @@ from assgen import (MODES, display_modes, job_display, load_cast, load_lines, sa
 import versions  # noqa: E402
 import albummeta  # noqa: E402
 import catalog  # noqa: E402
+import hanzi  # noqa: E402
 import romanize  # noqa: E402
 import trimtools  # noqa: E402
 import videoswap  # noqa: E402
@@ -707,6 +708,13 @@ def summary(job):
     out["voice_swaps"] = page_swaps(job)                    # in the page's video time; the render's: voice_swaps_now
     out["voice_swaps_now"] = page_swaps(job, used=True)
     out["title_orig"] = job.get("title_orig")              # the song page's Original title (its own script)
+    lang = (job.get("result") or {}).get("lang") or job.get("lang")
+    if lang in hanzi.CHINESE:                               # Chinese songs: which characters players see (hanzi.py)
+        orig = job.get("title_orig") or (catalog.split_orig(job.get("title")) or (None, None))[1]
+        out["hanzi"] = {"song": job.get("hanzi"), "studio": hanzi.studio_choice(), "shown": hanzi.song_choice(job),
+                        "choices": [{"value": c, "label": hanzi.LABELS[c]} for c in hanzi.CHOICES],
+                        "available": hanzi.available(),
+                        "title_orig": catalog.shown_title_orig(job, orig) if orig else None}
     out["album_meta"] = job.get("album_meta")              # album, year, genre (albummeta.py); its cover: /cover
     out["has_cover"] = os.path.exists(job_path(job["id"], "cover.jpg"))
     return out
@@ -894,7 +902,7 @@ def page_swaps(job, used=False):
 @app.post("/api/jobs/{jid}/display")
 async def set_display(jid: str, req: Request):
     """How a song with original-script lines shows its lyrics: both (original above the romanized line), original,
-    romaji, or kana (Japanese). lyrics.ass (what is published) is drawn this way; every way is also kept as
+    romaji, kana (Japanese), or both_original (the original as the main line, the romanized line small above it). lyrics.ass (what is published) is drawn this way; every way is also kept as
     lyrics.<mode>.ass for players that let the singer pick."""
     check_origin(req)
     mode = str((await req.json()).get("mode") or "")
@@ -915,12 +923,49 @@ async def set_display(jid: str, req: Request):
 
 
 # ---------------- lyric editor ----------------
+@app.post("/api/jobs/{jid}/hanzi")
+async def set_hanzi(jid: str, req: Request):
+    """Chinese songs: the characters players see, traditional, simplified or lyrics (as the lyrics have them); null
+    = the Studio's setting (KARAOKE_LYRICS_HANZI). Only what's shown changes (the subtitles, the published words'
+    original rows, the original title): the lyrics, their timing and the pinyin / jyutping stay as they are."""
+    check_origin(req)
+    want = (await req.json()).get("hanzi")
+    if want is not None and want not in hanzi.CHOICES:
+        raise HTTPException(400, "hanzi: " + ", ".join(hanzi.CHOICES) + " or null (the Studio's setting)")
+    with lock:
+        job = load(jid)
+        if job.get("status") != "done":
+            raise HTTPException(400, "finish making it first")
+        if ((job.get("result") or {}).get("lang") or job.get("lang")) not in hanzi.CHINESE:
+            raise HTTPException(400, "only for Chinese songs")
+        if want is None:
+            job.pop("hanzi", None)
+        else:
+            job["hanzi"] = want
+        if rebuild_lyrics(jid, job) and job.get("published"):
+            job["unpublished_changes"] = True
+        what = f"Chinese characters: {hanzi.LABELS[hanzi.song_choice(job)]}" + ("" if want else " (the Studio's setting)")
+        job.setdefault("log", []).append(what)
+        _edited(jid, job, agents.actor_of(req), what)
+        save(jid, job)
+    return {"hanzi": summary(job).get("hanzi"), "unpublished_changes": bool(job.get("unpublished_changes"))}
+
+
 @app.get("/api/jobs/{jid}/lines")
 def get_lines(jid: str):
     job = load(jid)
     if job["status"] != "done":
         raise HTTPException(400, "finish making it first")
-    return {"lines": load_lines(job_path(jid, "words.json")), "cast": load_cast(job_path(jid, "words.json")),
+    lines = load_lines(job_path(jid, "words.json"))
+    # Chinese lines as players show them, keyed by the line as written ("orig" itself stays as written: it is what
+    # an edit saves and what the pinyin comes from)
+    shown = {}
+    lang = (job.get("result") or {}).get("lang") or job.get("lang")
+    if lang in hanzi.CHINESE:
+        origs = [l.get("orig") for l in lines]
+        conv, _ = hanzi.show_lines(origs, lang, hanzi.song_choice(job))
+        shown = {o: c for o, c in zip(origs, conv) if o and c != o}
+    return {"lines": lines, "cast": load_cast(job_path(jid, "words.json")), "orig_shown": shown,
             "offset": job.get("offset", 0.0),
             "can_reset": os.path.exists(job_path(jid, "words.orig.json")),
             "skipped": (job.get("result") or {}).get("skipped", []),

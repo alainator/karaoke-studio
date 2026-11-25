@@ -3,7 +3,8 @@ the lyric editor).
 
 words.json, version 2: {"version": 2, "lines": [{"words": [[start, end, "word"], ...], "orig": "原文", "singer": 2}, ...]}
   times in seconds on the video's clock *before* the job's timing offset; "orig" is optional (the original
-  Japanese, Korean, Chinese… line: shown above the romaji, or instead of it, depending on the display mode); "singer" is optional: 1, 2 or 3 (both), each sung in its own colour; "heard"
+  Japanese, Korean, Chinese… line: shown above the romaji, under it, or instead of it, depending on the display mode;
+  Chinese lines are shown in traditional or simplified characters, see hanzi.py, without changing words.json); "singer" is optional: 1, 2 or 3 (both), each sung in its own colour; "heard"
   (optional) is Whisper's transcription of what is sung on a Japanese line, for the AI romaji check.
   Version 1 (older jobs) was just the list of word lists.
 """
@@ -162,10 +163,15 @@ LEAD = 2.0    # a line appears up to this long before its first word (when its r
 LINGER = 2.0  # and stays up to this long after its last word (when the row isn't needed yet)
 
 # ---- how the lyrics look (settings: config.py, KARAOKE_LYRICS_*) ----
-# display modes for songs with an original-script line ("orig"): both = the original above the romanized line,
-# original = only the original, romaji = only the romanized line, kana = Japanese written all in hiragana
-MODES = ("both", "original", "romaji", "kana")
-STYLE_DEFAULTS = {"sweep": True, "countdown": True, "stagger": True, "cards": True, "font": "heavy", "display": "both"}
+# display modes for songs with an original-script line ("orig"): both = the original above the romanized line (the
+# romanized line is the main one), original = only the original, romaji = only the romanized line, kana = Japanese
+# written all in hiragana, both_original = the original as the main line with the romanized line small above it
+# (like ruby / pinyin over the characters). Every place that lists modes takes them from here (the library files
+# <base>.<mode>.ass, the catalog's lyrics.modes, publish and remove-from-library), except the web app's names
+# (static/index.html DISPLAY_NAMES).
+MODES = ("both", "original", "romaji", "kana", "both_original")
+STYLE_DEFAULTS = {"sweep": True, "countdown": True, "stagger": True, "cards": True, "font": "heavy", "display": "both",
+                  "hanzi": "traditional"}
 COUNT_GAP = 4.0      # a line after a gap at least this long (and the first line) gets countdown dots
 COUNT_STEP = 0.6     # one dot goes every this many seconds: four dots = the last 2.4 s
 INTERLUDE = 8.0      # instrumental gaps longer than this show "♪ seconds left"
@@ -176,7 +182,8 @@ ROW_GAP = 28         # between the two rows
 SUB_GAP = 6          # between the original line and its romanized line
 PITCH = 0.86         # how far apart stacked lines are, as a share of the font size (Noto's line box has room to spare)
 # text sizes as pixels per em (the font size in the file is bigger: Noto's line box is 1.448 em)
-EM = {"plain": 68, "romaji": 66, "both_main": 58, "both_orig": 58, "original": 70, "kana": 64, "latin_in_mode": 62}
+EM = {"plain": 68, "romaji": 66, "both_main": 58, "both_orig": 58, "original": 70, "kana": 64, "latin_in_mode": 62,
+      "bo_main": 64, "bo_sub": 42}
 
 
 def style_settings():
@@ -184,7 +191,8 @@ def style_settings():
     try:
         import config as C
         return {"sweep": C.LYRICS_SWEEP, "countdown": C.LYRICS_COUNTDOWN, "stagger": C.LYRICS_STAGGER,
-                "cards": C.LYRICS_CARDS, "font": C.LYRICS_FONT, "display": C.LYRICS_DISPLAY}
+                "cards": C.LYRICS_CARDS, "font": C.LYRICS_FONT, "display": C.LYRICS_DISPLAY,
+                "hanzi": getattr(C, "LYRICS_HANZI", "traditional")}
     except Exception:
         return dict(STYLE_DEFAULTS)
 
@@ -194,7 +202,8 @@ def display_modes(lines):
     lines = normalize(lines)
     if not any(l.get("orig") for l in lines):
         return []
-    return list(MODES) if any(KANA_RE.search(l["orig"] or "") for l in lines) else list(MODES[:3])
+    japanese = any(KANA_RE.search(l["orig"] or "") for l in lines)
+    return [m for m in MODES if m != "kana" or japanese]
 
 
 class _Fonts:
@@ -312,14 +321,15 @@ def _row_text(pieces, groups, lead_cs, kt, base_fill, families=None, main=None):
 
 
 def make_ass(lines, offset=0.0, show_orig=True, video_size=None, cast=None, embed_fonts=True, title=None, artist=None,
-             mode=None, style=None, lang=None, backing_faint=False):
+             mode=None, style=None, lang=None, backing_faint=False, hanzi=None):
     """lines: words.json content (v1 or v2). offset shifts everything (+ = later).
     backing_faint: the music keeps the backing vocals ("Keep backing vocals"): their row is drawn see-through, so
     singers can tell the music sings it (they may join in, or leave it).
     video_size (w, h): on videos narrower than 16:9 the text is scaled down so lines don't wrap as much.
-    title/artist: shown during a long intro. mode: both | original | romaji | kana (songs with original-script lines;
-    default both, or romaji when show_orig is False). style: overrides of the settings (see STYLE_DEFAULTS).
-    lang: the song's language (Chinese songs: "yue" picks the traditional-character font)."""
+    title/artist: shown during a long intro. mode: both | original | romaji | kana | both_original (songs with
+    original-script lines; default both, or romaji when show_orig is False). style: overrides of the settings (see
+    STYLE_DEFAULTS). lang: the song's language. hanzi: Chinese songs' characters as shown, traditional | simplified |
+    lyrics (hanzi.py; default: the setting); only the shown rows change, the words and their timing don't."""
     lines = normalize(lines)
     st = dict(STYLE_DEFAULTS); st.update(style_settings()); st.update(style or {})
     modes = display_modes(lines)
@@ -343,12 +353,38 @@ def make_ass(lines, offset=0.0, show_orig=True, video_size=None, cast=None, embe
     for i, l in enumerate(lines):
         if l["orig"]:
             spans[i], _, kanas[i], _ = line_maps(l["orig"], tuple(w for _, _, w in l["words"]), japanese)
+    # Chinese lines in the characters the song shows: split where the line as written splits (same length, one
+    # character per syllable), so each character still lights up with its own pinyin / jyutping
+    shown, script, title_shown = [l["orig"] for l in lines], None, title
+    if lang in ("zh", "yue"):
+        try:
+            import hanzi as HZ
+            choice = hanzi if hanzi in HZ.CHOICES else (st.get("hanzi") if st.get("hanzi") in HZ.CHOICES else HZ.studio_choice())
+            shown, script = HZ.show_lines(shown, lang, choice)
+            title_shown = HZ.show_text(title, lang, choice)
+        except Exception:
+            shown, script, title_shown = [l["orig"] for l in lines], None, title
+        for i, l in enumerate(lines):
+            if spans[i] and shown[i] != l["orig"] and len(shown[i]) == len(l["orig"]):
+                pos, cut = 0, []
+                for piece in spans[i]:
+                    cut.append(shown[i][pos:pos + len(piece)])
+                    pos += len(piece)
+                spans[i] = cut
+    title = title_shown
 
     # fonts: the heavy lyric font (subset of every character any mode of this song shows), plus Noto fonts for
     # scripts it lacks (Devanagari, Thai…)
-    all_text = [l["orig"] or "" for l in lines] + [w for l in lines for _, _, w in l["words"]] + \
+    all_text = [o or "" for o in shown] + [w for l in lines for _, _, w in l["words"]] + \
                ["".join(x) for x in kanas if x] + [title or "", artist or "", "♪●0123456789 "] + list(cast or [])
-    F = _Fonts(all_text, lang, st.get("font", "heavy") != "classic", embed_fonts)
+    font_lang = lang
+    if lang in ("zh", "yue"):
+        try:
+            import hanzi as HZ
+            font_lang = HZ.font_lang(lang, script)
+        except Exception:
+            pass
+    F = _Fonts(all_text, font_lang, st.get("font", "heavy") != "classic", embed_fonts)
     font_lines, families = [], {}
     if embed_fonts:
         try:
@@ -368,6 +404,8 @@ def make_ass(lines, offset=0.0, show_orig=True, video_size=None, cast=None, embe
         em_main, em_top, em_solo = EM["romaji"], None, EM["romaji"]
     elif mode == "both":
         em_main, em_top, em_solo = EM["both_main"], EM["both_orig"], EM["both_main"]
+    elif mode == "both_original":  # em_top: the small romanized row above the original
+        em_main, em_top, em_solo = EM["bo_main"], EM["bo_sub"], EM["latin_in_mode"]
     else:  # original / kana: the line in that script; lines that have no original (English parts) as they are
         em_main, em_top, em_solo = EM[mode], None, EM["latin_in_mode"]
     sz = lambda em, cjk=False: max(10, round(F.size(em, cjk) * k))
@@ -400,6 +438,9 @@ def make_ass(lines, offset=0.0, show_orig=True, video_size=None, cast=None, embe
         if mode == "both":
             return [("orig", row_pieces(i, "orig", words, fills), sz(em_top, cjk_o), cjk_o, fam),
                     ("words", row_pieces(i, "words", words, fills), sz(em_main), False, None)]
+        if mode == "both_original":  # the mirror of both: the original is the main (lower, bigger) row
+            return [("words", row_pieces(i, "words", words, fills), sz(em_top), False, None),
+                    ("orig", row_pieces(i, "orig", words, fills), sz(em_main, cjk_o), cjk_o, fam)]
         if mode == "kana" and kanas[i]:
             return [("kana", row_pieces(i, "kana", words, fills), sz(em_main, True), True, None)]
         return [("orig", row_pieces(i, "orig", words, fills), sz(em_main, cjk_o), cjk_o, fam)]
@@ -458,6 +499,8 @@ def make_ass(lines, offset=0.0, show_orig=True, video_size=None, cast=None, embe
     # the height of a one-line block in this mode (the top row sits above it unless a taller bottom line is up)
     if mode == "both":
         std = (sz(em_top, True) + sz(em_main)) * PITCH + SUB_GAP * k
+    elif mode == "both_original":
+        std = (sz(em_top) + sz(em_main, True)) * PITCH + SUB_GAP * k
     elif mode in ("original", "kana"):
         std = sz(em_main, True) * PITCH
     else:
@@ -587,8 +630,9 @@ def make_ass(lines, offset=0.0, show_orig=True, video_size=None, cast=None, embe
         ol = outline if outline is not None else max(2.0, round(size * 0.068, 1))
         return (f"Style: {name},{font or F.main},{size},{primary},{secondary},&H00000000,&H80000000,{F.bold},{italic},0,0,"
                 f"100,100,0,0,1,{round(ol * 1, 1)},{round(shadow * k, 1)},7,0,0,0,1")
-    s_main = sz(em_main if mode not in ("original", "kana") else em_solo)
-    styles = [style("Main", s_main), style("Orig", sz(em_top or em_main, True), font=F.cjk),
+    s_main = sz(em_main if mode not in ("original", "kana", "both_original") else em_solo)
+    s_orig = sz(em_main if mode == "both_original" else (em_top or em_main), True)
+    styles = [style("Main", s_main), style("Orig", s_orig, font=F.cjk),
               style("Kana", sz(em_main, True), font=F.cjk),
               style("Back", sz(round(em_solo * 0.8)), italic=-1),
               style("Dots", sz(40), primary="&H0000D7FF", secondary="&H0000D7FF"),
@@ -626,9 +670,19 @@ def variant_name(mode):
     return f"lyrics.{mode}.ass"
 
 
-def write_lyrics(job_dir, job=None, lines=None, cast=None, offset=None, style=None, dry=False):
+def song_hanzi(job):
+    """How a Chinese song shows its characters: its own choice, else the Studio's (hanzi.py)."""
+    try:
+        import hanzi as HZ
+        return HZ.song_choice(job)
+    except Exception:
+        return None
+
+
+def write_lyrics(job_dir, job=None, lines=None, cast=None, offset=None, style=None, dry=False, report=None):
     """Write the song's lyrics.ass (in its display mode) and one lyrics.<mode>.ass per display mode the song has
-    (for players that let the singer pick). Returns True if lyrics.ass changed. dry: only tell, write nothing."""
+    (for players that let the singer pick). Returns True if lyrics.ass changed. dry: only tell, write nothing.
+    report: a list that gets the name of every file that changed (or would: dry), the mode files too."""
     if job is None:
         job = json.load(open(os.path.join(job_dir, "job.json")))
     wp = os.path.join(job_dir, "words.json")
@@ -640,7 +694,7 @@ def write_lyrics(job_dir, job=None, lines=None, cast=None, offset=None, style=No
     off = job.get("offset", 0.0) if offset is None else offset
     kw = dict(offset=off or 0.0, video_size=video_size_of(job), cast=cast or None, title=job.get("title"),
               artist=job.get("artist"), style=style, lang=((job.get("result") or {}).get("lang") or job.get("lang")),
-              backing_faint=bool((job.get("result") or {}).get("backing")))
+              backing_faint=bool((job.get("result") or {}).get("backing")), hanzi=song_hanzi(job))
     modes = display_modes(lines)
     default = job_display(job, lines, modes)
     texts = {m: make_ass(lines, mode=m, **kw) for m in modes}
@@ -650,6 +704,20 @@ def write_lyrics(job_dir, job=None, lines=None, cast=None, offset=None, style=No
         same = open(p, encoding="utf-8").read() == main
     except OSError:
         same = False
+    if report is not None:
+        if not same:
+            report.append("lyrics.ass")
+        for m in MODES:
+            vp = os.path.join(job_dir, variant_name(m))
+            if m in texts:
+                try:
+                    if open(vp, encoding="utf-8").read() == texts[m]:
+                        continue
+                except OSError:
+                    pass
+                report.append(variant_name(m))
+            elif os.path.exists(vp):
+                report.append(variant_name(m))
     if dry:
         return not same
 
