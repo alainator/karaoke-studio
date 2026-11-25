@@ -148,7 +148,7 @@
               "additionalProperties": {
                 "type": "string"
               },
-              "description": "mode (both, original, romaji, kana) -> <base>.<mode>.ass"
+              "description": "mode (both, both_original, original, romaji, kana) -> <base>.<mode>.ass"
             }
           }
         },
@@ -247,10 +247,67 @@
           ],
           "description": "v2: <base>.vocals.m4a (the separated lead vocal, AAC, on the video's timeline with trims applied, for guide vocals) or null. Missing = null (catalogs written before it existed)."
         },
-        "album": {"type": ["string", "null"], "description": "v2: the song's album, or null when unknown. Missing = null."},
-        "year": {"type": ["integer", "null"], "description": "v2: the album's year, or null. Missing = null."},
-        "genre": {"type": ["string", "null"], "description": "v2: the song's genre, or null. Missing = null."},
-        "cover": {"type": ["string", "null"], "description": "v2: <base>.cover.jpg (the album cover, JPEG or PNG, about 500-600 px square) next to the video, or null: players show their own tile then. Missing = null."}
+        "album": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "v2: the song's album, or null when unknown. Missing = null."
+        },
+        "year": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "v2: the album's year, or null. Missing = null."
+        },
+        "genre": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "v2: the song's genre, or null. Missing = null."
+        },
+        "cover": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "v2: <base>.cover.jpg (the album cover, JPEG or PNG, about 500-600 px square) next to the video, or null: players show their own tile then. Missing = null."
+        },
+        "loudness": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "description": "EBU R128 integrated loudness (LUFS) and true peak (dBTP) of the video's sound; mix_* the same with <base>.vocals.m4a mixed in at full (null without vocals). Versions carry the song's. Missing = null; players use it to even out volumes, files never change.",
+          "properties": {
+            "v": {
+              "type": "integer"
+            },
+            "lufs": {
+              "type": "number"
+            },
+            "peak_db": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "mix_lufs": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "mix_peak_db": {
+              "type": [
+                "number",
+                "null"
+              ]
+            }
+          }
+        }
       }
     },
     "version": {
@@ -288,6 +345,39 @@
             "null"
           ],
           "description": "v2: <version base>.vocals.m4a (the song's vocals: versions share its sound) or null; missing = null."
+        },
+        "loudness": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "description": "EBU R128 integrated loudness (LUFS) and true peak (dBTP) of the video's sound; mix_* the same with <base>.vocals.m4a mixed in at full (null without vocals). Versions carry the song's. Missing = null; players use it to even out volumes, files never change.",
+          "properties": {
+            "v": {
+              "type": "integer"
+            },
+            "lufs": {
+              "type": "number"
+            },
+            "peak_db": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "mix_lufs": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "mix_peak_db": {
+              "type": [
+                "number",
+                "null"
+              ]
+            }
+          }
         }
       }
     }

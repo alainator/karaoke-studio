@@ -5,7 +5,7 @@
     "method": "GET",
     "path": "/api/encore/catalog",
     "headers": {
-      "If-None-Match": "\"66eeadb36b7275d1b70666fa\"",
+      "If-None-Match": "\"dbebe9c220beed86610c6c0f\"",
       "Authorization": "Bearer <token from pairing>"
     },
     "body": null,
@@ -14,7 +14,7 @@
   "response": {
     "status": 304,
     "headers": {
-      "ETag": "\"66eeadb36b7275d1b70666fa\""
+      "ETag": "\"dbebe9c220beed86610c6c0f\""
     },
     "body": null,
     "schema": null

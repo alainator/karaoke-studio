@@ -30,6 +30,14 @@ additive only; Encore accepts 1 and 2 and ignores unknown fields):
   details and cover art (the Studio looks them up; the person can correct or remove them). The cover is an image
   (JPEG, or PNG) next to the video, about 500-600 px square, for players to show instead of their own tile. A
   catalog written before these existed has no such keys: read them as null.
+- `"loudness"` or null on each song and each version: EBU R128 integrated loudness (`"lufs"`) and true peak
+  (`"peak_db"`, dBTP) of the video's sound; `"mix_lufs"`, `"mix_peak_db"` the same with `<base>.vocals.m4a` mixed in at
+  full (null without vocals); `"v": 1`. Versions carry the song's. Missing = null; players use it to even out volumes
+  between songs, the files never change.
+- Lyric modes (`lyrics.modes`): besides `both` (romanized words highlighted, the original script as a small row above),
+  `original`, `romaji` and (Japanese) `kana`, songs whose lyrics are in another script also have `both_original`: the
+  original script as the main, highlighted line with the romanization as a small row above, lit in step. Chinese
+  original rows are shown in Traditional characters by default (the Studio's setting); romanization never changes.
 
 ### 1.1 `<base>.pitch.json`
 

@@ -13,7 +13,7 @@
   "response": {
     "status": 200,
     "headers": {
-      "ETag": "\"66eeadb36b7275d1b70666fa\""
+      "ETag": "\"dbebe9c220beed86610c6c0f\""
     },
     "body": {
       "$file": "library/catalog.json"

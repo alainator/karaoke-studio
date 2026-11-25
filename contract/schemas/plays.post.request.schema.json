@@ -62,7 +62,7 @@
               "string",
               "null"
             ],
-            "description": "The lyric mode shown (both, original, romaji, kana) or null (the song's one plain .ass)."
+            "description": "The lyric mode shown (both, both_original, original, romaji, kana) or null (the song's one plain .ass)."
           },
           "party": {
             "type": "string",

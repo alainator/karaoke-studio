@@ -227,7 +227,7 @@
               "minLength": 1,
               "maxLength": 40,
               "pattern": "^[a-z][a-z0-9_]*(:[a-z0-9_-]+)?$",
-              "description": "Known today: \"guide\" (off|low|medium|full) and \"style:<lang>\" (normal|both|original|romaji|kana|timing|none; lang = the catalog's language code, or \"other\"). Store unknown keys as they are."
+              "description": "Known today: \"guide\" (off|low|medium|full) and \"style:<lang>\" (normal|both|both_original|original|romaji|kana|timing|none; lang = the catalog's language code, or \"other\"). Store unknown keys as they are."
             },
             "value": {
               "type": [
@@ -300,7 +300,7 @@
                 "null"
               ],
               "maxLength": 20,
-              "description": "Optional: the lyric style (both, original, romaji, kana, none, timing; null = the plain .ass)."
+              "description": "Optional: the lyric style (both, both_original, original, romaji, kana, none, timing; null = the plain .ass)."
             },
             "guide": {
               "enum": [

@@ -213,7 +213,7 @@
             "null"
           ],
           "maxLength": 20,
-          "description": "Optional: the lyric style (both, original, romaji, kana, none, timing; null = the plain .ass)."
+          "description": "Optional: the lyric style (both, both_original, original, romaji, kana, none, timing; null = the plain .ass)."
         },
         "guide": {
           "enum": [
