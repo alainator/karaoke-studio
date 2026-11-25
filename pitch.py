@@ -14,8 +14,8 @@ steps:
    GPU with room for it, the same run also splits the vocals into the lead and the backing voices (the karaoke model,
    C.BACKING_MODEL, only when it's already on disk: never downloaded here) and tracks the lead too (about 15 s more a
    song). lead_merge() then follows the lead where it clearly sings something else than the whole vocal track's
-   pitch: in a group's chorus the tracker can lock onto a harmony above the lead (La Oreja de Van Gogh's Rosas: a
-   fourth above in every chorus), and a karaoke singer sings the lead. Where no lead is found (the whole group sings
+   pitch: in a group's chorus the tracker can lock onto another voice (La Oreja de Van Gogh's Rosas: a fourth above
+   the lead stem in 11 chorus lines), and a karaoke singer sings the lead. Where no lead is found (the whole group sings
    it together: Aserejé, Stayin' Alive), two voices are equally loud (no lead to follow) or it agrees anyway, it's
    today's melody. Measured (2026-11-24) with Encore's scorer on 54 songs' original vocals (half of them groups and
    duets), the pitch files written by write(): none worse beyond noise (2 points), Rosas 57 -> 66, Pantropiko
@@ -178,23 +178,24 @@ def _out(z, lead):
     return f0, per
 
 
-def frames(job_dir, timeout=900, log=None, device=None, lead=False):
+def frames(job_dir, timeout=900, log=None, device=None, lead=False, split=True):
     """(f0 in Hz, periodicity) per 20 ms frame of the job's vocals, from the cache or computed now (a subprocess, GPU
     if it has room, else CPU; device "cpu"/"cuda" (or another torch device) forces one). Raises if it can't be made.
     lead: the melody that follows the lead singer (lead_merge) when it can be had: a cache made without it is tracked
-    again (with it) only on a GPU with room for the karaoke model, which must be on disk already; else the plain one."""
+    again (with it) only on a GPU with room for the karaoke model, which must be on disk already, and when split (False:
+    never run the karaoke model now, e.g. beside a song being made); else the plain one."""
     src = _vocals(job_dir)
     if not os.path.exists(src):
         raise FileNotFoundError("no vocals.m4a")
     stamp = _stamp(src)
     z = _load_cache(job_dir, stamp)
-    if z is not None and (not lead or "lead_model" in z):
+    if z is not None and (not lead or not split or "lead_model" in z):
         return _out(z, lead)
     if device is None:
         free = gpu_free_mib()
         device = _gpu_device() if free >= GPU_MIN_FREE_MIB else "cpu"
         lead = lead and device != "cpu" and free >= LEAD_GPU_MIB
-    lead = lead and device != "cpu" and lead_model() is not None
+    lead = lead and split and device != "cpu" and lead_model() is not None
     if z is not None and not lead:
         return _out(z, False)
     t0 = time.time()
@@ -345,13 +346,25 @@ def doc(base, duration, note_list, rng, mus=None):
     return d
 
 
-def write(job_dir, job, mv_dir, bases, log=None, device=None):
+def lead_settled(job_dir, job):
+    """True when the song's melody can't get any better from the lead: its vocals are the lead already (Keep backing
+    vocals), or its cache was made trying the lead (with it, or the model failed on it)."""
+    if job.get("keep_backing"):
+        return True
+    try:
+        z = _load_cache(job_dir, _stamp(_vocals(job_dir)))
+    except OSError:
+        return True
+    return z is not None and "lead_model" in z
+
+
+def write(job_dir, job, mv_dir, bases, log=None, device=None, split=True):
     """Write <base>.pitch.json for the song's published bases (the song and its versions share sound and timing), with
     the instrumental's loudness (music) when the published video's sound can be read. Returns the files written.
     On failure of the melody the old pitch files of these bases are removed (no score beats a wrong one) and the error
     is raised; the loudness failing only leaves it out."""
     try:
-        f0, per = frames(job_dir, log=log, device=device, lead=not job.get("keep_backing"))
+        f0, per = frames(job_dir, log=log, device=device, lead=not job.get("keep_backing"), split=split)
         ns, rng = notes(f0, per, word_spans(job_dir, job))
     except Exception:
         for b in bases:

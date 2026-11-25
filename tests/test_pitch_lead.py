@@ -106,6 +106,16 @@ class Frames(unittest.TestCase):
         self.assertTrue(np.allclose(midi(P.frames(self.d, lead=True)[0])[55:95], 64.0))
         self.assertEqual(calls[0][-1], "lead")
 
+    def test_beside_a_make_the_lead_isnt_split_off(self):
+        self.cache(lead=False)
+        P.lead_model = lambda: "karaoke.ckpt"                          # (subprocess.run raises: never tracked again)
+        self.assertTrue(np.allclose(midi(P.frames(self.d, lead=True, split=False)[0]), 69.0))
+        self.assertFalse(P.lead_settled(self.d, {}))                   # it can still get the lead later
+        self.assertTrue(P.lead_settled(self.d, {"keep_backing": True}))
+        self.cache(lead=True)
+        self.assertTrue(np.allclose(midi(P.frames(self.d, lead=True, split=False)[0])[55:95], 64.0))   # (cached: used)
+        self.assertTrue(P.lead_settled(self.d, {}))
+
     def test_keep_backing_songs_dont_ask_for_the_lead(self):
         seen = []
         real = P.frames

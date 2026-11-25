@@ -159,10 +159,11 @@ look"); it never replaces a published song. Encore sees the stage and an ETA (fr
 times) and keeps the guest's place meanwhile (contract §2.2b). Agents can't turn it on or start it.
 
 **Melody files.** Publishing writes `<name>.pitch.json` in the background (CREPE on the song's separated vocals: about
-20 s a song on the GPU, 20 s on the CPU), never while a song is being made. On the GPU it also splits the vocals into
-the lead and the backing voices (the "Keep backing vocals" karaoke model, if it's already downloaded) and follows the
-lead where a louder lead sings under a harmony the tracker locked onto. The waiting songs survive a restart, and the
-studio also fills in any published song without an up-to-date pitch file (at startup, then hourly when idle). To do
+20 s a song on the GPU, 20 s on the CPU). On the GPU it also splits the vocals into the lead and the backing voices
+(the "Keep backing vocals" karaoke model, if it's already downloaded) and follows the lead where a louder lead sings
+something else than the voice the tracker locked onto; beside a song being made it writes the plain melody at once
+and the lead one when the studio is idle. The waiting songs survive a restart, and the studio also fills in any
+published song without an up-to-date pitch file (at startup, then hourly, when nothing is being made). To do
 them all at once instead (when nobody is singing): `python -I deploy/write-pitch.py --dry`, then without `--dry`
 (`--limit 5` to try a few first; `--force` writes every song's again, e.g. for the lead-following melody). The file also carries
 the instrumental's loudness every 0.1 s (`music`); to add it to pitch files written before: `python -I
