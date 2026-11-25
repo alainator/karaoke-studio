@@ -938,11 +938,16 @@ async def set_hanzi(jid: str, req: Request):
             raise HTTPException(400, "finish making it first")
         if ((job.get("result") or {}).get("lang") or job.get("lang")) not in hanzi.CHINESE:
             raise HTTPException(400, "only for Chinese songs")
+        before = hanzi.song_choice(job)
         if want is None:
             job.pop("hanzi", None)
         else:
             job["hanzi"] = want
-        if rebuild_lyrics(jid, job) and job.get("published"):
+        files = []
+        write_lyrics(job_path(jid), job, report=files)
+        # published: the library's subtitles, words and title change with it (even when lyrics.ass doesn't: a song
+        # shown romanized still publishes its Chinese rows)
+        if job.get("published") and (files or before != hanzi.song_choice(job)):
             job["unpublished_changes"] = True
         what = f"Chinese characters: {hanzi.LABELS[hanzi.song_choice(job)]}" + ("" if want else " (the Studio's setting)")
         job.setdefault("log", []).append(what)

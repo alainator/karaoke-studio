@@ -15,6 +15,17 @@ from tests._asgi import jcall  # noqa: E402
 
 HAS_CC = HZ.available()
 _n = [0]
+_saved = {}
+
+
+def setUpModule():  # publishing here must not start pitch tracking or a late catalog write (other tests watch those)
+    _saved["v"] = (A.pitch_later, A.catalog_soon)
+    A.pitch_later = lambda jid: None
+    A.catalog_soon = lambda delay=0: A.update_catalog()
+
+
+def tearDownModule():
+    A.pitch_later, A.catalog_soon = _saved["v"]
 
 SIMP = ["我爱你 头发", "干杯 OK!", "以后 后来"]        # simplified (phrases: 头发 -> 頭髮, 干杯 -> 乾杯)
 TRAD = ["我愛你 頭髮", "乾杯 OK!", "以後 後來"]
@@ -131,6 +142,25 @@ class Conversion(unittest.TestCase):
         self.assertIsNone(HZ.show_text(None, "zh", "traditional"))
 
 
+class WithoutThePackage(unittest.TestCase):
+    """An old image or a helper PC without opencc: everything as in the lyrics, the font as before."""
+
+    def test_nothing_changes(self):
+        saved = HZ._cc
+        HZ._cc = lambda name: None
+        try:
+            self.assertFalse(HZ.available())
+            for choice in HZ.CHOICES:
+                self.assertEqual(HZ.show_lines(SIMP, "zh", choice), (SIMP, None))
+                self.assertEqual(HZ.show_text("Yan Yuan (演员)", "zh", choice), "Yan Yuan (演员)")
+            self.assertEqual(HZ.font_lang("zh", None), "zh")
+            self.assertEqual(HZ.font_lang("yue", None), "yue")
+            a = make_ass(lines_of(SIMP), mode="both", embed_fonts=False, lang="zh", hanzi="traditional")
+            self.assertEqual(a, make_ass(lines_of(SIMP), mode="both", embed_fonts=False, lang="zh", hanzi="lyrics"))
+        finally:
+            HZ._cc = saved
+
+
 class Setting(unittest.TestCase):
     def test_default_traditional_and_song_override(self):
         self.assertEqual(A.C.LYRICS_HANZI, "traditional")
@@ -221,16 +251,6 @@ class RomanizationUnchanged(unittest.TestCase):
 
 @unittest.skipUnless(HAS_CC, "needs opencc-python-reimplemented")
 class Published(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls._saved = (A.pitch_later, A.catalog_soon)
-        A.pitch_later = lambda jid: None
-        A.catalog_soon = lambda delay=0: A.update_catalog()
-
-    @classmethod
-    def tearDownClass(cls):
-        A.pitch_later, A.catalog_soon = cls._saved
-
     def entry(self, jid):
         A.update_catalog()
         return next(e for e in CAT.read_catalog(A.LIB)["songs"] if e["id"] == jid)
@@ -307,8 +327,6 @@ class BothOriginal(unittest.TestCase):
         self.assertIn("頭髮", shown_text(bo))
 
     def test_mode_file_published_listed_and_removed(self):
-        A.pitch_later, saved = (lambda jid: None), A.pitch_later
-        self.addCleanup(setattr, A, "pitch_later", saved)
         jid = make_chinese(TRAD)
         self.assertTrue(os.path.isfile(A.job_path(jid, "lyrics.both_original.ass")))
         base = A.load(jid)["published_as"]

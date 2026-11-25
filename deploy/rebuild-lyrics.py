@@ -15,7 +15,7 @@ KARAOKE_LYRICS_* settings): lyrics.ass in each song's display mode, plus lyrics.
     python -I deploy/rebuild-lyrics.py --jobs DIR  # another jobs folder (tests)
 
 Words, timing and the library's files are not touched: published songs keep their old lyrics until they're published
-again. The ones that changed are listed at the end. A song counts as changed when any of its lyric files does: a
+again. The ones that changed are listed at the end (songs that already had unpublished edits listed apart). A song counts as changed when any of its lyric files does: a
 song whose lyrics.ass stays the same but gets a new lyrics.<mode>.ass needs publishing again too, for players that
 let the singer pick. No lyric text is printed.
 """
@@ -103,7 +103,7 @@ for jid in sorted(os.listdir(JOBS)):
                 continue
             if m.get("published_as"):
                 names.append(m["published_as"])
-        republish.append((jid, names))
+        republish.append((jid, names, bool(job.get("unpublished_changes"))))
         if MARK and not DRY and not job.get("unpublished_changes"):
             job["unpublished_changes"] = True
             with open(os.path.join(d, "job.json.tmp"), "w") as f:
@@ -114,5 +114,11 @@ print(f"{'would rebuild' if DRY else 'rebuilt'} {rebuilt} songs, {same} already 
 if republish:
     print(f"\n{len(republish)} published songs {'would need' if DRY else 'need'} publishing again to show the new lyrics in the library"
           + (" (marked in the studio)" if MARK and not DRY else "") + ":")
-    for jid, names in republish:
+    for jid, names, _ in [r for r in republish if not r[2]]:
         print(f"  {jid}: " + " | ".join(names))
+    held = [r for r in republish if r[2]]
+    if held:
+        print(f"\n{len(held)} of them already had unpublished changes (edits nobody has published yet): look at "
+              "these before publishing them")
+        for jid, names, _ in held:
+            print(f"  {jid}: " + " | ".join(names))

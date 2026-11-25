@@ -99,7 +99,7 @@ def show_lines(origs, lang, choice):
     """The lines as shown: (list like origs, script of what is shown: traditional | simplified | None)."""
     origs = list(origs)
     joined = "\n".join(o for o in origs if o)
-    if lang not in CHINESE or not joined:
+    if lang not in CHINESE or not joined or not available():
         return origs, None
     have = written_in(joined)
     name = config_for(lang, choice)
