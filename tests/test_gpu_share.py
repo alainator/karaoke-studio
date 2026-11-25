@@ -80,6 +80,9 @@ class StartCheck(unittest.TestCase):
                          "Ollama (qwen2.5:7b, 6 GB) and other programs (20 GB)")
         self.assertEqual(GW.others(snap(22 * GiB), own_mib=4 * GiB), "other programs (18 GB)")
         self.assertIsNone(GW.others(snap(500)))
+        self.assertEqual(GW.using("Ollama (gemma4:26b, 19 GB)"), "Ollama (gemma4:26b, 19 GB) is using it")
+        self.assertEqual(GW.using("Ollama 19 GB, ComfyUI 4.9 GB"), "Ollama 19 GB, ComfyUI 4.9 GB are using it")
+        self.assertEqual(GW.using("other programs (18 GB)"), "other programs (18 GB) are using it")
         self.assertIsNone(GW.others(None))
 
 
@@ -97,9 +100,19 @@ class PressureWhileMaking(unittest.TestCase):
     def test_baseline_is_the_least_and_off_means_never(self):
         m = GW.Pressure(jump=3072, grace=0)
         m.feed(0, 24 * GiB, 0)
-        m.feed(1, 4 * GiB, 0)                                   # Ollama unloaded: the baseline drops
-        self.assertIsNotNone(m.feed(2, 9 * GiB, 0))             # 5 GB more than the least: pressure
+        m.feed(1, 4 * GiB, 0)                                   # Ollama unloaded: the baseline drops...
+        self.assertEqual(m.base, 24 * GiB)                      # ...once two looks agree
+        m.feed(2, 4 * GiB, 0)
+        self.assertEqual(m.base, 4 * GiB)
+        self.assertIsNotNone(m.feed(3, 9 * GiB, 0))             # 5 GB more than the least: pressure
         self.assertIsNone(GW.Pressure(jump=0, grace=0).feed(0, 31 * GiB, 0))
+
+    def test_the_studios_late_figure_after_freeing_a_model_isnt_pressure(self):
+        m = GW.Pressure(jump=3072, grace=0)
+        self.assertIsNone(m.feed(0, 15 * GiB, 8 * GiB))         # others 7 GB, Whisper 8 GB
+        self.assertIsNone(m.feed(5, 8 * GiB, 8 * GiB))          # Whisper freed; the pipeline hasn't said so yet
+        self.assertIsNone(m.feed(10, 8 * GiB, 1 * GiB))         # it has: others still 7 GB, nothing took the card
+        self.assertIsNone(m.feed(15, 9 * GiB, 2 * GiB))
 
     def test_watch_pauses_only_during_a_gpu_step(self):
         class P:
@@ -241,7 +254,7 @@ class PauseAndResume(Base):
         try:
             A.schedule_once()
             self.assertEqual(st(jid), "queued")
-            self.assertIn("Ollama (gemma4:26b, 19 GB) and other programs", A.load(jid)["waiting"])
+            self.assertIn("Ollama (gemma4:26b, 19 GB) and other programs (7 GB) are using it", A.load(jid)["waiting"])
             self.assertIn("a song needs 8.8", A.load(jid)["waiting"])
         finally:
             A.gpu_free_mib, A.NEED_GPU_MIB = (lambda: 99999), 0

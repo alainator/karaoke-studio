@@ -55,6 +55,12 @@ def others(snap, own_mib=0, own_pids=(), ollama=None):
     return f"other programs ({gb(rest)} GB)" if rest >= 1024 else None
 
 
+def using(who):
+    """ "Ollama (gemma4:26b, 19 GB) is using it", "ComfyUI 6 GB, python3 2 GB are using it"."""
+    bare = re.sub(r"\([^)]*\)", "", who)
+    return f"{who} {'are' if ', ' in bare or ' and ' in bare or bare.startswith('other') else 'is'} using it"
+
+
 def check_start(snap, free, need, busy_pct=None, own_busy=False):
     """Why a song can't start on this card now (None: it can). free: its free MiB; need: what a song needs; snap: for
     how busy it is (None: can't be told, which never holds a song back); own_busy: the studio itself is computing on
@@ -77,15 +83,21 @@ class Pressure:
     def __init__(self, jump=None, grace=None):
         self.jump = C.GPU_PREEMPT_MIB if jump is None else jump
         self.grace = C.GPU_PREEMPT_GRACE_S if grace is None else grace
-        self.base = None    # the least the other programs held
+        self.base = None    # the least the other programs held (over two looks in a row)
+        self.prev = None
         self.since = None   # since when they've held `jump` more
 
     def feed(self, now, used, own):
         if not self.jump:
             return None
         rest = max(0, used - own)
-        if self.base is None or rest < self.base:
-            self.base = rest
+        # The studio's own figure comes a second or two late: just after it frees a model, the card shows the memory
+        # gone while the pipeline still says it holds it, and the others look smaller than they are for one look. So
+        # the baseline only drops to what two looks in a row agree on.
+        low = rest if self.prev is None else max(rest, self.prev)
+        self.prev = rest
+        if self.base is None or low < self.base:
+            self.base = low
         if rest - self.base >= self.jump:
             self.since = self.since if self.since is not None else now
             if now - self.since >= self.grace:
@@ -141,7 +153,7 @@ def say(kind, text=""):
         sys.stdout.flush()
 
 
-def report(every=2.0):
+def report(every=1.0):
     """Start a thread saying "@gpu <MiB>" (what this process holds on the card, with the context allowance) whenever
     it changes by 256 MiB or more, and every 30 s; nothing until the process uses the GPU."""
     def go():

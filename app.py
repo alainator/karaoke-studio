@@ -2591,7 +2591,7 @@ def local_gpu_wait(paused=False):
     if why:
         _GPU_OK["since"] = None
         who = gpuwatch.others(snap, ollama=ollama_models())
-        return f"{who} {'is' if who.startswith('Ollama') else 'are'} using it: {why}" if who else why
+        return f"{gpuwatch.using(who)}: {why}" if who else why
     _GPU_OK["since"] = _GPU_OK["since"] or now
     if paused and now - _GPU_OK["since"] < C.GPU_RESUME_S:
         return "it has room again; making sure it stays free"
