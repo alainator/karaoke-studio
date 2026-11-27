@@ -183,6 +183,7 @@ nav button.on .nbadge { background: var(--on-accent); color: var(--accent); }
 .req { padding: 10px 14px; }
 .revplayer { position: sticky; top: 64px; z-index: 3; background: var(--bg, #000); padding: 8px 0 10px; margin-bottom: 10px; }
 .revplayer video { width: 100%; max-width: 520px; aspect-ratio: 16/9; background: #000; border-radius: 10px; display: block; }
+@media (max-width: 700px) { .revplayer { position: static; } .revplayer video { max-height: 30vh; width: auto; max-width: 100%; } }
 .rvline { font-size: 20px; font-weight: 800; margin-top: 8px; overflow-wrap: anywhere; color: var(--muted); }
 .rvline .on { color: var(--accent); }
 .rvopts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
