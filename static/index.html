@@ -2559,7 +2559,7 @@ const rvLabel = (it, k) => (it.options.find(o => o.key === k) || {}).label || k.
 function rvCard(it) {
   const song = `<a class="lnk" href="#jobs/${esc(it.job)}">${esc(it.artist || "")} – ${esc(it.title || it.job)}${it.line ? ` · line ${it.line}` : ""} →</a>`;
   const who = it.kind === "bench" ? `benchmark line, shown blind${it.what ? " (" + esc(it.what) + ")" : ""}` : `${RV_KIND[it.kind]} <b>${esc(it.by.name)}</b>${it.what ? " · " + esc(it.what) : ""}`;
-  const opts = it.options.map(o => `<button class="ghost sm" data-rvplay="${esc(it.id)}:${o.key}">▶ ${esc(o.label)}</button><span class="when">starts ${fmtT(o.words[0][0] + it.offset)}</span>`).join("");
+  const opts = it.options.map(o => `<button class="ghost sm" data-rvplay="${esc(it.id)}:${o.key}">▶ ${esc(o.label)}</button>${it.blind && it.state === "open" ? "" : `<span class="when">starts ${fmtT(o.words[0][0] + it.offset)}</span>`}`).join("");
   let foot;
   if (it.state === "open") {
     const V = RV_VERDICT(it);
@@ -2600,7 +2600,7 @@ function playReview(it, key) {
   if (!v.src.endsWith(src)) v.src = src;
   if (!RV.vox || !RV.vox.src.endsWith(vs)) { if (RV.vox) RV.vox.pause(); RV.vox = new Audio(vs); RV.vox.preload = "auto"; }
   $("#rvline").innerHTML = o.words.map((w, i) => `<span data-w="${i}">${esc(w[2])}</span>`).join(" ");
-  $("#rvnow").textContent = `Playing ${o.label}: the line starts at ${fmtT(o.words[0][0] + off)}`;
+  $("#rvnow").textContent = it.blind && it.state === "open" ? `Playing ${o.label}` : `Playing ${o.label}: the line starts at ${fmtT(o.words[0][0] + off)}`;
   RV.play = {it, o, from, to};
   const go = () => {
     v.currentTime = from; RV.vox.currentTime = from;
