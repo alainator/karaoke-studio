@@ -58,6 +58,9 @@ What an agent may do is set by its key (made on the Studio's Agents tab); withou
   ks rename SONG --artist A --title T     ks singers SONG (suggestions only, nothing saved)
   ks history SONG                         the song's undoable edits: who, what, when
   ks undo SONG [--any]                    undo the song's last edit if it was yours (--any: whoever made it)
+  ks ask SONG N (--to T | --shift S) [--question TEXT]   not sure? ask the person (Review tab: they hear both
+                                          timings and pick); nothing changes until they pick yours
+  ks reviews [--all] [--stats]            what the person answered on the Review tab: your moves heard right or wrong
 
   ks alt-lyrics SONG [--artist A --title T]   every LRCLIB copy, scored against what's heard in this video
   ks change SONG [--yt ID] [--lyrics ID] [--source lrclib|karamoe]   remake with another video and/or lyrics; the new
@@ -1245,6 +1248,38 @@ def cmd_ok(a):
     edit(job, ch, "ok " + ("all" if a.all else " ".join(a.n)))
 
 
+def cmd_ask(a):
+    """Not sure where a line goes? Ask the person instead of moving it: the Review tab plays the line now and your
+    timing (the line moved whole) and they say which is right. Nothing changes until they pick yours."""
+    job = resolve(a.song)
+    j = call(f"/api/jobs/{job['id']}")
+    off = float(j.get("offset") or 0.0)
+    b = {"job": job["id"], "line": int(a.n), "question": a.question}
+    if a.to is not None:
+        b["to"] = parse_t(a.to) - off
+    else:
+        b["shift"] = parse_t(a.shift)
+    r = call("/api/reviews", b)
+    print(f"asked: line {a.n} is in the person's Review list ({r['open']} open)")
+
+
+def cmd_reviews(a):
+    """What the person answered on the Review tab (and what's still waiting): per item, the line, the timings and
+    the verdict. --stats: only the counts per agent."""
+    r = call("/api/reviews?state=" + ("all" if a.all else "open"))
+    if not a.stats:
+        for x in r["items"]:
+            ans = x.get("answer") or {}
+            v = {"a": "A right", "b": "B right", "same": "no real difference", "neither": "both wrong"}.get(ans.get("verdict"), x["state"])
+            opts = "  ".join(f"{o['key'].upper()}={o['label']} {fmt(o['words'][0][0] + x['offset'])}" for o in x["options"])
+            print(f"{x['id']}  {x.get('artist')} - {x.get('title')}  line {x.get('line') or '?'}  [{x['kind']} by {x['by']['name']}]  {opts}  -> {v}"
+                  + (f"  ({ans['applied']})" if ans.get("applied") else "") + (f"  note: {ans['note']}" if ans.get("note") else "")
+                  + (f"  ({x['closed']})" if x.get("closed") else ""))
+        print(f"{r['open']} waiting for the person")
+    for who, s in (r.get("stats") or {}).items():
+        print(f"{who}: right {s['right']}, wrong {s['wrong']}, no difference {s['same']}, both wrong {s['neither']}")
+
+
 def cmd_note(a):
     """Leave your view on lines for the person: shown next to the ⚠ reason in the web editor, signed with your agent's
     name by the Studio. --mark flags an unmarked line with it; --clear removes your note. Lines the person checked (✓)
@@ -1507,6 +1542,10 @@ def main():
     s = sub.add_parser("ok"); s.add_argument("song"); s.add_argument("n", nargs="*"); s.add_argument("--all", action="store_true"); s.set_defaults(f=cmd_ok)
     s = sub.add_parser("note"); s.add_argument("song"); s.add_argument("n", nargs="+", help="line numbers, then the note text")
     s.add_argument("--mark", action="store_true"); s.add_argument("--clear", action="store_true"); s.set_defaults(f=cmd_note)
+    s = sub.add_parser("ask"); s.add_argument("song"); s.add_argument("n"); g = s.add_mutually_exclusive_group(required=True)
+    g.add_argument("--to", help="your start for the line (video time)"); g.add_argument("--shift", help="seconds, e.g. -0.8")
+    s.add_argument("--question", default=None, help="what you're unsure about (shown to the person)"); s.set_defaults(f=cmd_ask)
+    s = sub.add_parser("reviews"); s.add_argument("--all", action="store_true"); s.add_argument("--stats", action="store_true"); s.set_defaults(f=cmd_reviews)
     s = sub.add_parser("undo"); s.add_argument("song"); s.add_argument("--any", action="store_true"); s.set_defaults(f=cmd_undo)
     s = sub.add_parser("offset"); s.add_argument("song"); s.add_argument("seconds"); s.set_defaults(f=cmd_offset)
     s = sub.add_parser("reading"); s.add_argument("song"); s.add_argument("to", choices=["zh", "yue"]); s.set_defaults(f=cmd_reading)

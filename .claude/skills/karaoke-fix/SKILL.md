@@ -70,6 +70,9 @@ or a unique piece of "Artist - Title". `ks whoami` says what your key allows.
      (`ks ok`) is theirs unless your key allows it and they asked you to.
    - Something the person should check on a line that isn't marked (words that may be wrong, a placement you could
      only guess): `ks note SONG N "check: ..." --mark` flags it for them with your note.
+   - A placement you can only guess between two spots: `ks ask SONG N --to T --question "..."` instead of moving it;
+     the person hears both on the Review tab and picks (lines you do move go there too). `ks reviews --all` first:
+     what they said about your earlier moves.
    - The whole song a bit early or late everywhere: `ks offset SONG 0.4` (-5..+5 s), not line by line.
 5. The studio keeps lines in time order, so moving a line can renumber it and its neighbours. When ks says
    line numbers changed, run `ks show SONG` again before using any line number.

@@ -48,6 +48,8 @@ ROUTES = [
     (("POST",), r"/api/imports/[^/]+/make", "make"),
     (("POST",), r"/api/imports/[^/]+/cancel", "make"),
     (("POST",), J + r"/cancel", "make"),
+    (("POST",), r"/api/reviews/[^/]+/answer", ADMIN),       # only people answer (by ear); see app.answer_review
+    (("POST",), r"/api/reviews", "notes"),                  # an agent asks a person which timing is right
     (("POST",), J + r"/lines", "edit"),                     # (clearing marks or ok needs clear_marks; see app.put_lines)
     (("POST",), J + r"/lines/undo", "edit"),
     (("POST",), J + r"/syllables", "edit"),                # (split words into syllables from the melody)

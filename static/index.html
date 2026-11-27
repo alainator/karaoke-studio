@@ -181,6 +181,13 @@ nav button.on .nbadge { background: var(--on-accent); color: var(--accent); }
 .nbadge:empty { display: none; }
 .reqs { display: flex; flex-direction: column; gap: 8px; }
 .req { padding: 10px 14px; }
+.revplayer { position: sticky; top: 64px; z-index: 3; background: var(--bg, #000); padding: 8px 0 10px; margin-bottom: 10px; }
+.revplayer video { width: 100%; max-width: 520px; aspect-ratio: 16/9; background: #000; border-radius: 10px; display: block; }
+.rvline { font-size: 20px; font-weight: 800; margin-top: 8px; overflow-wrap: anywhere; color: var(--muted); }
+.rvline .on { color: var(--accent); }
+.rvopts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.rvopts .when { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; margin-left: 4px; }
+.req .acts input[type=text] { flex: 1 1 160px; min-width: 0; }
 .req .t { overflow-wrap: anywhere; }
 .req .note { margin-top: 4px; font-size: 14px; }
 .req .acts { margin-top: 8px; }
@@ -229,6 +236,7 @@ nav button.on .nbadge { background: var(--on-accent); color: var(--accent); }
     <button data-v="jobs">Songs</button>
     <button data-v="lib">Library</button>
     <button data-v="requests" title="Songs guests asked for in Encore">Requests<span class="nbadge" id="reqbadge"></span></button>
+    <button data-v="review" title="Line timings ks or an agent changed or asked about: listen and say which is right">Review<span class="nbadge" id="revbadge"></span></button>
     <button data-v="players" title="Players linked to the studio (Encore)">Players</button>
     <button data-v="agents" title="Keys for AI agents (and scripts) that check and fix songs through the studio's API">Agents</button>
   </nav>
@@ -287,6 +295,18 @@ nav button.on .nbadge { background: var(--on-accent); color: var(--accent); }
     <p class="hint">Songs guests asked for in Encore. <b>Find and make</b> searches for it on the Make tab, and the request follows the song you make (being made, ready, published); <b>We have it</b> points it at a song already made; <b>Decline</b> tells the guest no, with a reason.</p>
     <div class="reqs" id="reqs"></div>
     <div id="otherflags"></div>
+  </section>
+
+  <section id="v-review" class="view">
+    <div class="chips" id="rvchips" style="margin:0 0 10px"></div>
+    <p class="hint">Line timings an agent (or ks) changed or wasn't sure about. Agents can't listen, so they need your ears: play each timing (the song with the line lighting up), then say which is right. Picking the one the line doesn't have now sets the line to it (as an edit: Undo works). Every answer also tells how often each agent gets it right.</p>
+    <div id="rvstats" class="hint"></div>
+    <div class="revplayer" id="rvbox" style="display:none">
+      <video id="rvv" playsinline preload="auto"></video>
+      <div class="rvline" id="rvline"></div>
+      <div class="hint" id="rvnow"></div>
+    </div>
+    <div class="reqs" id="rvlist"></div>
   </section>
 
   <section id="v-players" class="view">
@@ -368,6 +388,7 @@ function show(v) {
   if (v === "jobs") loadJobs();
   if (v === "lib") loadLib();
   if (v === "requests") loadRequests();
+  if (v === "review") loadReviews(); else stopReview();
   if (v === "players") loadPlayers(); else clearInterval(PL.timer);
   if (v === "agents") loadAgents();
   if (v !== "jobs") closePlayer();
@@ -390,7 +411,7 @@ window.onhashchange = () => {
 let FONTS = [], STATUS = {};
 async function status() {
   try {
-    const s = await api("/api/status"); STATUS = s; $("#gpu").textContent = `GPU ${s.gpu_free_gb} GB free`; $("#reqbadge").textContent = s.requests_open || ""; FONTS = s.fonts || ["/static/octopus/Arial.ttf", "/static/octopus/DroidSansFallback.ttf"];
+    const s = await api("/api/status"); STATUS = s; $("#gpu").textContent = `GPU ${s.gpu_free_gb} GB free`; $("#reqbadge").textContent = s.requests_open || ""; $("#revbadge").textContent = s.reviews_open || ""; FONTS = s.fonts || ["/static/octopus/Arial.ttf", "/static/octopus/DroidSansFallback.ttf"];
     if (s.renderer === false) toast("Lyrics preview needs the renderer: run  python get_renderer.py  on the server", 15000);
   } catch {}
 }
@@ -2523,6 +2544,88 @@ async function renderFlags(id, j) {
   $("#flagsdone").onclick = () => after({});
   box.querySelectorAll("[data-fdone]").forEach(b => b.onclick = () => after({fids: [b.dataset.fdone]}));
   box.querySelectorAll("[data-fplay]").forEach(b => b.onclick = () => { const v = $("#pv"); if (!v) return; v.currentTime = Math.max(0, +b.dataset.fplay - 2); v.play().catch(() => {}); });
+}
+
+// ---------- review: listen to two timings of a line, say which is right (reviews.py) ----------
+const RV = {state: "open", data: null, play: null, raf: 0};
+async function loadReviews() {
+  if (!RV.data) $("#rvlist").innerHTML = `<p class="hint"><span class="spinner"></span></p>`;
+  try { RV.data = await api(`/api/reviews?state=${RV.state}`); $("#revbadge").textContent = RV.data.open || ""; renderReviews(); }
+  catch (e) { $("#rvlist").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+}
+const RV_KIND = {edit: "moved by", ask: "asked by", bench: "benchmark"};
+const RV_VERDICT = it => ({a: `${rvLabel(it, "a")} is right`, b: `${rvLabel(it, "b")} is right`, same: "No real difference", neither: "Both wrong"});
+const rvLabel = (it, k) => (it.options.find(o => o.key === k) || {}).label || k.toUpperCase();
+function rvCard(it) {
+  const song = `<a class="lnk" href="#jobs/${esc(it.job)}">${esc(it.artist || "")} – ${esc(it.title || it.job)}${it.line ? ` · line ${it.line}` : ""} →</a>`;
+  const who = it.kind === "bench" ? `benchmark line, shown blind${it.what ? " (" + esc(it.what) + ")" : ""}` : `${RV_KIND[it.kind]} <b>${esc(it.by.name)}</b>${it.what ? " · " + esc(it.what) : ""}`;
+  const opts = it.options.map(o => `<button class="ghost sm" data-rvplay="${esc(it.id)}:${o.key}">▶ ${esc(o.label)}</button><span class="when">starts ${fmtT(o.words[0][0] + it.offset)}</span>`).join("");
+  let foot;
+  if (it.state === "open") {
+    const V = RV_VERDICT(it);
+    foot = `<div class="row acts">${["a", "b", "same", "neither"].map(v => `<button class="${v === "a" || v === "b" ? "primary" : "ghost"} sm" data-rvans="${esc(it.id)}:${v}">${esc(V[v])}</button>`).join("")}</div>
+      <div class="row acts"><input type="text" id="rvnote-${esc(it.id)}" placeholder="Note (optional): what you heard" maxlength="300"></div>`;
+  } else if (it.answer) {
+    const V = RV_VERDICT(it), role = k => (it.options.find(o => o.key === k) || {}).role;
+    const reveal = it.blind ? " · " + it.options.map(o => `${esc(o.label)} = ${o.role === "alt" ? "the benchmark's" : "the line before"}`).join(", ") : "";
+    foot = `<div class="m">You said: <b>${esc(V[it.answer.verdict])}</b>${it.answer.applied ? " · " + esc(it.answer.applied) : ""} · ${esc(it.answer.by || "")} · ${esc(whenT(it.answer.at))}${reveal}</div>${it.answer.note ? `<div class="note">“${esc(it.answer.note)}”</div>` : ""}`;
+  } else foot = `<div class="m">Closed: ${esc(it.closed || "")}</div>`;
+  return `<div class="req${it.state === "open" ? "" : " done"}">
+    <div class="t">“${esc(it.text)}”</div>
+    <div class="m">${song}</div>
+    <div class="m">${who} · ${esc(whenT(it.created))}</div>
+    ${it.question ? `<div class="note">${esc(it.question)}</div>` : ""}
+    <div class="rvopts">${opts}</div>${foot}</div>`;
+}
+function renderReviews() {
+  const d = RV.data, chips = [["open", "To check"], ["done", "Answered"]];
+  $("#rvchips").innerHTML = chips.map(([k, l]) => `<button class="${RV.state === k ? "on" : ""}" data-rvs="${k}">${l}${k === "open" ? `<b>${d.open || 0}</b>` : ""}</button>`).join("");
+  const st = Object.entries(d.stats || {});
+  $("#rvstats").innerHTML = st.length ? "So far: " + st.map(([w, s]) => `<b>${esc(w)}</b> right ${s.right}, wrong ${s.wrong}, no difference ${s.same}, both wrong ${s.neither}`).join(" · ") : "";
+  $("#rvlist").innerHTML = d.items.length ? d.items.map(rvCard).join("") : `<div class="empty">${RV.state === "open" ? "Nothing to check. When ks or an agent moves a line, or asks about one, it shows up here." : "Nothing answered yet."}</div>`;
+  document.querySelectorAll("#rvchips [data-rvs]").forEach(b => b.onclick = () => { RV.state = b.dataset.rvs; RV.data = null; stopReview(); loadReviews(); });
+  document.querySelectorAll("[data-rvplay]").forEach(b => b.onclick = () => { const [id, k] = b.dataset.rvplay.split(":"); playReview(d.items.find(x => x.id === id), k); });
+  document.querySelectorAll("[data-rvans]").forEach(b => b.onclick = () => { const [id, v] = b.dataset.rvans.split(":"); answerReview(d.items.find(x => x.id === id), v, b); });
+}
+function stopReview() {
+  cancelAnimationFrame(RV.raf); RV.play = null;
+  const v = $("#rvv"); if (v) v.pause(); if (RV.vox) RV.vox.pause();
+}
+function playReview(it, key) {
+  stopReview();
+  const o = it.options.find(x => x.key === key), off = it.offset;
+  const from = Math.max(0, Math.min(...it.options.map(x => x.words[0][0])) + off - 2), to = Math.max(...it.options.map(x => x.words[x.words.length - 1][1])) + off + 1;
+  const v = $("#rvv"), src = `/api/jobs/${it.job}/file/video.mp4?v=${it.video_v}`, vs = `/api/jobs/${it.job}/file/vocals.m4a?v=${it.video_v}`;
+  $("#rvbox").style.display = "";
+  if (!v.src.endsWith(src)) v.src = src;
+  if (!RV.vox || !RV.vox.src.endsWith(vs)) { if (RV.vox) RV.vox.pause(); RV.vox = new Audio(vs); RV.vox.preload = "auto"; }
+  $("#rvline").innerHTML = o.words.map((w, i) => `<span data-w="${i}">${esc(w[2])}</span>`).join(" ");
+  $("#rvnow").textContent = `Playing ${o.label}: the line starts at ${fmtT(o.words[0][0] + off)}`;
+  RV.play = {it, o, from, to};
+  const go = () => {
+    v.currentTime = from; RV.vox.currentTime = from;
+    Promise.all([v.play(), RV.vox.play()]).catch(e => toast("Can't play: " + e.message));
+    const spans = [...document.querySelectorAll("#rvline span")];
+    const tick = () => {
+      if (!RV.play) return;
+      const t = v.currentTime;
+      if (Math.abs(RV.vox.currentTime - t) > 0.08) RV.vox.currentTime = t;   // the guide vocals follow the video
+      o.words.forEach((w, i) => spans[i].classList.toggle("on", t >= w[0] + off));
+      if (t >= to || v.ended) { stopReview(); return; }
+      RV.raf = requestAnimationFrame(tick);
+    };
+    RV.raf = requestAnimationFrame(tick);
+  };
+  if (v.readyState >= 1) go(); else v.addEventListener("loadedmetadata", go, {once: true});
+}
+async function answerReview(it, verdict, btn) {
+  const note = ($(`#rvnote-${it.id}`) || {}).value || "";
+  btn.disabled = true;
+  try {
+    const r = await api(`/api/reviews/${it.id}/answer`, {method: "POST", body: JSON.stringify({verdict, note, apply: true})});
+    toast(r.item.answer.applied ? `Saved: ${r.item.answer.applied} (Undo on the song's page puts it back)` : "Saved");
+    stopReview(); RV.data = null; loadReviews();
+  } catch (e) { btn.disabled = false; toast(e.message); }
 }
 
 window.onhashchange();

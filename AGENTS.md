@@ -76,6 +76,15 @@ held note over the guitar"). Keep it to one short sentence that tells the person
 `ks note SONG N "text"` on a ⚠ line; add `--mark` to flag an unmarked line; `--clear` removes your note. Notes are
 undoable like edits.
 
+## Review: the person's ears
+
+You can't listen; the person can, in seconds. Every line you move by more than 0.25 s (start or end, same words) goes
+on the Studio's Review tab, where the person plays the timing before and after (the song with the line lighting up)
+and says which is right; picking "before" puts the line back. When you can't tell where a line goes, don't guess:
+`ks ask SONG N --to 1:23.40 --question "sung here or a bar later?"` puts both timings in front of them without
+changing anything. `ks reviews --all` shows what they answered (`--stats`: how often your moves were heard right);
+read it before fixing more songs, and don't repeat a kind of move they keep rejecting. Only people answer reviews.
+
 ## The quality bar
 
 - A line must not light up late: more than about 1 s after its singing starts is wrong.

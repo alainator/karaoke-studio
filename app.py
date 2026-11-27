@@ -44,6 +44,7 @@ import autopick  # noqa: E402
 import songlinks as SL  # noqa: E402
 import wordscore  # noqa: E402
 import syllables  # noqa: E402
+import reviews  # noqa: E402
 
 # what the studio did and when: data/logs/studio.log (5 files of 2 MB kept)
 os.makedirs(C.LOGS, exist_ok=True)
@@ -1118,17 +1119,28 @@ async def put_lines(jid: str, req: Request):
         if notes:
             _agent_refuse(actor, "notes", "changing notes")
         what = " ".join(str(b.get("what") or "").split())[:120] or agents.describe(old, lines)
-        if not os.path.exists(job_path(jid, "words.orig.json")):
-            shutil.copyfile(wp, job_path(jid, "words.orig.json"))
-        agents.snapshot(job_path(jid), actor, what, lines=old, cast=old_cast)
-        save_lines(wp, lines, cast)
-        ass_same = not rebuild_lyrics(jid, job, lines, cast)
-        job["edited"] = time.time()
-        _edited(jid, job, actor, what)
-        if job.get("published") and not ass_same:  # clearing a ⚠ mark changes nothing on screen: nothing to republish
-            job["unpublished_changes"] = True
-        save(jid, job)
+        _write_lines(jid, job, old, old_cast, lines, cast, actor, what)
+    try:
+        reviews.from_edit(jid, old, lines, actor, what)   # ks / an agent moved lines: a person checks them by ear
+    except Exception as e:
+        log.warning("review items for %s: %s", jid, e)
     return {"lines": len(lines), "edited": job["edited"]}
+
+
+def _write_lines(jid, job, old, old_cast, lines, cast, actor, what):
+    """Save a song's new lines as an edit (under lock): history snapshot (Undo), words.json, the lyrics rebuilt, who
+    edited, "changes not published" when the screen changed. job is saved."""
+    wp = job_path(jid, "words.json")
+    if not os.path.exists(job_path(jid, "words.orig.json")):
+        shutil.copyfile(wp, job_path(jid, "words.orig.json"))
+    agents.snapshot(job_path(jid), actor, what, lines=old, cast=old_cast)
+    save_lines(wp, lines, cast)
+    ass_same = not rebuild_lyrics(jid, job, lines, cast)
+    job["edited"] = time.time()
+    _edited(jid, job, actor, what)
+    if job.get("published") and not ass_same:  # clearing a ⚠ mark changes nothing on screen: nothing to republish
+        job["unpublished_changes"] = True
+    save(jid, job)
 
 
 @app.post("/api/jobs/{jid}/syllables")
@@ -1183,6 +1195,140 @@ def _auto_syllables(jid, actor, b):
             job["unpublished_changes"] = True
         save(jid, job)
     return {"split": n, "words": split, "saved": True, "edited": job["edited"]}
+
+
+# ---- review: a person checks by ear the line timings ks or an agent changed or asked about (reviews.py) ----
+def _review_lines(jid):
+    try:
+        job = load(jid)
+    except HTTPException:
+        return None
+    if job.get("status") != "done" or not os.path.exists(job_path(jid, "words.json")):
+        return None
+    return load_lines(job_path(jid, "words.json"))
+
+
+def _review_out(x):
+    try:
+        job = load(x["job"])
+    except HTTPException:
+        job = {}
+    out = dict(x, artist=job.get("artist"), title=job.get("title"), offset=float(job.get("offset") or 0.0),
+               video_v=round(job.get("video_v") or job.get("finished") or 0))
+    if x["state"] == "open" or (x.get("answer") and x["answer"].get("applied")):
+        lines = _review_lines(x["job"]) or []
+        live = reviews.opt(x, x["live"])["words"]
+        i = reviews.find_line(lines, x["text"], live[0][0], near=0.05)
+        out["line"] = i + 1 if i is not None else None
+    if x["blind"] and x["state"] == "open":   # nobody is told which timing is the benchmark's until it's answered
+        out["options"] = [{k: v for k, v in o.items() if k != "role"} for o in x["options"]]
+        out.pop("what", None)
+    return out
+
+
+@app.get("/api/reviews")
+def list_reviews(state: str = "open"):
+    """Line timings to check by ear: open (default), done (answered or closed) or all; with the answers so far per
+    agent (stats: right / wrong / same / neither)."""
+    if state not in ("open", "done", "all"):
+        raise HTTPException(400, "state: open, done or all")
+    items, st = reviews.listing(_review_lines, state)
+    return {"items": [_review_out(x) for x in items[:300]], "total": len(items), "open": reviews.open_count(), "stats": st}
+
+
+@app.post("/api/reviews")
+async def ask_review(req: Request):
+    """Ask a person which timing is right for a line, without changing it: {"job", "line": N (as ks show numbers
+    them) or "text" + "start", and the other timing: "words" [[start, end, text]...] (same words), "shift" seconds or
+    "to" (a new start; the line moves whole), "question"?, "kind": "ask" (default) or "bench" (shown blind)}."""
+    check_origin(req)
+    b = await req.json()
+    actor = agents.actor_of(req)
+    jid = str(b.get("job") or "")
+    job = load(jid)
+    lines = _review_lines(jid)
+    if lines is None:
+        raise HTTPException(400, "finish making it first")
+    if isinstance(b.get("line"), int):
+        if not 1 <= b["line"] <= len(lines):
+            raise HTTPException(400, f"line 1-{len(lines)}")
+        i = b["line"] - 1
+    else:
+        try:
+            i = reviews.find_line(lines, str(b.get("text") or ""), float(b.get("start")))
+        except (TypeError, ValueError):
+            i = None
+        if i is None:
+            raise HTTPException(404, "no line with that text near that start")
+    line = lines[i]
+    cur = reviews._words(line)
+    if isinstance(b.get("words"), list):
+        try:
+            alt = [[round(float(w[0]), 3), round(float(w[1]), 3), str(w[2])] for w in b["words"]]
+        except (TypeError, ValueError, IndexError):
+            raise HTTPException(400, "words: [[start, end, text]...]")
+        if [w[2] for w in alt] != [w[2] for w in cur]:
+            raise HTTPException(400, "the other timing must have the line's words (only the timing differs)")
+    elif b.get("shift") is not None or b.get("to") is not None:
+        try:
+            d = float(b["shift"]) if b.get("shift") is not None else float(b["to"]) - cur[0][0]
+        except (TypeError, ValueError):
+            raise HTTPException(400, "shift / to: seconds")
+        alt = [[round(w[0] + d, 3), round(w[1] + d, 3), w[2]] for w in cur]
+    else:
+        raise HTTPException(400, "give the other timing: words, shift or to")
+    dur = (job.get("result") or {}).get("duration") or 3600
+    if any(not (0 <= w[0] <= w[1] <= dur + 60) for w in alt):
+        raise HTTPException(400, "the other timing is outside the song")
+    kind = b.get("kind") if b.get("kind") in ("ask", "bench") else "ask"
+    try:
+        it = reviews.add(jid, line, alt, actor, kind=kind, question=b.get("question"), blind=kind == "bench",
+                         what=str(b.get("what") or "")[:160] or None)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"id": it["id"], "open": reviews.open_count()}
+
+
+@app.post("/api/reviews/{rid}/answer")
+async def answer_review(rid: str, req: Request):
+    """A person's answer: {"verdict": "a" | "b" | "same" (no real difference) | "neither" (both wrong), "note"?,
+    "apply": true (default): a or b sets the line to that timing when it isn't already; neither marks the line ⚠}.
+    Only people: never an agent key or ks (they made or suggested the change)."""
+    check_origin(req)
+    b = await req.json()
+    actor = agents.actor_of(req)
+    if actor.get("kind") in ("agent", "ks"):
+        raise HTTPException(403, "only a person answers a review (by ear)")
+    v = b.get("verdict")
+    if v not in reviews.VERDICTS:
+        raise HTTPException(400, "verdict: a, b, same or neither")
+    x = reviews.get(rid)
+    if x is None:
+        raise HTTPException(404, "no such review")
+    if x["state"] != "open":
+        raise HTTPException(409, "already answered or closed")
+    applied = None
+    if b.get("apply", True) and (v == "neither" or (v in ("a", "b") and v != x["live"])):
+        with lock:
+            job = load(x["job"])
+            wp = job_path(x["job"], "words.json")
+            old, cast = load_lines(wp), load_cast(wp)
+            live = reviews.opt(x, x["live"])["words"]
+            i = reviews.find_line(old, x["text"], live[0][0], near=0.05)
+            if i is None or not reviews.same_timing(reviews._words(old[i]), live):
+                raise HTTPException(409, "the line changed since; open the song to look at it")
+            lines = json.loads(json.dumps(old))
+            if v == "neither":
+                lines[i].update(weak=True, ok=False, why="a person heard both timings wrong (Review)")
+                what, applied = "review: both timings wrong, marked ⚠", "marked ⚠"
+            else:
+                lines[i]["words"] = reviews.opt(x, v)["words"]
+                lines[i].update(weak=False, why=None)
+                lines.sort(key=lambda l: l["words"][0][0])
+                what, applied = f"review: set to {reviews.opt(x, v)['label']}", f"set to {reviews.opt(x, v)['label']}"
+            _write_lines(x["job"], job, old, cast, lines, cast, actor, what)
+    it = reviews.answer(rid, v, actor, note=b.get("note"), applied=applied)
+    return {"item": _review_out(it), "open": reviews.open_count()}
 
 
 @app.get("/api/jobs/{jid}/history")
@@ -3702,7 +3848,7 @@ def status():
     hh = helper_seen["health"] or {}
     return {"helper_free_gb": round(hh.get("free_mib", 0) / 1024, 1) if hh else None, "helper_gpu": (hh.get("gpu") or "").replace("NVIDIA GeForce ", "") or None,"gpu_free_gb": round(gpu_free_mib() / 1024, 1), "need_gb": NEED_GPU_MIB // 1024,
             "romaji_ai": bool(C.OLLAMA_URL),
-            "requests_open": STORE.q("select count(*) from requests where status='open'")[0][0],
+            "requests_open": STORE.q("select count(*) from requests where status='open'")[0][0], "reviews_open": reviews.open_count(),
             "pitch_pending": pitch_pending(),
             "queue": queue_view(),
             "gpus": {"local": LOCAL_GPU, "local_busy": slots["local"] is not None,
